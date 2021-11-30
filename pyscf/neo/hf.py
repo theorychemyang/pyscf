@@ -91,14 +91,23 @@ class HF(scf.hf.SCF):
         self.mol = mol
         self.unrestricted = unrestricted
 
+        # get electronic initial guess
+        if self.unrestricted == True:
+            self.dm_elec = scf.UHF(self.mol.elec).get_init_guess()
+        else:
+            self.dm_elec = scf.RHF(self.mol.elec).get_init_guess()
+        # set quantum nuclei to zero charges
+        quantum_nuclear_charge = 0
+        for i in range(self.mol.natm):
+            if self.mol.quantum_nuc[i] is True:
+                quantum_nuclear_charge -= self.mol.elec._atm[i,0]
+                self.mol.elec._atm[i,0] = 0 # set the nuclear charge of quantum nuclei to be 0
+        self.mol.elec.charge += quantum_nuclear_charge # charge determines the number of electrons
         # set up the Hamiltonian for electrons
         if self.unrestricted == True:
             self.mf_elec = scf.UHF(self.mol.elec)
-            #self.dm_elec = init_guess_mixed(self.mol.elec)
-            self.dm_elec = self.mf_elec.get_init_guess(key='1e')
         else:
             self.mf_elec = scf.RHF(self.mol.elec)
-            self.dm_elec = self.mf_elec.get_init_guess(key='1e')
         self.mf_elec.get_hcore = self.get_hcore_elec
 
         # set up the Hamiltonian for quantum nuclei

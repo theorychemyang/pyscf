@@ -105,12 +105,6 @@ class Mole(gto.mole.Mole):
         # build the Mole object for electrons and classical nuclei
         self.elec = gto.Mole()
         self.elec.build(**kwargs)
-        quantum_nuclear_charge = 0
-        for i in range(self.natm):
-            if self.quantum_nuc[i] is True:
-                quantum_nuclear_charge -= self.elec._atm[i,0]
-                self.elec._atm[i,0] = 0 # set the nuclear charge of quantum nuclei to be 0
-        self.elec.charge += quantum_nuclear_charge # charge determines the number of electrons
 
         # build a list of Mole objects for quantum nuclei
         for i in range(len(self.quantum_nuc)):
