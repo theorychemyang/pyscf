@@ -333,10 +333,13 @@ class HF(scf.hf.SCF):
 
                 # optimize f in cNEO
                 if isinstance(self, neo.CDFT):
+                    _int1e_r = self.mf_nuc[i].mol.intor_symmetric('int1e_r', comp=3)
                     ia = self.mf_nuc[i].mol.atom_index
-                    opt = scipy.optimize.root(self.first_order_de, self.f[ia], args=self.mf_nuc[i], method='hybr')
-                    self.f[ia] = opt.x
-
+                    _h1 = self.mf_nuc[i].get_hcore(mol=self.mf_nuc[i].mol, use_f=False)
+                    _veff = self.mf_nuc[i].get_veff(self.mf_nuc[i].mol, self.dm_nuc[i])
+                    _s1n = self.mf_nuc[i].get_ovlp()
+                    opt = scipy.optimize.root(self.first_order_de, self.f[ia],
+                                              args=(self.mf_nuc[i], _h1, _veff, _s1n, _int1e_r), method='hybr')
                     logger.info(self, 'f of %s(%i) atom: %s' %(self.mf_nuc[i].mol.atom_symbol(ia), ia, self.f[ia]))
                     logger.info(self, '1st de of L: %s', opt.fun)
 
@@ -401,21 +404,22 @@ class HF(scf.hf.SCF):
             for i in range(len(self.mf_nuc)):
                 # optimize f in cNEO
                 if isinstance(self, neo.CDFT):
+                    _int1e_r = self.mf_nuc[i].mol.intor_symmetric('int1e_r', comp=3)
                     ia = self.mf_nuc[i].mol.atom_index
-                    opt = scipy.optimize.root(self.first_order_de, self.f[ia], args=self.mf_nuc[i], method='hybr')
-                    self.f[ia] = opt.x
-
+                    _h1 = self.mf_nuc[i].get_hcore(mol=self.mf_nuc[i].mol, use_f=False)
+                    _veff = self.mf_nuc[i].get_veff(self.mf_nuc[i].mol, self.dm_nuc[i])
+                    _s1n = self.mf_nuc[i].get_ovlp()
+                    opt = scipy.optimize.root(self.first_order_de, self.f[ia],
+                                              args=(self.mf_nuc[i], _h1, _veff, _s1n, _int1e_r), method='hybr')
                     logger.info(self, 'f of %s(%i) atom: %s' %(self.mf_nuc[i].mol.atom_symbol(ia), ia, self.f[ia]))
                     logger.info(self, '1st de of L: %s', opt.fun)
-
-                h1n[i] = self.mf_nuc[i].get_hcore(self.mf_nuc[i].mol)
-                veff_n = self.mf_nuc[i].get_veff(self.mf_nuc[i].mol, self.dm_nuc[i])
-
-                # fock_n = self.mf_nuc[i].get_fock(h1n[i], s1n[i], veff_n,
-                #        self.dm_nuc[i], cycle, mf_diis_n[i])
-                mo_energy_n, mo_coeff_n = scf.hf.eig(h1n[i] + veff_n, s1n[i])
-                mo_occ_n = self.mf_nuc[i].get_occ(mo_energy_n, mo_coeff_n)
-                self.dm_nuc[i] = self.mf_nuc[i].make_rdm1(mo_coeff_n, mo_occ_n)
+                    h1n[i] = _h1 + numpy.einsum('xij,x->ij', _int1e_r, self.f[ia])
+                else:
+                    h1n[i] = self.mf_nuc[i].get_hcore(self.mf_nuc[i].mol)
+                    veff_n = self.mf_nuc[i].get_veff(self.mf_nuc[i].mol, self.dm_nuc[i])
+                    mo_energy_n, mo_coeff_n = scf.hf.eig(h1n[i] + veff_n, s1n[i])
+                    mo_occ_n = self.mf_nuc[i].get_occ(mo_energy_n, mo_coeff_n)
+                    self.dm_nuc[i] = self.mf_nuc[i].make_rdm1(mo_coeff_n, mo_occ_n)
 
             E_tot = self.energy_tot(self.dm_elec, self.dm_nuc, h1e, vhf, h1n)
             logger.info(self, 'Cycle %i Total Energy of NEO: %s\n' %(cycle, E_tot))
