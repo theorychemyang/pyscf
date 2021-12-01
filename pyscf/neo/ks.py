@@ -19,8 +19,8 @@ class KS(HF):
     >>> mf.scf()
     '''
 
-    def __init__(self, mol, unrestricted=False, epc=None):
-        HF.__init__(self, mol)
+    def __init__(self, mol, unrestricted=False, epc=None, verbose=4):
+        HF.__init__(self, mol, verbose=verbose)
 
         self.unrestricted = unrestricted
         self.epc = epc # electron-proton correlation: '17-1' or '17-2' can be used
@@ -39,19 +39,6 @@ class KS(HF):
         # build grids (Note: high-density grids are needed since nuclei is more localized than electrons)
         self.mf_elec.grids.build(with_non0tab = False)
         self.mf_elec.verbose = self.verbose - 1
-
-        # pre-scf for electronic density
-
-        if self.unrestricted == True:
-            mf = dft.UKS(self.mol)
-        else:
-            mf = dft.RKS(self.mol)
-
-        mf.xc = self.mf_elec.xc
-        mf.verbose = self.verbose - 1
-        mf.scf(dump_chk=False)
-        self.dm_elec = mf.make_rdm1()
-
 
         # set up Hamiltonian for each quantum nuclei
         for i in range(len(self.mol.nuc)):
@@ -213,8 +200,3 @@ class KS(HF):
             n1 += veff.exc
         #logger.debug(self, 'Energy of %s: %s', self.mol.atom_symbol(ia), n1)
         return n1
-
-
-
-
-
