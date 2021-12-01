@@ -396,9 +396,9 @@ class HF(scf.hf.SCF):
             vhf = self.mf_elec.get_veff(self.mf_elec.mol, dm=self.dm_elec)
             fock_e = self.mf_elec.get_fock(h1e, s1e, vhf,
                                            self.dm_elec, cycle, mf_diis)
-            mo_energy_e, mo_coeff_e = scf.hf.eig(fock_e, s1e)
-            mo_occ_e = self.mf_elec.get_occ(mo_energy_e, mo_coeff_e)
-            self.dm_elec = self.mf_elec.make_rdm1(mo_coeff_e, mo_occ_e)
+            self.mf_elec.mo_energy, self.mf_elec.mo_coeff = scf.hf.eig(fock_e, s1e)
+            self.mf_elec.mo_occ = self.mf_elec.get_occ(self.mf_elec.mo_energy, self.mf_elec.mo_coeff)
+            self.dm_elec = self.mf_elec.make_rdm1(self.mf_elec.mo_coeff, self.mf_elec.mo_occ)
 
             # set up nuclear Hamiltonian and diagonalize it
             for i in range(len(self.mf_nuc)):
@@ -417,9 +417,9 @@ class HF(scf.hf.SCF):
                 else:
                     h1n[i] = self.mf_nuc[i].get_hcore(self.mf_nuc[i].mol)
                     veff_n = self.mf_nuc[i].get_veff(self.mf_nuc[i].mol, self.dm_nuc[i])
-                    mo_energy_n, mo_coeff_n = scf.hf.eig(h1n[i] + veff_n, s1n[i])
-                    mo_occ_n = self.mf_nuc[i].get_occ(mo_energy_n, mo_coeff_n)
-                    self.dm_nuc[i] = self.mf_nuc[i].make_rdm1(mo_coeff_n, mo_occ_n)
+                    self.mf_nuc[i].mo_energy, self.mf_nuc[i].mo_coeff = scf.hf.eig(h1n[i] + veff_n, s1n[i])
+                    self.mf_nuc[i].mo_occ = self.mf_nuc[i].get_occ(self.mf_nuc[i].mo_energy, self.mf_nuc[i].mo_coeff)
+                    self.dm_nuc[i] = self.mf_nuc[i].make_rdm1(self.mf_nuc[i].mo_coeff, self.mf_nuc[i].mo_occ)
 
             E_tot = self.energy_tot(self.dm_elec, self.dm_nuc, h1e, vhf, h1n)
             logger.info(self, 'Cycle %i Total Energy of NEO: %s\n' %(cycle, E_tot))
