@@ -117,6 +117,18 @@ class HF(scf.hf.SCF):
         self.dm_nuc = [None] * self.mol.nuc_num
 
         for i in range(len(self.mol.nuc)):
+            # To get proper initial guess, other quantum nuclei are treated as
+            # classical ones for now, and only the quantum nucleus being processed
+            # gets zero charge before this step. See mole.py
+            self.dm_nuc[i] = self.get_init_guess_nuc(scf.RHF(self.mol.nuc[i]))
+            # set all quantum nuclei to have zero charges
+            quantum_nuclear_charge = 0
+            for j in range(self.mol.natm):
+                if self.mol.quantum_nuc[j] is True:
+                    quantum_nuclear_charge -= self.mol.nuc[i]._atm[j,0]
+                    self.mol.nuc[i]._atm[j,0] = 0 # set the nuclear charge of quantum nuclei to be 0
+            self.mol.nuc[i].charge += quantum_nuclear_charge
+            # set up
             self.mf_nuc[i] = scf.RHF(self.mol.nuc[i])
             self.mf_nuc[i].verbose = self.verbose
             self.mf_nuc[i].occ_state = 0 # for delta-SCF
@@ -124,7 +136,6 @@ class HF(scf.hf.SCF):
             self.mf_nuc[i].get_init_guess = self.get_init_guess_nuc
             self.mf_nuc[i].get_hcore = self.get_hcore_nuc
             self.mf_nuc[i].get_veff = self.get_veff_nuc_bare
-            self.dm_nuc[i] = self.get_init_guess_nuc(self.mf_nuc[i])
 
     def get_hcore_nuc(self, mole):
         'get the core Hamiltonian for quantum nucleus.'
@@ -167,22 +178,13 @@ class HF(scf.hf.SCF):
             return nuc_occ
         return get_occ
 
-    def get_init_guess_nuc(self, mf_nuc, key='1e'):
+    def get_init_guess_nuc(self, mf_nuc):
         '''Generate initial guess density matrix for quantum nuclei
 
            Returns:
             Density matrix, 2D ndarray
         '''
-        if key == 'atom':
-            ia = mf_nuc.mol.atom_index
-            mol_temp = neo.Mole()
-            mol_temp.build(atom = self.mol.atom, charge = self.mol.charge, spin = self.mol.spin, quantum_nuc = [ia])
-            mol = mol_temp.nuc[0]
-        elif key == '1e':
-            mol = mf_nuc.mol
-        else:
-            raise ValueError('Unsupported method for initial guess of quantum nuclei: %s' %(key))
-
+        mol = mf_nuc.mol
         h1n = self.get_hcore_nuc(mol)
         s1n = mol.intor_symmetric('int1e_ovlp')
         nuc_energy, nuc_coeff = scf.hf.eig(h1n, s1n)

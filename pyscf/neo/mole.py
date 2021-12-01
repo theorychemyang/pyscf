@@ -62,12 +62,11 @@ class Mole(gto.mole.Mole):
         nuc.build(atom = self.atom, basis={self.atom_symbol(atom_index): basis},
                     charge = self.charge, cart = self.cart, spin = self.spin)
 
-        quantum_nuclear_charge = 0
-        for i in range(self.natm):
-            if self.quantum_nuc[i] is True:
-                quantum_nuclear_charge -= nuc._atm[i,0]
-                nuc._atm[i,0] = 0 # set the nuclear charge of quantum nuclei to be 0
-        nuc.charge += quantum_nuclear_charge
+        # To get proper initial guess, other quantum nuclei are treated as
+        # classical ones for now, and only the quantum nucleus being processed
+        # gets zero charge here
+        nuc.charge -= nuc._atm[atom_index, 0]
+        nuc._atm[atom_index,0] = 0
 
         # avoid UHF
         nuc.spin = 0
