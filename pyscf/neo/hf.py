@@ -83,11 +83,11 @@ class HF(scf.hf.SCF):
 
     '''
 
-    def __init__(self, mol, unrestricted = False):
+    def __init__(self, mol, unrestricted = False, verbose=4):
         'build up the Hamiltonian and inital density matrix for NEO-HF'
         scf.hf.SCF.__init__(self, mol)
 
-        self.verbose = 4
+        self.verbose = verbose
         self.mol = mol
         self.unrestricted = unrestricted
 
@@ -106,8 +106,10 @@ class HF(scf.hf.SCF):
         # set up the Hamiltonian for electrons
         if self.unrestricted == True:
             self.mf_elec = scf.UHF(self.mol.elec)
+            self.mf_elec.verbose = self.verbose
         else:
             self.mf_elec = scf.RHF(self.mol.elec)
+            self.mf_elec.verbose = self.verbose
         self.mf_elec.get_hcore = self.get_hcore_elec
 
         # set up the Hamiltonian for quantum nuclei
@@ -116,6 +118,7 @@ class HF(scf.hf.SCF):
 
         for i in range(len(self.mol.nuc)):
             self.mf_nuc[i] = scf.RHF(self.mol.nuc[i])
+            self.mf_nuc[i].verbose = self.verbose
             self.mf_nuc[i].occ_state = 0 # for delta-SCF
             self.mf_nuc[i].get_occ = self.get_occ_nuc(self.mf_nuc[i])
             self.mf_nuc[i].get_init_guess = self.get_init_guess_nuc
