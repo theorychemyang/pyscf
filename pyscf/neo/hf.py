@@ -83,12 +83,10 @@ class HF(scf.hf.SCF):
 
     '''
 
-    def __init__(self, mol, unrestricted = False, verbose=4):
+    def __init__(self, mol, unrestricted=False):
         'build up the Hamiltonian and inital density matrix for NEO-HF'
         scf.hf.SCF.__init__(self, mol)
 
-        self.verbose = verbose
-        self.mol = mol
         self.unrestricted = unrestricted
 
         # get electronic initial guess

@@ -19,8 +19,8 @@ class KS(HF):
     >>> mf.scf()
     '''
 
-    def __init__(self, mol, unrestricted=False, epc=None, verbose=4):
-        HF.__init__(self, mol, verbose=verbose)
+    def __init__(self, mol, unrestricted=False, epc=None):
+        HF.__init__(self, mol)
 
         self.unrestricted = unrestricted
         self.epc = epc # electron-proton correlation: '17-1' or '17-2' can be used

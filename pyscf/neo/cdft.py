@@ -18,9 +18,9 @@ class CDFT(KS):
     >>> mf.scf()
     '''
 
-    def __init__(self, mol, verbose=4, **kwargs):
+    def __init__(self, mol, **kwargs):
         self.f = numpy.zeros((mol.natm, 3))
-        KS.__init__(self, mol, verbose=verbose, **kwargs)
+        KS.__init__(self, mol, **kwargs)
         #self.scf = self.inner_scf
 
         # set up the Hamiltonian for each quantum nuclei in cNEO
