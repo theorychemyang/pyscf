@@ -46,7 +46,7 @@ class CDFT(KS):
         self.f[ia] = f
         # add the f \cdot x potential to h1 (which is super().get_hcore_nuc) now
         mf.mo_energy, mf.mo_coeff = mf.eig(h1 + veff + numpy.einsum('xij,x->ij', int1e_r, self.f[ia]), s1n)
-        mf.mo_occ = mf.get_occ(mf, mf.mo_energy, mf.mo_coeff)
+        mf.mo_occ = mf.get_occ(mf.mo_energy, mf.mo_coeff)
         self.dm_nuc[i] = mf.make_rdm1(mf.mo_coeff, mf.mo_occ)
 
         return numpy.einsum('xij,ji->x', int1e_r, self.dm_nuc[i]) - mf.nuclei_expect_position

@@ -41,13 +41,14 @@ def get_hcore_nuc(mol, dm_elec, dm_nuc, mol_elec=None, mol_nuc=None):
                      * super_mol.atom_charge(ja)
     return h
 
-def get_occ_nuc(mf, mo_energy=None, mo_coeff=None):
-    '''Label the occupation for each orbital of the quantum nucleus'''
-    if mo_energy is None: mo_energy = mf.mo_energy
-    e_idx = numpy.argsort(mo_energy)
-    mo_occ = numpy.zeros(mo_energy.size)
-    mo_occ[e_idx[mf.occ_state]] = 1
-    return mo_occ
+def get_occ_nuc(mf):
+    def get_occ(mo_energy=mf.mo_energy, mo_coeff=mf.mo_coeff):
+        '''Label the occupation for each orbital of the quantum nucleus'''
+        e_idx = numpy.argsort(mo_energy)
+        mo_occ = numpy.zeros(mo_energy.size)
+        mo_occ[e_idx[mf.occ_state]] = 1
+        return mo_occ
+    return get_occ
 
 def get_init_guess_nuc(mf, mol):
     '''Generate initial guess density matrix for the quantum nucleus
@@ -58,7 +59,7 @@ def get_init_guess_nuc(mf, mol):
     h1n = mf.get_hcore(mol)
     s1n = mol.intor_symmetric('int1e_ovlp')
     mo_energy, mo_coeff = mf.eig(h1n, s1n)
-    mo_occ = mf.get_occ(mf, mo_energy, mo_coeff)
+    mo_occ = mf.get_occ(mo_energy, mo_coeff)
     return mf.make_rdm1(mo_coeff, mo_occ)
 
 def get_hcore_elec(mol, dm_nuc, mol_nuc=None):
@@ -283,7 +284,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mf.mf_elec.mo_occ = mo_occ_e
         for i in range(mol.nuc_num):
             mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(h1n[i] + veff_n[i], s1n[i])
-            mo_occ_n[i] = mf.mf_nuc[i].get_occ(mf.mf_nuc[i], mo_energy_n[i], mo_coeff_e[i])
+            mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_e[i])
             mf.mf_nuc[i].mo_energy = mo_energy_n[i]
             mf.mf_nuc[i].mo_coeff = mo_coeff_n[i]
             mf.mf_nuc[i].mo_occ = mo_occ_n[i]
@@ -355,7 +356,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             else:
                 mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(h1n[i] + veff_n[i], s1n[i])
                 mf.mf_nuc[i].mo_energy, mf.mf_nuc[i].mo_coeff = mo_energy_n[i], mo_coeff_n[i]
-                mo_occ_n[i] = mf.mf_nuc[i].get_occ(mf.mf_nuc[i], mo_energy_n[i], mo_coeff_n[i])
+                mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_n[i])
                 mf.mf_nuc[i].mo_occ = mo_occ_n[i]
                 mf.dm_nuc[i] = mf.mf_nuc[i].make_rdm1(mo_coeff_n[i], mo_occ_n[i])
             # in principle, update nuclear veff after the diagonalization, but in fact
@@ -402,7 +403,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             h1n[i] = mf.mf_nuc[i].get_hcore(mf.mf_nuc[i].mol)
             mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(h1n[i] + veff_n[i], s1n[i])
             mf.mf_nuc[i].mo_energy, mf.mf_nuc[i].mo_coeff = mo_energy_n[i], mo_coeff_n[i]
-            mo_occ_n[i] = mf.mf_nuc[i].get_occ(mf.mf_nuc[i], mo_energy_n[i], mo_coeff_n[i])
+            mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_n[i])
             mf.mf_nuc[i].mo_occ = mo_occ_n[i]
             mf.dm_nuc[i], dm_nuc_last[i] = mf.mf_nuc[i].make_rdm1(mo_coeff_n[i], mo_occ_n[i]), mf.dm_nuc[i]
             veff_n[i] = mf.mf_nuc[i].get_veff(mf.mf_nuc[i].mol, mf.dm_nuc[i])
@@ -469,7 +470,7 @@ class HF(scf.hf.SCF):
             self.mf_nuc.append(scf.RHF(mol.nuc[i]))
             mf_nuc = self.mf_nuc[-1]
             mf_nuc.occ_state = 0 # for Delta-SCF
-            mf_nuc.get_occ = self.get_occ_nuc
+            mf_nuc.get_occ = self.get_occ_nuc(mf_nuc)
             mf_nuc.get_hcore = self.get_hcore_nuc
             mf_nuc.get_veff = self.get_veff_nuc_bare
             mf_nuc.energy_qmnuc = self.energy_qmnuc
@@ -493,8 +494,8 @@ class HF(scf.hf.SCF):
     def get_hcore_elec(self, mol):
         return get_hcore_elec(mol, self.dm_nuc, self.mol.nuc)
 
-    def get_occ_nuc(self, mf, mo_energy=None, mo_coeff=None):
-        return get_occ_nuc(mf, mo_energy=mo_energy, mo_coeff=mo_energy)
+    def get_occ_nuc(self, mf):
+        return get_occ_nuc(mf)
 
     def get_hcore_nuc(self, mol):
         return get_hcore_nuc(mol, self.dm_elec, self.dm_nuc, self.mol.elec, self.mol.nuc)

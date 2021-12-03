@@ -46,11 +46,11 @@ class KS(HF):
             ia = self.mol.nuc[i].atom_index
             if self.epc is not None and self.mol.atom_symbol(ia) == 'H':  # only support electron-proton correlation
                 self.mf_nuc[i] = dft.RKS(self.mol.nuc[i])
-                mf_nuc = self.mf_nuc[-1]
+                mf_nuc = self.mf_nuc[i]
                 # need to repeat these lines because self.mf_elec got overwritten
                 mf_nuc.occ_state = 0 # for Delta-SCF
-                mf_nuc.get_occ = HF.get_occ_nuc
-                mf_nuc.get_hcore = HF.get_hcore_nuc
+                mf_nuc.get_occ = self.get_occ_nuc(mf_nuc)
+                mf_nuc.get_hcore = self.get_hcore_nuc
                 mf_nuc.get_veff = self.get_veff_nuc_epc
                 mf_nuc.super_mf = self
             self.mf_nuc[i].energy_qmnuc = self.energy_qmnuc
