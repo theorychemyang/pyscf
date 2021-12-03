@@ -72,12 +72,8 @@ class Gradients(lib.StreamObject):
     def grad_jcross_nuc_elec(self, mol):
         'get the gradient for the cross term of Coulomb interactions between quantum nucleus and electrons'
         i = mol.atom_index
-        if self.scf.unrestricted == True:
-            jcross = -scf.jk.get_jk((mol, mol, self.mol.elec, self.mol.elec),
-                                    self.scf.dm_elec[0] + self.scf.dm_elec[1], scripts='ijkl,lk->ij', intor='int2e_ip1', comp=3, aosym='s2kl')*self.mol.atom_charge(i)
-        else:
-            jcross = -scf.jk.get_jk((mol, mol, self.mol.elec, self.mol.elec), self.scf.dm_elec,
-                                    scripts='ijkl,lk->ij', intor='int2e_ip1', comp=3, aosym='s2kl')*self.mol.atom_charge(i)
+        jcross = -scf.jk.get_jk((mol, mol, self.mol.elec, self.mol.elec), self.scf.dm_elec,
+                                scripts='ijkl,lk->ij', intor='int2e_ip1', comp=3, aosym='s2kl')*self.mol.atom_charge(i)
 
         return jcross
 
@@ -115,11 +111,7 @@ class Gradients(lib.StreamObject):
             p0, p1 = aoslices[ia, 2:]
             jcross_elec_nuc = self.grad_jcross_elec_nuc()
             # *2 for c.c.
-            if self.scf.unrestricted == True:
-                self.de[k] -= numpy.einsum('xij,ij->x', jcross_elec_nuc[:,p0:p1],
-                                           self.scf.dm_elec[0][p0:p1] + self.scf.dm_elec[1][p0:p1])*2
-            else:
-                self.de[k] -= numpy.einsum('xij,ij->x', jcross_elec_nuc[:,p0:p1], self.scf.dm_elec[p0:p1])*2
+            self.de[k] -= numpy.einsum('xij,ij->x', jcross_elec_nuc[:,p0:p1], self.scf.dm_elec[p0:p1])*2
 
             if self.mol.quantum_nuc[ia] == True:
                 for i in range(len(self.mol.nuc)):

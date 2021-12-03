@@ -30,38 +30,34 @@ class KS(HF):
             self.mf_elec = dft.UKS(mol.elec)
         else:
             self.mf_elec = dft.RKS(mol.elec)
+        # need to repeat these lines because self.mf_elec got overwritten
+        self.mf_elec.get_hcore = self.get_hcore_elec
+        self.mf_elec.super_mf = self
 
         self.mf_elec.xc = 'b3lyp' # use b3lyp as the default xc functional for electrons
-        self.mf_elec.get_hcore = self.get_hcore_elec
         if self.epc is not None:
             self.mf_elec.get_veff = self.get_veff_elec_epc
 
         # build grids (Note: high-density grids are needed since nuclei is more localized than electrons)
-        self.mf_elec.grids.build(with_non0tab = False)
-        self.mf_elec.verbose = self.verbose - 1
+        self.mf_elec.grids.build(with_non0tab=False)
 
         # set up Hamiltonian for each quantum nuclei
-        for i in range(len(self.mol.nuc)):
+        for i in range(mol.nuc_num):
             ia = self.mol.nuc[i].atom_index
             if self.epc is not None and self.mol.atom_symbol(ia) == 'H':  # only support electron-proton correlation
                 self.mf_nuc[i] = dft.RKS(self.mol.nuc[i])
-                self.mf_nuc[i].get_veff = self.get_veff_nuc_epc
-                #self.mf_nuc[i].conv_tol = 1e-8
-                #self.mf_nuc[i].verbose = self.verbose
-            else:
-                self.mf_nuc[i] = scf.RHF(self.mol.nuc[i])
-                self.mf_nuc[i].get_veff = self.get_veff_nuc_bare
-
-            self.mf_nuc[i].occ_state = 0 # for delta SCF
-            self.mf_nuc[i].get_occ = self.get_occ_nuc(self.mf_nuc[i])
-            self.mf_nuc[i].get_init_guess = self.get_init_guess_nuc
-            self.mf_nuc[i].get_hcore = self.get_hcore_nuc
-            self.mf_nuc[i].verbose = self.verbose - 1
-            self.dm_nuc[i] = self.get_init_guess_nuc(self.mf_nuc[i])
+                mf_nuc = self.mf_nuc[-1]
+                # need to repeat these lines because self.mf_elec got overwritten
+                mf_nuc.occ_state = 0 # for Delta-SCF
+                mf_nuc.get_occ = HF.get_occ_nuc
+                mf_nuc.get_hcore = HF.get_hcore_nuc
+                mf_nuc.get_veff = self.get_veff_nuc_epc
+                mf_nuc.super_mf = self
+            self.mf_nuc[i].energy_qmnuc = self.energy_qmnuc
 
 
     def eval_xc_nuc(self, rho_e, rho_n):
-        'evaluate e_xc and v_xc of proton on a grid (epc17)'
+        '''evaluate e_xc and v_xc of proton on a grid (epc17)'''
         a = 2.35
         b = 2.4
 
@@ -83,7 +79,7 @@ class KS(HF):
         return exc, vxc
 
     def eval_xc_elec(self, rho_e, rho_n):
-        'evaluate e_xc and v_xc of electrons on a grid (only the epc part)'
+        '''evaluate e_xc and v_xc of electrons on a grid (only the epc part)'''
         a = 2.35
         b = 2.4
 
@@ -105,8 +101,7 @@ class KS(HF):
         return exc, vxc
 
     def get_veff_nuc_epc(self, mol, dm, dm_last=None, vhf_last=None, hermi=1):
-        # def nr_rks_nuc(self, mol, dm):
-        'get the effective potential for proton of NEO-DFT'
+        '''get the effective potential for proton of NEO-DFT'''
 
         nao = mol.nao_nr()
         shls_slice = (0, mol.nbas)
@@ -122,10 +117,7 @@ class KS(HF):
         for ao, mask, weight, coords in ni.block_loop(mol, grids, nao):
             aow = numpy.ndarray(ao.shape, order='F', buffer=aow)
             ao_elec = eval_ao(self.mol.elec, coords)
-            if self.unrestricted == True:
-                rho_elec = eval_rho(self.mol.elec, ao_elec, self.dm_elec[0]+self.dm_elec[1])
-            else:
-                rho_elec = eval_rho(self.mol.elec, ao_elec, self.dm_elec)
+            rho_elec = eval_rho(self.mol.elec, ao_elec, self.dm_elec)
             ao_nuc = eval_ao(mol, coords)
             rho_nuc = eval_rho(mol, ao_nuc, dm)
 
@@ -151,7 +143,7 @@ class KS(HF):
         return veff
 
     def get_veff_elec_epc(self, mol, dm, dm_last=None, vhf_last=None, hermi=1):
-        'get the effective potential for electrons of NEO-DFT'
+        '''get the effective potential for electrons of NEO-DFT'''
 
         nao = mol.nao_nr()
         shls_slice = (0, mol.nbas)
@@ -192,11 +184,11 @@ class KS(HF):
         return vxc
 
     def energy_qmnuc(self, mf_nuc, h1n, dm_nuc):
-        'energy of quantum nuclei by NEO-DFT'
+        '''energy of quantum nuclei by NEO-DFT'''
         n1 = numpy.einsum('ij,ji', h1n, dm_nuc)
         ia = mf_nuc.mol.atom_index
         if self.mol.atom_symbol(ia) == 'H' and self.epc is not None:
             veff = mf_nuc.get_veff(mf_nuc.mol, dm_nuc)
             n1 += veff.exc
-        #logger.debug(self, 'Energy of %s: %s', self.mol.atom_symbol(ia), n1)
+        logger.debug(self, 'Energy of %s (%3d): %s', self.mol.atom_symbol(ia), ia, n1)
         return n1

@@ -253,8 +253,8 @@ class CPHF(lib.StreamObject):
 
             shl0, shl1, p0, p1 = self.mol.aoslice_by_atom()[a, :]
             shls_slice = (shl0, shl1) + (0, self.mol.elec.nbas) + (0, self.mol.nuc[i].nbas)*2
-            v1_en = -scf.jk.get_jk((self.mol.elec, self.mol.elec, self.mol.nuc[i], self.mol.nuc[i]), self.base.dm_elec[:,
-                                   p0:p1], scripts='ijkl,ji->kl', intor='int2e_ip1', shls_slice = shls_slice, comp=3, aosym='s2kl')
+            v1_en = -scf.jk.get_jk((self.mol.elec, self.mol.elec, self.mol.nuc[i], self.mol.nuc[i]), self.base.dm_elec[p0:p1],
+                                   scripts='ijkl,ji->kl', intor='int2e_ip1', shls_slice = shls_slice, comp=3, aosym='s2kl')
             v1ao -= v1_en*self.mol.atom_charge(ia)*2 # *2 for c.c.
 
             if ia == a:
@@ -368,5 +368,3 @@ class CPHF(lib.StreamObject):
             e1_n.append(e1)
 
         return mo1_e, e1_e, mo1_n, e1_n, f1
-
-
