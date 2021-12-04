@@ -110,14 +110,15 @@ def nuc_nuc_coulomb(super_mol, dm_nuc):
     logger.debug(super_mol, 'Energy of n-n Comlomb interactions: %s', E)
     return E
 
-def energy_qmnuc(mf, h1n, dm_nuc):
+def energy_qmnuc(mf, h1n, dm_nuc, h_ep=None):
     '''Energy of the quantum nucleus'''
     ia = mf.mol.atom_index
     n1 = numpy.einsum('ij,ji', h1n, dm_nuc)
     logger.debug(mf, 'Energy of %s (%3d): %s', mf.mol.atom_symbol(ia), ia, n1)
     return n1
 
-def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None, h1n=None):
+def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,
+               h1n=None, h_ep=None):
     '''Total energy of NEO-HF'''
     E_tot = 0
     # add the energy of electrons
@@ -137,8 +138,10 @@ def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,
         h1n = []
         for i in range(len(mf_nuc)):
             h1n.append(mf_nuc[i].get_hcore(mf_nuc[i].mol))
+    if h_ep is None:
+        h_ep = [None] * len(mf_nuc)
     for i in range(len(mf_nuc)):
-        E_tot += mf_nuc[i].energy_qmnuc(mf_nuc[i], h1n[i], dm_nuc[i])
+        E_tot += mf_nuc[i].energy_qmnuc(mf_nuc[i], h1n[i], dm_nuc[i], h_ep=h_ep[i])
     # substract double-counted terms and add classical nuclear repulsion
     super_mol = mf_elec.mol.super_mol
     E_tot = E_tot - elec_nuc_coulomb(super_mol, dm_elec, dm_nuc) \
@@ -250,12 +253,15 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
 
     h1e = mf.mf_elec.get_hcore(mol.elec)
     vhf_e = mf.mf_elec.get_veff(mol.elec, mf.dm_elec)
+    h_ep_e = mf.mf_elec.get_h_ep(mol.elec, mf.dm_elec)
     h1n = []
     veff_n = []
+    h_ep_n = []
     for i in range(mol.nuc_num):
         h1n.append(mf.mf_nuc[i].get_hcore(mol.nuc[i]))
         veff_n.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i]))
-    e_tot = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e, vhf_e, h1n)
+        h_ep_n.append(mf.mf_nuc[i].get_h_ep(mol.nuc[i], mf.dm_nuc[i]))
+    e_tot = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e, vhf_e, h1n, h_ep_n)
     logger.info(mf, 'init E= %.15g', e_tot)
 
     scf_conv = False
@@ -276,14 +282,14 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
 
     # Skip SCF iterations. Compute only the total energy of the initial density
     if mf.max_cycle <= 0:
-        fock_e = mf.mf_elec.get_fock(h1e, s1e, vhf_e, mf.dm_elec)  # = h1e + vhf, no DIIS
+        fock_e = mf.mf_elec.get_fock(h1e + h_ep_e, s1e, vhf_e, mf.dm_elec)  # = h1e + vhf, no DIIS
         mo_energy_e, mo_coeff_e = mf.mf_elec.eig(fock_e, s1e)
         mo_occ_e = mf.mf_elec.get_occ(mo_energy_e, mo_coeff_e)
         mf.mf_elec.mo_energy = mo_energy_e
         mf.mf_elec.mo_coeff = mo_coeff_e
         mf.mf_elec.mo_occ = mo_occ_e
         for i in range(mol.nuc_num):
-            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(h1n[i] + veff_n[i], s1n[i])
+            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(h1n[i] + h_ep_n[i] + veff_n[i], s1n[i])
             mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_e[i])
             mf.mf_nuc[i].mo_energy = mo_energy_n[i]
             mf.mf_nuc[i].mo_coeff = mo_coeff_n[i]
@@ -324,7 +330,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         last_e = e_tot
 
         # set up the electronic Hamiltonian and diagonalize it
-        fock_e = mf.mf_elec.get_fock(h1e, s1e, vhf_e, mf.dm_elec, cycle, mf_diis)
+        fock_e = mf.mf_elec.get_fock(h1e + h_ep_e, s1e, vhf_e, mf.dm_elec, cycle, mf_diis)
         mo_energy_e, mo_coeff_e = mf.mf_elec.eig(fock_e, s1e)
         mo_occ_e = mf.mf_elec.get_occ(mo_energy_e, mo_coeff_e)
         mf.dm_elec = mf.mf_elec.make_rdm1(mo_coeff_e, mo_occ_e)
@@ -335,7 +341,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         # Here Fock matrix is h1e + vhf, without DIIS.  Calling get_fock
         # instead of the statement "fock = h1e + vhf" because Fock matrix may
         # be modified in some methods.
-        fock_e = mf.mf_elec.get_fock(h1e, s1e, vhf_e, mf.dm_elec)  # = h1e + vhf, no DIIS
+        fock_e = mf.mf_elec.get_fock(h1e + h_ep_e, s1e, vhf_e, mf.dm_elec)  # = h1e + vhf, no DIIS
         norm_gorb_e = numpy.linalg.norm(mf.mf_elec.get_grad(mo_coeff_e, mo_occ_e, fock_e))
         if not TIGHT_GRAD_CONV_TOL:
             norm_gorb_e = norm_gorb_e / numpy.sqrt(norm_gorb_e.size)
@@ -345,16 +351,18 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         for i in range(mol.nuc_num):
             # update nuclear core Hamiltonian after the electron density is updated
             h1n[i] = mf.mf_nuc[i].get_hcore(mf.mf_nuc[i].mol)
+            h_ep_n[i] = mf.mf_nuc[i].get_h_ep(mf.mf_nuc[i].mol, mf.dm_nuc[i])
             # optimize f in cNEO
             if isinstance(mf, neo.CDFT):
                 ia = mf.mf_nuc[i].mol.atom_index
                 fx = numpy.einsum('xij,x->ij', int1e_r[i], mf.f[ia])
                 opt = scipy.optimize.root(mf.first_order_de, mf.f[ia],
-                                          args=(mf.mf_nuc[i], h1n[i] - fx, veff_n[i], s1n[i], int1e_r[i]), method='hybr')
+                                          args=(mf.mf_nuc[i], h1n[i] + h_ep_n[i] - fx,
+                                                veff_n[i], s1n[i], int1e_r[i]), method='hybr')
                 logger.debug(mf, 'f of %s(%i) atom: %s' %(mf.mf_nuc[i].mol.atom_symbol(ia), ia, mf.f[ia]))
                 logger.debug(mf, '1st de of L: %s', opt.fun)
             else:
-                mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(h1n[i] + veff_n[i], s1n[i])
+                mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(h1n[i] + h_ep_n[i] + veff_n[i], s1n[i])
                 mf.mf_nuc[i].mo_energy, mf.mf_nuc[i].mo_coeff = mo_energy_n[i], mo_coeff_n[i]
                 mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_n[i])
                 mf.mf_nuc[i].mo_occ = mo_occ_n[i]
@@ -365,8 +373,9 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         norm_ddm_n = numpy.linalg.norm(numpy.array(mf.dm_nuc) - numpy.array(dm_nuc_last))
         # update electronic core Hamiltonian after the nuclear density is updated
         h1e = mf.mf_elec.get_hcore(mol.elec)
+        h_ep_e = mf.mf_elec.get_h_ep(mol.elec, mf.dm_elec)
 
-        e_tot = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e, vhf_e, h1n)
+        e_tot = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e, vhf_e, h1n, h_ep_n)
         logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |ddm_n|= %4.3g',
                     cycle + 1, e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e, norm_ddm_n)
 
@@ -393,7 +402,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mf.dm_elec = lib.tag_array(mf.dm_elec, mo_coeff=mo_coeff_e, mo_occ=mo_occ_e)
         vhf_e = mf.mf_elec.get_veff(mol.elec, mf.dm_elec, dm_elec_last, vhf_e)
 
-        fock_e = mf.mf_elec.get_fock(h1e, s1e, vhf_e, mf.dm_elec)
+        fock_e = mf.mf_elec.get_fock(h1e + h_ep_e, s1e, vhf_e, mf.dm_elec)
         norm_gorb_e = numpy.linalg.norm(mf.mf_elec.get_grad(mo_coeff_e, mo_occ_e, fock_e))
         if not TIGHT_GRAD_CONV_TOL:
             norm_gorb_e = norm_gorb_e / numpy.sqrt(norm_gorb_e.size)
@@ -401,7 +410,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
 
         for i in range(mol.nuc_num):
             h1n[i] = mf.mf_nuc[i].get_hcore(mf.mf_nuc[i].mol)
-            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(h1n[i] + veff_n[i], s1n[i])
+            h_ep_n[i] = mf.mf_nuc[i].get_h_ep(mf.mf_nuc[i].mol, mf.dm_nuc[i])
+            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(h1n[i] + h_ep_n[i] + veff_n[i], s1n[i])
             mf.mf_nuc[i].mo_energy, mf.mf_nuc[i].mo_coeff = mo_energy_n[i], mo_coeff_n[i]
             mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_n[i])
             mf.mf_nuc[i].mo_occ = mo_occ_n[i]
@@ -409,7 +419,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             veff_n[i] = mf.mf_nuc[i].get_veff(mf.mf_nuc[i].mol, mf.dm_nuc[i])
         norm_ddm_n = numpy.linalg.norm(numpy.array(mf.dm_nuc) - numpy.array(dm_nuc_last))
 
-        e_tot, last_e = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e, vhf_e, h1n), e_tot
+        e_tot, last_e = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e, vhf_e, h1n, h_ep_n), e_tot
         conv_tol = conv_tol * 10
         conv_tol_grad = conv_tol_grad * 3
         if abs(e_tot - last_e) < conv_tol or norm_gorb_e < conv_tol_grad:
@@ -463,6 +473,7 @@ class HF(scf.hf.SCF):
         else:
             self.mf_elec = scf.RHF(mol.elec)
         self.mf_elec.get_hcore = self.get_hcore_elec
+        self.mf_elec.get_h_ep = self.get_h_ep_elec
         self.mf_elec.super_mf = self
 
         # nuclear part
@@ -472,6 +483,7 @@ class HF(scf.hf.SCF):
             mf_nuc.occ_state = 0 # for Delta-SCF
             mf_nuc.get_occ = self.get_occ_nuc(mf_nuc)
             mf_nuc.get_hcore = self.get_hcore_nuc
+            mf_nuc.get_h_ep = self.get_h_ep_nuc
             mf_nuc.get_veff = self.get_veff_nuc_bare
             mf_nuc.energy_qmnuc = self.energy_qmnuc
             mf_nuc.super_mf = self
@@ -503,11 +515,24 @@ class HF(scf.hf.SCF):
     def get_veff_nuc_bare(self, mol, dm):
         return get_veff_nuc_bare(mol, dm)
 
-    def energy_qmnuc(self, mf, h1n, dm_nuc):
-        return energy_qmnuc(mf, h1n, dm_nuc)
+    def energy_qmnuc(self, mf, h1n, dm_nuc, h_ep=None):
+        return energy_qmnuc(mf, h1n, dm_nuc, h_ep=h_ep)
 
-    def energy_tot(self, dm_elec, dm_nuc, h1e, vhf_e, h1n):
-        return energy_tot(self.mf_elec, self.mf_nuc, dm_elec, dm_nuc, h1e, vhf_e, h1n)
+    def energy_tot(self, dm_elec, dm_nuc, h1e, vhf_e, h1n, h_ep=None):
+        return energy_tot(self.mf_elec, self.mf_nuc, dm_elec, dm_nuc, h1e, vhf_e, h1n, h_ep=h_ep)
+
+    def get_h_ep_nuc(self, mol, dm):
+        '''EP contribution to nuclear part'''
+        nao = mol.nao_nr()
+        excsum = 0
+        vmat = numpy.zeros((nao, nao))
+        vmat = lib.tag_array(vmat, exc=excsum, ecoul=0, vj=0, vk=0)
+        return vmat
+
+    def get_h_ep_elec(self, mol, dm):
+        '''EP contribution to electronic part'''
+        nao = mol.nao_nr()
+        return numpy.zeros((nao, nao))
 
     def scf(self, dm0e=None, dm0n=[], **kwargs):
         cput0 = (logger.process_clock(), logger.perf_counter())

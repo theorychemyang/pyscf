@@ -32,11 +32,9 @@ class CDFT(KS):
     def get_hcore_nuc(self, mol):
         '''get the core Hamiltonian for quantum nucleus in cNEO'''
         h = super().get_hcore_nuc(mol)
-
         # an extra term in cNEO due to the constraint on the expectation position
         ia = mol.atom_index
         h += numpy.einsum('xij,x->ij', mol.intor_symmetric('int1e_r', comp=3), self.f[ia])
-
         return h
 
     def first_order_de(self, f, mf, h1, veff, s1n, int1e_r):
@@ -64,10 +62,10 @@ class CDFT(KS):
         ints = numpy.einsum('...pq,p,qj->...j', ints, coeff[:,0].conj(), coeff[:,1:])
         return 2*numpy.einsum('ij,lj,j->il', ints, ints.conj(), de).real
 
-    def energy_qmnuc(self, mf_nuc, h1n, dm_nuc):
+    def energy_qmnuc(self, mf_nuc, h1n, dm_nuc, h_ep=None):
         ia = mf_nuc.mol.atom_index
         h_r = numpy.einsum('xij,x->ij', mf_nuc.mol.intor_symmetric('int1e_r', comp=3), self.f[ia])
-        e = super().energy_qmnuc(mf_nuc, h1n, dm_nuc) - numpy.einsum('ij,ji', h_r, dm_nuc)
+        e = super().energy_qmnuc(mf_nuc, h1n, dm_nuc, h_ep=h_ep) - numpy.einsum('ij,ji', h_r, dm_nuc)
         return e
 
     def nuc_grad_method(self):
