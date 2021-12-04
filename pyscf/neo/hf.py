@@ -370,7 +370,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             # in principle, update nuclear veff after the diagonalization, but in fact
             # this matrix is just zero
             veff_n[i] = mf.mf_nuc[i].get_veff(mf.mf_nuc[i].mol, mf.dm_nuc[i])
-        norm_ddm_n = numpy.linalg.norm(numpy.array(mf.dm_nuc) - numpy.array(dm_nuc_last))
+        norm_ddm_n = numpy.linalg.norm(numpy.concatenate(mf.dm_nuc, axis=None).ravel()
+                                       - numpy.concatenate(dm_nuc_last, axis=None).ravel())
 
         # update electronic core Hamiltonian after the nuclear density is updated
         h1e = mf.mf_elec.get_hcore(mol.elec)
@@ -421,7 +422,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             mf.mf_nuc[i].mo_occ = mo_occ_n[i]
             mf.dm_nuc[i], dm_nuc_last[i] = mf.mf_nuc[i].make_rdm1(mo_coeff_n[i], mo_occ_n[i]), mf.dm_nuc[i]
             veff_n[i] = mf.mf_nuc[i].get_veff(mf.mf_nuc[i].mol, mf.dm_nuc[i])
-        norm_ddm_n = numpy.linalg.norm(numpy.array(mf.dm_nuc) - numpy.array(dm_nuc_last))
+        norm_ddm_n = numpy.linalg.norm(numpy.concatenate(mf.dm_nuc, axis=None).ravel()
+                                       - numpy.concatenate(dm_nuc_last, axis=None).ravel())
 
         h1e = mf.mf_elec.get_hcore(mol.elec)
         h_ep_e = mf.mf_elec.get_h_ep(mol.elec, mf.dm_elec)
