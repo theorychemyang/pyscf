@@ -556,10 +556,11 @@ class HF(scf.hf.SCF):
         self.dump_flags()
 
         if self.max_cycle > 0 or self.mo_coeff is None:
-            self.converged, self.e_tot = \
+            self.converged, self.e_tot, self.mf_elec.mo_energy, \
+                self.mf_elec.mo_coeff, self.mf_elec.mo_occ = \
                     kernel(self, self.conv_tol, self.conv_tol_grad,
                            dm0e=dm0e, dm0n=dm0n, callback=self.callback,
-                           conv_check=self.conv_check, **kwargs)[0 : 2]
+                           conv_check=self.conv_check, **kwargs)[0 : 5]
         else:
             self.e_tot = kernel(self, self.conv_tol, self.conv_tol_grad,
                                 dm0e=dm0e, dm0n=dm0n, callback=self.callback,
