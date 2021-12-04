@@ -119,7 +119,10 @@ class KS(HF):
         for ao, mask, weight, coords in ni.block_loop(mol, grids, nao):
             aow = numpy.ndarray(ao.shape, order='F', buffer=aow)
             ao_elec = eval_ao(self.mol.elec, coords)
-            rho_elec = eval_rho(self.mol.elec, ao_elec, self.dm_elec)
+            if self.dm_elec.ndim > 2:
+                rho_elec = eval_rho(self.mol.elec, ao_elec, self.dm_elec[0] + self.dm_elec[1])
+            else:
+                rho_elec = eval_rho(self.mol.elec, ao_elec, self.dm_elec)
             ao_nuc = eval_ao(mol, coords)
             rho_nuc = eval_rho(mol, ao_nuc, dm)
             exc, vxc = eval_xc_nuc(self.epc, rho_elec, rho_nuc)
@@ -153,7 +156,10 @@ class KS(HF):
                 for ao, mask, weight, coords in ni.block_loop(mol, grids, nao):
                     aow = numpy.ndarray(ao.shape, order='F', buffer=aow)
                     ao_elec = eval_ao(mol, coords)
-                    rho_elec = eval_rho(mol, ao_elec, dm)
+                    if dm.ndim > 2:
+                        rho_elec = eval_rho(mol, ao_elec, dm[0] + dm[1])
+                    else:
+                        rho_elec = eval_rho(mol, ao_elec, dm)
                     ao_nuc = eval_ao(self.mol.nuc[i], coords)
                     rho_nuc = eval_rho(self.mol.nuc[i], ao_nuc, self.dm_nuc[i])
                     exc_i, vxc_i = eval_xc_elec(self.epc, rho_elec, rho_nuc)

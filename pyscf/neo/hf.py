@@ -29,8 +29,14 @@ def get_hcore_nuc(mol, dm_elec, dm_nuc, mol_elec=None, mol_nuc=None):
     h = mol.intor_symmetric('int1e_kin') / mass
     h -= mol.intor_symmetric('int1e_nuc') * charge
     # Coulomb interaction between the quantum nucleus and electrons
-    h -= scf.jk.get_jk((mol, mol, mol_elec, mol_elec),
-                       dm_elec, scripts='ijkl,lk->ij', intor='int2e', aosym ='s4') * charge
+    if dm_elec.ndim > 2:
+        h -= scf.jk.get_jk((mol, mol, mol_elec, mol_elec),
+                           dm_elec[0] + dm_elec[1], scripts='ijkl,lk->ij',
+                           intor='int2e', aosym ='s4') * charge
+    else:
+        h -= scf.jk.get_jk((mol, mol, mol_elec, mol_elec),
+                           dm_elec, scripts='ijkl,lk->ij',
+                           intor='int2e', aosym ='s4') * charge
     # Coulomb interactions between quantum nuclei
     if len(dm_nuc) == len(mol_nuc) == super_mol.nuc_num:
         for j in range(super_mol.nuc_num):
@@ -91,7 +97,10 @@ def elec_nuc_coulomb(super_mol, dm_elec, dm_nuc):
             charge = super_mol.atom_charge(ia)
             jcross -= scf.jk.get_jk((mol_elec, mol_elec, mol_nuc[i], mol_nuc[i]),
                                     dm_nuc[i], scripts='ijkl,lk->ij', intor='int2e', aosym='s4') * charge
-        E = numpy.einsum('ij,ji', jcross, dm_elec)
+        if dm_elec.ndim > 2:
+            E = numpy.einsum('ij,ji', jcross, dm_elec[0] + dm_elec[1])
+        else:
+            E = numpy.einsum('ij,ji', jcross, dm_elec)
     logger.debug(super_mol, 'Energy of e-n Coulomb interactions: %s', E)
     return E
 
@@ -294,7 +303,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             mf.mf_nuc[i].mo_energy = mo_energy_n[i]
             mf.mf_nuc[i].mo_coeff = mo_coeff_n[i]
             mf.mf_nuc[i].mo_occ = mo_occ_n[i]
-        if mf.dm_elec.ndim == 2:
+        if mf.dm_elec.ndim > 2:
             mf.dm_elec = mf.dm_elec[0] + mf.dm_elec[1]
         return scf_conv, e_tot, mo_energy_e, mo_coeff_e, mo_occ_e, \
                mo_energy_n, mo_coeff_n, mo_occ_n
@@ -436,7 +445,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     # A post-processing hook before return
     mf.post_kernel(locals())
 
-    if mf.dm_elec.ndim == 2:
+    if mf.dm_elec.ndim > 2:
         mf.dm_elec = mf.dm_elec[0] + mf.dm_elec[1]
     return scf_conv, e_tot, mo_energy_e, mo_coeff_e, mo_occ_e, \
            mo_energy_n, mo_coeff_n, mo_occ_n
@@ -459,7 +468,9 @@ class HF(scf.hf.SCF):
         scf.hf.SCF.__init__(self, mol)
         self.unrestricted = unrestricted
         self.mf_elec = None
-        self.dm_elec = None # total density, not spin density
+        # dm_elec will be the total density after SCF, but can be spin
+        # densities during the SCF procedure
+        self.dm_elec = None
         self.mf_nuc = []
         self.dm_nuc = []
         # The verbosity flag is passed now instead of when creating those mol
