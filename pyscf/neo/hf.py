@@ -338,15 +338,6 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mf.dm_elec = lib.tag_array(mf.dm_elec, mo_coeff=mo_coeff_e, mo_occ=mo_occ_e)
         vhf_e = mf.mf_elec.get_veff(mol.elec, mf.dm_elec, dm_elec_last, vhf_e)
 
-        # Here Fock matrix is h1e + vhf, without DIIS.  Calling get_fock
-        # instead of the statement "fock = h1e + vhf" because Fock matrix may
-        # be modified in some methods.
-        fock_e = mf.mf_elec.get_fock(h1e + h_ep_e, s1e, vhf_e, mf.dm_elec)  # = h1e + vhf, no DIIS
-        norm_gorb_e = numpy.linalg.norm(mf.mf_elec.get_grad(mo_coeff_e, mo_occ_e, fock_e))
-        if not TIGHT_GRAD_CONV_TOL:
-            norm_gorb_e = norm_gorb_e / numpy.sqrt(norm_gorb_e.size)
-        norm_ddm_e = numpy.linalg.norm(mf.dm_elec - dm_elec_last)
-
         # set up the nuclear Hamiltonian and diagonalize it
         for i in range(mol.nuc_num):
             # update nuclear core Hamiltonian after the electron density is updated
@@ -371,9 +362,19 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             # this matrix is just zero
             veff_n[i] = mf.mf_nuc[i].get_veff(mf.mf_nuc[i].mol, mf.dm_nuc[i])
         norm_ddm_n = numpy.linalg.norm(numpy.array(mf.dm_nuc) - numpy.array(dm_nuc_last))
+
         # update electronic core Hamiltonian after the nuclear density is updated
         h1e = mf.mf_elec.get_hcore(mol.elec)
         h_ep_e = mf.mf_elec.get_h_ep(mol.elec, mf.dm_elec)
+
+        # Here Fock matrix is h1e + vhf, without DIIS.  Calling get_fock
+        # instead of the statement "fock = h1e + vhf" because Fock matrix may
+        # be modified in some methods.
+        fock_e = mf.mf_elec.get_fock(h1e + h_ep_e, s1e, vhf_e, mf.dm_elec)  # = h1e + vhf, no DIIS
+        norm_gorb_e = numpy.linalg.norm(mf.mf_elec.get_grad(mo_coeff_e, mo_occ_e, fock_e))
+        if not TIGHT_GRAD_CONV_TOL:
+            norm_gorb_e = norm_gorb_e / numpy.sqrt(norm_gorb_e.size)
+        norm_ddm_e = numpy.linalg.norm(mf.dm_elec - dm_elec_last)
 
         e_tot = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e, vhf_e, h1n, h_ep_n)
         logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |ddm_n|= %4.3g',
@@ -402,12 +403,6 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mf.dm_elec = lib.tag_array(mf.dm_elec, mo_coeff=mo_coeff_e, mo_occ=mo_occ_e)
         vhf_e = mf.mf_elec.get_veff(mol.elec, mf.dm_elec, dm_elec_last, vhf_e)
 
-        fock_e = mf.mf_elec.get_fock(h1e + h_ep_e, s1e, vhf_e, mf.dm_elec)
-        norm_gorb_e = numpy.linalg.norm(mf.mf_elec.get_grad(mo_coeff_e, mo_occ_e, fock_e))
-        if not TIGHT_GRAD_CONV_TOL:
-            norm_gorb_e = norm_gorb_e / numpy.sqrt(norm_gorb_e.size)
-        norm_ddm_e = numpy.linalg.norm(mf.dm_elec - dm_elec_last)
-
         for i in range(mol.nuc_num):
             h1n[i] = mf.mf_nuc[i].get_hcore(mf.mf_nuc[i].mol)
             h_ep_n[i] = mf.mf_nuc[i].get_h_ep(mf.mf_nuc[i].mol, mf.dm_nuc[i])
@@ -418,6 +413,14 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             mf.dm_nuc[i], dm_nuc_last[i] = mf.mf_nuc[i].make_rdm1(mo_coeff_n[i], mo_occ_n[i]), mf.dm_nuc[i]
             veff_n[i] = mf.mf_nuc[i].get_veff(mf.mf_nuc[i].mol, mf.dm_nuc[i])
         norm_ddm_n = numpy.linalg.norm(numpy.array(mf.dm_nuc) - numpy.array(dm_nuc_last))
+
+        h1e = mf.mf_elec.get_hcore(mol.elec)
+        h_ep_e = mf.mf_elec.get_h_ep(mol.elec, mf.dm_elec)
+        fock_e = mf.mf_elec.get_fock(h1e + h_ep_e, s1e, vhf_e, mf.dm_elec)
+        norm_gorb_e = numpy.linalg.norm(mf.mf_elec.get_grad(mo_coeff_e, mo_occ_e, fock_e))
+        if not TIGHT_GRAD_CONV_TOL:
+            norm_gorb_e = norm_gorb_e / numpy.sqrt(norm_gorb_e.size)
+        norm_ddm_e = numpy.linalg.norm(mf.dm_elec - dm_elec_last)
 
         e_tot, last_e = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e, vhf_e, h1n, h_ep_n), e_tot
         conv_tol = conv_tol * 10
