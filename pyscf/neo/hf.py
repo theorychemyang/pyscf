@@ -328,6 +328,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     mo_energy_n = [None] * mol.nuc_num
     mo_coeff_n = [None] * mol.nuc_num
     mo_occ_n = [None] * mol.nuc_num
+    fock_n = [None] * mol.nuc_num
 
     s1e = mf.mf_elec.get_ovlp(mol.elec)
     cond = lib.cond(s1e)
@@ -341,14 +342,15 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
 
     # Skip SCF iterations. Compute only the total energy of the initial density
     if mf.max_cycle <= 0:
-        fock_e = mf.mf_elec.get_fock(h1e + h_ep_e, s1e, vhf_e, mf.dm_elec)  # = h1e + vhf, no DIIS
+        fock_e = mf.mf_elec.get_fock(h1e, s1e, vhf_e + h_ep_e, mf.dm_elec)  # = h1e + vhf, no DIIS
         mo_energy_e, mo_coeff_e = mf.mf_elec.eig(fock_e, s1e)
         mo_occ_e = mf.mf_elec.get_occ(mo_energy_e, mo_coeff_e)
         mf.mf_elec.mo_energy = mo_energy_e
         mf.mf_elec.mo_coeff = mo_coeff_e
         mf.mf_elec.mo_occ = mo_occ_e
         for i in range(mol.nuc_num):
-            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(h1n[i] + h_ep_n[i] + veff_n[i], s1n[i])
+            fock_n[i] = mf.mf_nuc[i].get_fock(h1n[i], s1n[i], veff_n[i] + h_ep_n[i], mf.dm_nuc[i])
+            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(fock_n[i], s1n[i])
             mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_e[i])
             mf.mf_nuc[i].mo_energy = mo_energy_n[i]
             mf.mf_nuc[i].mo_coeff = mo_coeff_n[i]
@@ -358,7 +360,6 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         return scf_conv, e_tot, mo_energy_e, mo_coeff_e, mo_occ_e, \
                mo_energy_n, mo_coeff_n, mo_occ_n
 
-    # Only electrons need DIIS
     if isinstance(mf.mf_elec.diis, lib.diis.DIIS):
         mf_diis = mf.mf_elec.diis
     elif mf.mf_elec.diis:
@@ -368,6 +369,20 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mf_diis.rollback = mf.mf_elec.diis_space_rollback
     else:
         mf_diis = None
+    # Nuclei need DIIS when there is epc
+    mf_nuc_diis = [None] * mol.nuc_num
+    if hasattr(mf, 'epc') and mf.epc is not None:
+        for i in range(mol.nuc_num):
+            mf_nuc = mf.mf_nuc[i]
+            if isinstance(mf_nuc.diis, lib.diis.DIIS):
+                mf_nuc_diis[i] = mf_nuc.diis
+            elif mf_nuc.diis:
+                assert issubclass(mf_nuc.DIIS, lib.diis.DIIS)
+                mf_nuc_diis[i] = mf_nuc.DIIS(mf_nuc, mf_nuc.diis_file)
+                mf_nuc_diis[i].space = mf_nuc.diis_space
+                mf_nuc_diis[i].rollback = mf_nuc.diis_space_rollback
+            else:
+                mf_nuc_diis[i] = None
 
     if dump_chk and mf.chkfile:
         # Explicit overwrite the mol object in chkfile
@@ -389,7 +404,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         last_e = e_tot
 
         # set up the electronic Hamiltonian and diagonalize it
-        fock_e = mf.mf_elec.get_fock(h1e + h_ep_e, s1e, vhf_e, mf.dm_elec, cycle, mf_diis)
+        fock_e = mf.mf_elec.get_fock(h1e, s1e, vhf_e + h_ep_e, mf.dm_elec, cycle, mf_diis)
         mo_energy_e, mo_coeff_e = mf.mf_elec.eig(fock_e, s1e)
         mo_occ_e = mf.mf_elec.get_occ(mo_energy_e, mo_coeff_e)
         mf.dm_elec = mf.mf_elec.make_rdm1(mo_coeff_e, mo_occ_e)
@@ -412,7 +427,9 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
                 logger.debug(mf, 'f of %s(%i) atom: %s' %(mf.mf_nuc[i].mol.atom_symbol(ia), ia, mf.f[ia]))
                 logger.debug(mf, '1st de of L: %s', opt.fun)
             else:
-                mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(h1n[i] + h_ep_n[i] + veff_n[i], s1n[i])
+                fock_n[i] = mf.mf_nuc[i].get_fock(h1n[i], s1n[i], veff_n[i] + h_ep_n[i], mf.dm_nuc[i],
+                                                  cycle, mf_nuc_diis[i])
+                mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(fock_n[i], s1n[i])
                 mf.mf_nuc[i].mo_energy, mf.mf_nuc[i].mo_coeff = mo_energy_n[i], mo_coeff_n[i]
                 mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_n[i])
                 mf.mf_nuc[i].mo_occ = mo_occ_n[i]
@@ -430,7 +447,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         # Here Fock matrix is h1e + vhf, without DIIS.  Calling get_fock
         # instead of the statement "fock = h1e + vhf" because Fock matrix may
         # be modified in some methods.
-        fock_e = mf.mf_elec.get_fock(h1e + h_ep_e, s1e, vhf_e, mf.dm_elec)  # = h1e + vhf, no DIIS
+        fock_e = mf.mf_elec.get_fock(h1e, s1e, vhf_e + h_ep_e, mf.dm_elec)  # = h1e + vhf, no DIIS
         norm_gorb_e = numpy.linalg.norm(mf.mf_elec.get_grad(mo_coeff_e, mo_occ_e, fock_e))
         if not TIGHT_GRAD_CONV_TOL:
             norm_gorb_e = norm_gorb_e / numpy.sqrt(norm_gorb_e.size)
@@ -466,7 +483,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         for i in range(mol.nuc_num):
             h1n[i] = mf.mf_nuc[i].get_hcore(mf.mf_nuc[i].mol)
             h_ep_n[i] = mf.mf_nuc[i].get_h_ep(mf.mf_nuc[i].mol, mf.dm_nuc[i])
-            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(h1n[i] + h_ep_n[i] + veff_n[i], s1n[i])
+            fock_n[i] = mf.mf_nuc[i].get_fock(h1n[i], s1n[i], veff_n[i] + h_ep_n[i], mf.dm_nuc[i])
+            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(fock_n[i], s1n[i])
             mf.mf_nuc[i].mo_energy, mf.mf_nuc[i].mo_coeff = mo_energy_n[i], mo_coeff_n[i]
             mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_n[i])
             mf.mf_nuc[i].mo_occ = mo_occ_n[i]
@@ -477,7 +495,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
 
         h1e = mf.mf_elec.get_hcore(mol.elec)
         h_ep_e = mf.mf_elec.get_h_ep(mol.elec, mf.dm_elec)
-        fock_e = mf.mf_elec.get_fock(h1e + h_ep_e, s1e, vhf_e, mf.dm_elec)
+        fock_e = mf.mf_elec.get_fock(h1e, s1e, vhf_e + h_ep_e, mf.dm_elec)
         norm_gorb_e = numpy.linalg.norm(mf.mf_elec.get_grad(mo_coeff_e, mo_occ_e, fock_e))
         if not TIGHT_GRAD_CONV_TOL:
             norm_gorb_e = norm_gorb_e / numpy.sqrt(norm_gorb_e.size)
