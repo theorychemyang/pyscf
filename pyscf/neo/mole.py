@@ -76,7 +76,10 @@ class Mole(gto.mole.Mole):
         nuc.nelectron = 2
 
         # fractional
-        nuc.nnuc = frac
+        if frac is not None:
+            nuc.nnuc = frac
+        else:
+            nuc.nnuc = 1
 
         return nuc
 
