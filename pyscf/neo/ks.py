@@ -67,6 +67,8 @@ class KS(HF):
     def __init__(self, mol, unrestricted=False, epc=None):
         HF.__init__(self, mol)
 
+        if mol.elec.nhomo is not None:
+            unrestricted = True
         self.unrestricted = unrestricted
         self.epc = epc # electron-proton correlation: '17-1' or '17-2' can be used
 
@@ -83,6 +85,8 @@ class KS(HF):
         else:
             self.mf_elec.get_h_ep = self.get_h_ep_elec
         self.mf_elec.super_mf = self
+        if mol.elec.nhomo is not None:
+            self.mf_elec.get_occ = self.get_occ_elec(self.mf_elec)
 
         # build grids (Note: high-density grids are needed since nuclei is more localized than electrons)
         self.mf_elec.grids.build(with_non0tab=False)

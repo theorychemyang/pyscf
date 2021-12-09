@@ -47,11 +47,62 @@ def get_hcore_nuc(mol, dm_elec, dm_nuc, mol_elec=None, mol_nuc=None):
     return h
 
 def get_occ_nuc(mf):
+    '''Label the occupation for each orbital of the quantum nucleus'''
     def get_occ(mo_energy=mf.mo_energy, mo_coeff=mf.mo_coeff):
-        '''Label the occupation for each orbital of the quantum nucleus'''
         e_idx = numpy.argsort(mo_energy)
         mo_occ = numpy.zeros(mo_energy.size)
-        mo_occ[e_idx[mf.occ_state]] = 1
+        mo_occ[e_idx[mf.occ_state]] = mf.mol.nnuc # 1 or fractional
+        return mo_occ
+    return get_occ
+
+def get_occ_elec(mf):
+    '''To support fractional occupations'''
+    def get_occ(mo_energy=mf.mo_energy, mo_coeff=mf.mo_coeff):
+        if mo_energy is None: mo_energy = mf.mo_energy
+        e_idx_a = numpy.argsort(mo_energy[0])
+        e_idx_b = numpy.argsort(mo_energy[1])
+        e_sort_a = mo_energy[0][e_idx_a]
+        e_sort_b = mo_energy[1][e_idx_b]
+        nmo = mo_energy[0].size
+        n_a, n_b = mf.nelec
+        mo_occ = numpy.zeros_like(mo_energy)
+        # change the homo occupation to fractional
+        if n_a > n_b or n_b <= 0:
+            mo_occ[0,e_idx_a[:n_a - 1]] = 1
+            mo_occ[0,e_idx_a[n_a - 1]] = mf.mol.nhomo
+            mo_occ[1,e_idx_b[:n_b]] = 1
+        else:
+            mo_occ[1,e_idx_b[:n_b - 1]] = 1
+            mo_occ[1,e_idx_b[n_b - 1]] = mf.mol.nhomo
+            mo_occ[0,e_idx_a[:n_a]] = 1
+        if mf.verbose >= logger.INFO and n_a < nmo and n_b > 0 and n_b < nmo:
+            if e_sort_a[n_a-1]+1e-3 > e_sort_a[n_a]:
+                logger.warn(mf, 'alpha nocc = %d  HOMO %.15g >= LUMO %.15g',
+                            n_a, e_sort_a[n_a-1], e_sort_a[n_a])
+            else:
+                logger.info(mf, '  alpha nocc = %d  HOMO = %.15g  LUMO = %.15g',
+                            n_a, e_sort_a[n_a-1], e_sort_a[n_a])
+
+            if e_sort_b[n_b-1]+1e-3 > e_sort_b[n_b]:
+                logger.warn(mf, 'beta  nocc = %d  HOMO %.15g >= LUMO %.15g',
+                            n_b, e_sort_b[n_b-1], e_sort_b[n_b])
+            else:
+                logger.info(mf, '  beta  nocc = %d  HOMO = %.15g  LUMO = %.15g',
+                            n_b, e_sort_b[n_b-1], e_sort_b[n_b])
+
+            if e_sort_a[n_a-1]+1e-3 > e_sort_b[n_b]:
+                logger.warn(mf, 'system HOMO %.15g >= system LUMO %.15g',
+                            e_sort_b[n_a-1], e_sort_b[n_b])
+
+            numpy.set_printoptions(threshold=nmo)
+            logger.debug(mf, '  alpha mo_energy =\n%s', mo_energy[0])
+            logger.debug(mf, '  beta  mo_energy =\n%s', mo_energy[1])
+            numpy.set_printoptions(threshold=1000)
+
+        if mo_coeff is not None and mf.verbose >= logger.DEBUG:
+            ss, s = mf.spin_square((mo_coeff[0][:,mo_occ[0]>0],
+                                    mo_coeff[1][:,mo_occ[1]>0]), mf.get_ovlp())
+            logger.debug(mf, 'multiplicity <S^2> = %.8g  2S+1 = %.8g', ss, s)
         return mo_occ
     return get_occ
 
@@ -467,6 +518,8 @@ class HF(scf.hf.SCF):
 
     def __init__(self, mol, unrestricted=False):
         scf.hf.SCF.__init__(self, mol)
+        if mol.elec.nhomo is not None:
+            unrestricted = True
         self.unrestricted = unrestricted
         self.mf_elec = None
         # dm_elec will be the total density after SCF, but can be spin
@@ -490,6 +543,8 @@ class HF(scf.hf.SCF):
         self.mf_elec.get_hcore = self.get_hcore_elec
         self.mf_elec.get_h_ep = self.get_h_ep_elec
         self.mf_elec.super_mf = self
+        if mol.elec.nhomo is not None:
+            self.mf_elec.get_occ = self.get_occ_elec(self.mf_elec)
 
         # nuclear part
         for i in range(mol.nuc_num):
@@ -523,6 +578,9 @@ class HF(scf.hf.SCF):
 
     def get_occ_nuc(self, mf):
         return get_occ_nuc(mf)
+
+    def get_occ_elec(self, mf):
+        return get_occ_elec(mf)
 
     def get_hcore_nuc(self, mol):
         return get_hcore_nuc(mol, self.dm_elec, self.dm_nuc, self.mol.elec, self.mol.nuc)
