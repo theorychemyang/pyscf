@@ -57,7 +57,7 @@ class KS(HF):
     Example:
     >>> from pyscf import neo
     >>> mol = neo.Mole()
-    >>> mol.build(atom = 'H 0 0 0; F 0 0 0.917', basis = 'ccpvdz', quantum_nuc=[0])
+    >>> mol.build(atom='H 0 0 0; F 0 0 0.917', basis='ccpvdz', quantum_nuc=[0])
     >>> mf = neo.KS(mol, epc='17-2')
     >>> mf.scf()
     '''

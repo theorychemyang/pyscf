@@ -17,7 +17,7 @@ class Gradients(lib.StreamObject):
     Example:
 
     >>> mol = neo.Mole()
-    >>> mol.build(atom = 'H 0 0 0.00; C 0 0 1.064; N 0 0 2.220', basis = 'ccpvtz')
+    >>> mol.build(atom='H 0 0 0.00; C 0 0 1.064; N 0 0 2.220', basis='ccpvtz')
     >>> mf = neo.CDFT(mol)
     >>> mf.mf_elec.xc = 'b3lyp'
     >>> mf.scf()

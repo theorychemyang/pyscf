@@ -13,7 +13,7 @@ class CDFT(KS):
     Example:
 
     >>> mol = neo.Mole()
-    >>> mol.build(atom = 'H 0.0 0.0 0.0; C 0.0 0.0 1.064; N 0.0 0.0 2.220', basis = 'ccpvdz')
+    >>> mol.build(atom='H 0.0 0.0 0.0; C 0.0 0.0 1.064; N 0.0 0.0 2.220', basis='ccpvdz')
     >>> mf = neo.CDFT(mol)
     >>> mf.scf()
     '''

@@ -510,7 +510,7 @@ class HF(scf.hf.SCF):
 
     >>> from pyscf import neo
     >>> mol = neo.Mole()
-    >>> mol.build(atom = 'H 0 0 0; F 0 0 0.917', basis = 'ccpvdz')
+    >>> mol.build(atom='H 0 0 0; F 0 0 0.917', basis='ccpvdz')
     >>> mf = neo.HF(mol)
     >>> mf.scf()
 
