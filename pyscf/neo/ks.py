@@ -45,13 +45,11 @@ def eval_xc_elec(epc, rho_e, rho_n):
 
     rho_product = numpy.multiply(rho_e, rho_n)
     denominator = a - b * numpy.sqrt(rho_product) + c * rho_product
-    exc = - numpy.multiply(rho_n, 1 / denominator)
-
     denominator = numpy.square(denominator)
     numerator = -a * rho_n + numpy.multiply(numpy.sqrt(rho_product), rho_n) * b * 0.5
     vxc = numpy.multiply(numerator, 1 / denominator)
 
-    return exc, vxc
+    return vxc
 
 
 class KS(HF):
@@ -147,7 +145,6 @@ class KS(HF):
         nao = mol.nao_nr()
         shls_slice = (0, mol.nbas)
         ao_loc = mol.ao_loc_nr()
-        excsum = 0
         vmat = numpy.zeros((nao, nao))
 
         grids = self.mf_elec.grids
@@ -166,9 +163,7 @@ class KS(HF):
                         rho_elec = eval_rho(mol, ao_elec, dm)
                     ao_nuc = eval_ao(self.mol.nuc[i], coords)
                     rho_nuc = eval_rho(self.mol.nuc[i], ao_nuc, self.dm_nuc[i])
-                    exc_i, vxc_i = eval_xc_elec(self.epc, rho_elec, rho_nuc)
-                    den = rho_elec * weight
-                    excsum += numpy.dot(den, exc_i)
+                    vxc_i = eval_xc_elec(self.epc, rho_elec, rho_nuc)
                     # times 0.5 because vmat + vmat.T
                     aow = _scale_ao(ao_elec, 0.5 * weight * vxc_i, out=aow)
                     vmat += _dot_ao_ao(mol, ao_elec, aow, mask, shls_slice, ao_loc)
