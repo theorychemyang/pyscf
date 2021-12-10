@@ -418,15 +418,19 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             h1n[i] = mf.mf_nuc[i].get_hcore(mf.mf_nuc[i].mol)
             h_ep_n[i] = mf.mf_nuc[i].get_h_ep(mf.mf_nuc[i].mol, mf.dm_nuc[i])
             # optimize f in cNEO
+            skip = False
             if isinstance(mf, neo.CDFT):
                 ia = mf.mf_nuc[i].mol.atom_index
                 fx = numpy.einsum('xij,x->ij', int1e_r[i], mf.f[ia])
                 opt = scipy.optimize.root(mf.first_order_de, mf.f[ia],
-                                          args=(mf.mf_nuc[i], h1n[i] + h_ep_n[i] - fx,
-                                                veff_n[i], s1n[i], int1e_r[i]), method='hybr')
+                                          args=(mf.mf_nuc[i], h1n[i] - fx, veff_n[i] + h_ep_n[i],
+                                                s1n[i], int1e_r[i]), method='hybr')
                 logger.debug(mf, 'f of %s(%i) atom: %s' %(mf.mf_nuc[i].mol.atom_symbol(ia), ia, mf.f[ia]))
                 logger.debug(mf, '1st de of L: %s', opt.fun)
-            else:
+                if mf_nuc_diis[i] is None:
+                    # skip the extra diagonalization if epc is not present and DIIS is disabled
+                    skip = True
+            if not skip:
                 fock_n[i] = mf.mf_nuc[i].get_fock(h1n[i], s1n[i], veff_n[i] + h_ep_n[i], mf.dm_nuc[i],
                                                   cycle, mf_nuc_diis[i])
                 mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(fock_n[i], s1n[i])
