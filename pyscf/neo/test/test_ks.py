@@ -13,13 +13,13 @@ class KnownValues(unittest.TestCase):
 
     def test_scf_epc17_1(self):
         mf = neo.KS(mol, epc='17-1')
-        mf.max_cycle = 1000
-        self.assertAlmostEqual(mf.scf(), -93.3963856345767, 7) # can not converged with 1e-9
+        mf.max_cycle = 2000
+        self.assertAlmostEqual(mf.scf(), -93.3963856345767, 5)
 
     def test_scf_epc17_2(self):
         mf = neo.KS(mol, epc='17-2')
         mf.max_cycle = 1000
-        self.assertAlmostEqual(mf.scf(), -93.3670499235643, 8)
+        self.assertAlmostEqual(mf.scf(), -93.3670499235643, 5)
 
 
 if __name__ == "__main__":
