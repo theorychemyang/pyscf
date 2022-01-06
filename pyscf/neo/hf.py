@@ -22,28 +22,50 @@ def get_hcore_nuc(mol, dm_elec, dm_nuc, mol_elec=None, mol_nuc=None):
     if mol_elec is None: mol_elec = super_mol.elec
     if mol_nuc is None: mol_nuc = super_mol.nuc
     ia = mol.atom_index
-    mass = super_mol.mass[ia] * nist.ATOMIC_MASS / nist.E_MASS # the mass of the quantum nucleus in a.u.
+    # the mass of the quantum nucleus in a.u.
+    mass = super_mol.mass[ia] * nist.ATOMIC_MASS / nist.E_MASS
     charge = super_mol.atom_charge(ia)
     # nuclear kinetic energy and Coulomb interactions with classical nuclei
     h = mol.intor_symmetric('int1e_kin') / mass
     h -= mol.intor_symmetric('int1e_nuc') * charge
+    # find the index of mol
+    # TODO: store this information
+    i = 0
+    for j in range(super_mol.nuc_num):
+        ja = mol_nuc[j].atom_index
+        if ja == ia:
+            i = j
+            break
     # Coulomb interaction between the quantum nucleus and electrons
+    ne_U = 0.0
     if dm_elec.ndim > 2:
-        h -= scf.jk.get_jk((mol, mol, mol_elec, mol_elec),
-                           dm_elec[0] + dm_elec[1], scripts='ijkl,lk->ij',
-                           intor='int2e', aosym ='s4') * charge
+        jcross = -scf.jk.get_jk((mol, mol, mol_elec, mol_elec),
+                                dm_elec[0] + dm_elec[1], scripts='ijkl,lk->ij',
+                                intor='int2e', aosym='s4') * charge
     else:
-        h -= scf.jk.get_jk((mol, mol, mol_elec, mol_elec),
-                           dm_elec, scripts='ijkl,lk->ij',
-                           intor='int2e', aosym ='s4') * charge
+        jcross = -scf.jk.get_jk((mol, mol, mol_elec, mol_elec),
+                                dm_elec, scripts='ijkl,lk->ij',
+                                intor='int2e', aosym='s4') * charge
+    h += jcross
+    if isinstance(dm_nuc[i], numpy.ndarray):
+        ne_U = numpy.einsum('ij,ji', jcross, dm_nuc[i]) # n-e Coulomb energy
     # Coulomb interactions between quantum nuclei
-    if len(dm_nuc) == len(mol_nuc) == super_mol.nuc_num:
-        for j in range(super_mol.nuc_num):
-            ja = mol_nuc[j].atom_index
-            if ja != ia and isinstance(dm_nuc[j], numpy.ndarray):
-                h += scf.jk.get_jk((mol, mol, mol_nuc[j], mol_nuc[j]),
-                                   dm_nuc[j], scripts='ijkl,lk->ij', intor='int2e') * charge \
-                     * super_mol.atom_charge(ja)
+    nn_U = 0.0
+    if super_mol.nuc_num > 1: # n-n exists only when there are 2 or more
+        jcross = 0.0
+        if len(dm_nuc) == len(mol_nuc) == super_mol.nuc_num:
+            for j in range(super_mol.nuc_num):
+                ja = mol_nuc[j].atom_index
+                if ja != ia and isinstance(dm_nuc[j], numpy.ndarray):
+                    jcross += scf.jk.get_jk((mol, mol, mol_nuc[j], mol_nuc[j]),
+                                            dm_nuc[j], scripts='ijkl,lk->ij',
+                                            intor='int2e', aosym='s4') * charge \
+                              * super_mol.atom_charge(ja)
+        h += jcross
+        if isinstance(dm_nuc[i], numpy.ndarray):
+            nn_U = numpy.einsum('ij,ji', jcross, dm_nuc[i]) # n-n Coulomb energy
+    # attach n-e and n-n Coulomb to h to use later when calculating the total energy
+    h = lib.tag_array(h, ne_U=ne_U, nn_U=nn_U)
     return h
 
 def get_occ_nuc(mf):
@@ -135,40 +157,6 @@ def get_hcore_elec(mol, dm_nuc, mol_nuc=None):
 def get_veff_nuc_bare(mol, dm):
     return numpy.zeros((mol.nao_nr(), mol.nao_nr()))
 
-def elec_nuc_coulomb(super_mol, dm_elec, dm_nuc):
-    '''Coulomb energy between electrons and quantum nuclei'''
-    E = 0
-    if super_mol.nuc_num > 0:
-        mol_elec = super_mol.elec
-        mol_nuc = super_mol.nuc
-        jcross = 0
-        for i in range(super_mol.nuc_num):
-            ia = mol_nuc[i].atom_index
-            charge = super_mol.atom_charge(ia)
-            jcross -= scf.jk.get_jk((mol_elec, mol_elec, mol_nuc[i], mol_nuc[i]),
-                                    dm_nuc[i], scripts='ijkl,lk->ij', intor='int2e', aosym='s4') * charge
-        if dm_elec.ndim > 2:
-            E = numpy.einsum('ij,ji', jcross, dm_elec[0] + dm_elec[1])
-        else:
-            E = numpy.einsum('ij,ji', jcross, dm_elec)
-    logger.debug(super_mol, 'Energy of e-n Coulomb interactions: %s', E)
-    return E
-
-def nuc_nuc_coulomb(super_mol, dm_nuc):
-    '''Coulomb energy between quantum nuclei'''
-    E = 0
-    mol_nuc = super_mol.nuc
-    for i in range(super_mol.nuc_num - 1):
-        ia = mol_nuc[i].atom_index
-        for j in range(i + 1, super_mol.nuc_num):
-            ja = mol_nuc[j].atom_index
-            jcross = scf.jk.get_jk((mol_nuc[i], mol_nuc[i], mol_nuc[j], mol_nuc[j]),
-                                   dm_nuc[j], scripts='ijkl,lk->ij', intor='int2e', aosym='s4') \
-                     * super_mol.atom_charge(ia) * super_mol.atom_charge(ja)
-            E += numpy.einsum('ij,ji', jcross, dm_nuc[i])
-    logger.debug(super_mol, 'Energy of n-n Comlomb interactions: %s', E)
-    return E
-
 def energy_qmnuc(mf, h1n, dm_nuc, veff_n=None):
     '''Energy of the quantum nucleus'''
     ia = mf.mol.atom_index
@@ -201,8 +189,14 @@ def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,
         E_tot += mf_nuc[i].energy_qmnuc(mf_nuc[i], h1n[i], dm_nuc[i], veff_n=veff_n[i])
     # substract double-counted terms and add classical nuclear repulsion
     super_mol = mf_elec.mol.super_mol
-    E_tot = E_tot - elec_nuc_coulomb(super_mol, dm_elec, dm_nuc) \
-            - nuc_nuc_coulomb(super_mol, dm_nuc) + mf_elec.energy_nuc()
+    ne_U = 0.0
+    nn_U = 0.0
+    for i in range(len(mf_nuc)):
+        ne_U += h1n[i].ne_U
+        nn_U += 0.5 * h1n[i].nn_U
+    logger.debug(super_mol, 'Energy of e-n Coulomb interactions: %s', ne_U)
+    logger.debug(super_mol, 'Energy of n-n Coulomb interactions: %s', nn_U)
+    E_tot = E_tot - ne_U - nn_U + mf_elec.energy_nuc()
     return E_tot
 
 def init_guess_mixed(mol, mixing_parameter = numpy.pi/4):

@@ -4,6 +4,7 @@
 Constrained nuclear-electronic orbital density functional theory
 '''
 import numpy
+from pyscf import lib
 from pyscf import scf
 from pyscf.neo.ks import KS
 
@@ -34,7 +35,8 @@ class CDFT(KS):
         h = super().get_hcore_nuc(mol)
         # an extra term in cNEO due to the constraint on the expectation position
         ia = mol.atom_index
-        h += numpy.einsum('xij,x->ij', mol.intor_symmetric('int1e_r', comp=3), self.f[ia])
+        h = lib.tag_array(h + numpy.einsum('xij,x->ij', mol.intor_symmetric('int1e_r', comp=3), self.f[ia]),
+                          ne_U=h.ne_U, nn_U=h.nn_U)
         return h
 
     def first_order_de(self, f, mf, h1, veff, s1n, int1e_r):
