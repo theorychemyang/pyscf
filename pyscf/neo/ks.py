@@ -79,9 +79,7 @@ class KS(HF):
         self.mf_elec.xc = 'b3lyp' # use b3lyp as the default xc functional for electrons
         self.mf_elec.get_hcore = self.get_hcore_elec
         if self.epc is not None:
-            self.mf_elec.get_h_ep = self.get_h_ep_elec_epc
-        else:
-            self.mf_elec.get_h_ep = self.get_h_ep_elec
+            self.mf_elec.get_veff = self.get_veff_elec_epc
         self.mf_elec.super_mf = self
         if mol.elec.nhomo is not None:
             self.mf_elec.get_occ = self.get_occ_elec(self.mf_elec)
@@ -100,13 +98,12 @@ class KS(HF):
                 mf_nuc.occ_state = 0 # for Delta-SCF
                 mf_nuc.get_occ = self.get_occ_nuc(mf_nuc)
                 mf_nuc.get_hcore = self.get_hcore_nuc
-                mf_nuc.get_h_ep = self.get_h_ep_nuc_epc
-                mf_nuc.get_veff = self.get_veff_nuc_bare
+                mf_nuc.get_veff = self.get_veff_nuc_epc
                 mf_nuc.energy_qmnuc = self.energy_qmnuc
                 mf_nuc.super_mf = self
 
-    def get_h_ep_nuc_epc(self, mol, dm):
-        '''EP contribution to nuclear part'''
+    def get_veff_nuc_epc(self, mol, dm, dm_last=None, vhf_last=None, hermi=1):
+        '''Add EPC contribution to nuclear veff'''
         nao = mol.nao_nr()
         shls_slice = (0, mol.nbas)
         ao_loc = mol.ao_loc_nr()
@@ -140,8 +137,8 @@ class KS(HF):
         vmat = lib.tag_array(vmat, exc=excsum, ecoul=0, vj=0, vk=0)
         return vmat
 
-    def get_h_ep_elec_epc(self, mol, dm):
-        '''EP contribution to electronic part'''
+    def get_veff_elec_epc(self, mol, dm, dm_last=None, vhf_last=None, hermi=1):
+        '''Add EPC contribution to electronic veff'''
         nao = mol.nao_nr()
         shls_slice = (0, mol.nbas)
         ao_loc = mol.ao_loc_nr()
@@ -168,15 +165,20 @@ class KS(HF):
                     aow = _scale_ao(ao_elec, 0.5 * weight * vxc_i, out=aow)
                     vmat += _dot_ao_ao(mol, ao_elec, aow, mask, shls_slice, ao_loc)
         vmat += vmat.conj().T
-        return vmat
+        if dm.ndim > 2:
+            veff = dft.uks.get_veff(self.mf_elec, mol, dm, dm_last, vhf_last, hermi)
+        else:
+            veff = dft.rks.get_veff(self.mf_elec, mol, dm, dm_last, vhf_last, hermi)
+        vxc = lib.tag_array(veff + vmat, ecoul=veff.ecoul, exc=veff.exc, vj=veff.vj, vk=veff.vk)
+        return vxc
 
-    def energy_qmnuc(self, mf_nuc, h1n, dm_nuc, h_ep=None):
+    def energy_qmnuc(self, mf_nuc, h1n, dm_nuc, veff_n=None):
         '''energy of quantum nuclei by NEO-DFT'''
         n1 = numpy.einsum('ij,ji', h1n, dm_nuc)
         ia = mf_nuc.mol.atom_index
         if self.mol.atom_symbol(ia) == 'H' and self.epc is not None:
-            if h_ep is None:
-                h_ep = mf_nuc.get_h_ep_nuc(mf_nuc.mol, dm_nuc)
-            n1 += h_ep.exc
+            if veff_n is None:
+                veff_n = mf_nuc.get_veff(mf_nuc.mol, dm_nuc)
+            n1 += veff_n.exc
         logger.debug(self, 'Energy of %s (%3d): %s', self.mol.atom_symbol(ia), ia, n1)
         return n1

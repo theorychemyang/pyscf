@@ -62,10 +62,10 @@ class CDFT(KS):
         ints = numpy.einsum('...pq,p,qj->...j', ints, coeff[:,0].conj(), coeff[:,1:])
         return 2*numpy.einsum('ij,lj,j->il', ints, ints.conj(), de).real
 
-    def energy_qmnuc(self, mf_nuc, h1n, dm_nuc, h_ep=None):
+    def energy_qmnuc(self, mf_nuc, h1n, dm_nuc, veff_n=None):
         ia = mf_nuc.mol.atom_index
         h_r = numpy.einsum('xij,x->ij', mf_nuc.mol.intor_symmetric('int1e_r', comp=3), self.f[ia])
-        e = super().energy_qmnuc(mf_nuc, h1n, dm_nuc, h_ep=h_ep) - numpy.einsum('ij,ji', h_r, dm_nuc)
+        e = super().energy_qmnuc(mf_nuc, h1n, dm_nuc, veff_n=veff_n) - numpy.einsum('ij,ji', h_r, dm_nuc)
         return e
 
     def nuc_grad_method(self):
