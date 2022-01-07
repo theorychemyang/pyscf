@@ -1,11 +1,11 @@
 /* Copyright 2014-2018 The PySCF Developers. All Rights Reserved.
-  
+
    Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
- 
+
         http://www.apache.org/licenses/LICENSE-2.0
- 
+
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -97,6 +97,42 @@ void CVHFics2kl_kl_s1ij_o0(double *eri, double *dm, double *vj,
                 ij++;
         }
         vj[ic*nao+jc] += vj_ij;
+}
+
+void CVHFics4_ij_s2kl_o0_diff_size(double *eri, double *dm, double *vj,
+                                   int nao_v, int nao_dm, int ic, int jc)
+{
+        int i, j, ij;
+        double dm_ij;
+
+        if (ic > jc) {
+                dm_ij = dm[ic*nao_dm+jc] + dm[jc*nao_dm+ic];
+        } else if (ic == jc) {
+                dm_ij = dm[ic*nao_dm+ic];
+        } else {
+                return;
+        }
+
+        for (i = 0, ij = 0; i < nao_v; i++) {
+                for (j = 0; j <= i; j++, ij++) {
+                        vj[i*nao_v+j] += eri[ij] * dm_ij;
+                }
+        }
+}
+
+void CVHFics2kl_kl_s1ij_o0_diff_size(double *eri, double *dm, double *vj,
+                                     int nao_v, int nao_dm, int ic, int jc)
+{
+        int i, j, ij;
+        double vj_ij = 0;
+        for (i = 0, ij = 0; i < nao_dm; i++) {
+                for (j = 0; j < i; j++, ij++) {
+                        vj_ij += eri[ij] *(dm[i*nao_dm+j]+dm[j*nao_dm+i]);
+                }
+                vj_ij += eri[ij] * dm[i*nao_dm+i];
+                ij++;
+        }
+        vj[ic*nao_v+jc] += vj_ij;
 }
 
 
@@ -458,11 +494,24 @@ void CVHFics4_ij_s2kl(double *eri, double *dm, double *vj,
 {
         CVHFics4_ij_s2kl_o0(eri, dm, vj, nao, ic, jc);
 }
+void CVHFics4_ij_s2kl_diff_size(double *eri, double *dm, double *vj,
+                                int nao_v, int nao_dm, int ic, int jc)
+{
+        CVHFics4_ij_s2kl_o0_diff_size(eri, dm, vj, nao_v, nao_dm, ic, jc);
+}
 void CVHFics4_kl_s2ij(double *eri, double *dm, double *vj,
                       int nao, int ic, int jc)
 {
         if (ic >= jc) {
                 CVHFics2kl_kl_s1ij_o0(eri, dm, vj, nao, ic, jc);
+        }
+}
+void CVHFics4_kl_s2ij_diff_size(double *eri, double *dm, double *vj,
+                                int nao_v, int nao_dm, int ic, int jc)
+{
+        if (ic >= jc) {
+                CVHFics2kl_kl_s1ij_o0_diff_size(eri, dm, vj, nao_v,
+                                                nao_dm, ic, jc);
         }
 }
 
@@ -621,6 +670,8 @@ void CVHFics2kl_il_s1jk(double *eri, double *dm, double *vk,
  **************************************************/
 typedef void (*FjkPtr)(double *eri, double *dm, double *vk,
                        int nao, int ic, int jc);
+typedef void (*FjkPtr_diff_size)(double *eri, double *dm, double *vk,
+                                 int nao_v, int nao_dm, int ic, int jc);
 void CVHFnrs8_incore_drv(double *eri, double **dms, double **vjk,
                          int n_dm, int nao, void (**fjk)())
 {
@@ -680,6 +731,86 @@ void CVHFnrs4_incore_drv(double *eri, double **dms, double **vjk,
                                 pf = fjk[ic];
                                 pv = v_priv + ic*nn;
                                 (*pf)(eri+off, dms[ic], pv, nao, i, j);
+                        }
+                }
+#pragma omp critical
+                {
+                        for (ic = 0; ic < n_dm; ic++) {
+                                pv = vjk[ic];
+                                for (i = 0; i < nn; i++) {
+                                        pv[i] += v_priv[ic*nn+i];
+                                }
+                        }
+                }
+                free(v_priv);
+        }
+}
+
+void CVHFnrs4_incore_drv_diff_size_v_dm(double *eri, double **dms,
+                                        double **vjk, int n_dm,
+                                        int nao_v, int nao_dm,
+                                        void (**fjk)())
+{
+#pragma omp parallel default(none) \
+        shared(eri, dms, vjk, n_dm, nao_v, nao_dm, fjk)
+        {
+                int i, j, ic;
+                size_t ij, off;
+                size_t npair_v = nao_v*(nao_v+1)/2;
+                size_t npair_dm = nao_dm*(nao_dm+1)/2;
+                size_t nn = nao_v * nao_v;
+                double *v_priv = calloc(nn*n_dm, sizeof(double));
+                FjkPtr_diff_size pf;
+                double *pv;
+#pragma omp for nowait schedule(dynamic, 4)
+                for (ij = 0; ij < npair_v; ij++) {
+                        i = (int)(sqrt(2*ij+.25) - .5 + 1e-7);
+                        j = ij - i*(i+1)/2;
+                        off = ij * npair_dm;
+                        for (ic = 0; ic < n_dm; ic++) {
+                                pf = fjk[ic];
+                                pv = v_priv + ic*nn;
+                                (*pf)(eri+off, dms[ic], pv, nao_v, nao_dm, i, j);
+                        }
+                }
+#pragma omp critical
+                {
+                        for (ic = 0; ic < n_dm; ic++) {
+                                pv = vjk[ic];
+                                for (i = 0; i < nn; i++) {
+                                        pv[i] += v_priv[ic*nn+i];
+                                }
+                        }
+                }
+                free(v_priv);
+        }
+}
+
+void CVHFnrs4_incore_drv_diff_size_dm_v(double *eri, double **dms,
+                                        double **vjk, int n_dm,
+                                        int nao_v, int nao_dm,
+                                        void (**fjk)())
+{
+#pragma omp parallel default(none) \
+        shared(eri, dms, vjk, n_dm, nao_v, nao_dm, fjk)
+        {
+                int i, j, ic;
+                size_t ij, off;
+                size_t npair_v = nao_v*(nao_v+1)/2;
+                size_t npair_dm = nao_dm*(nao_dm+1)/2;
+                size_t nn = nao_v * nao_v;
+                double *v_priv = calloc(nn*n_dm, sizeof(double));
+                FjkPtr_diff_size pf;
+                double *pv;
+#pragma omp for nowait schedule(dynamic, 4)
+                for (ij = 0; ij < npair_dm; ij++) {
+                        i = (int)(sqrt(2*ij+.25) - .5 + 1e-7);
+                        j = ij - i*(i+1)/2;
+                        off = ij * npair_v;
+                        for (ic = 0; ic < n_dm; ic++) {
+                                pf = fjk[ic];
+                                pv = v_priv + ic*nn;
+                                (*pf)(eri+off, dms[ic], pv, nao_v, nao_dm, i, j);
                         }
                 }
 #pragma omp critical
