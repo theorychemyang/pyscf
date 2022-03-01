@@ -7,5 +7,6 @@ from pyscf.neo.cdft import CDFT
 from pyscf.neo.grad import Gradients
 from pyscf.neo.cphf import CPHF
 from pyscf.neo.hessian import Hessian
-from pyscf.neo.ase import Pyscf_NEO, Pyscf_DFT
+#from pyscf.neo.ase import Pyscf_NEO, Pyscf_DFT
+from pyscf.neo.mp2 import MP2
 #import pyscf.neo.pbc
