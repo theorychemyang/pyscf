@@ -67,10 +67,16 @@ def tearDownModule():
     del mol, rhf, mf, myucc, mol_s2, mf_s2, eris
 
 class KnownValues(unittest.TestCase):
-#    def test_with_df(self):
-#        mf = scf.UHF(mol).density_fit(auxbasis='weigend').run()
-#        mycc = cc.UCCSD(mf).run()
-#        self.assertAlmostEqual(mycc.e_tot, -76.118403942938741, 7)
+
+    def test_with_df_s0(self):
+        mf = scf.UHF(mol).density_fit(auxbasis='weigend').run()
+        mycc = cc.UCCSD(mf).run()
+        self.assertAlmostEqual(mycc.e_tot, -76.118403942938741, 7)
+
+    def test_with_df_s2(self):
+        mf = scf.UHF(mol_s2).density_fit(auxbasis='weigend').run()
+        mycc = cc.UCCSD(mf).run()
+        self.assertAlmostEqual(mycc.e_tot, -75.83360033370676, 7)
 
     def test_ERIS(self):
         ucc1 = cc.UCCSD(mf)
@@ -505,7 +511,7 @@ class KnownValues(unittest.TestCase):
         orbspin[1::2] = 1
         orbspin[nocc-1] = 0
         orbspin[nocc  ] = 1
-        eri1 = numpy.zeros([nao*2]*4, dtype=numpy.complex)
+        eri1 = numpy.zeros([nao*2]*4, dtype=numpy.complex128)
         idxa = numpy.where(orbspin == 0)[0]
         idxb = numpy.where(orbspin == 1)[0]
         eri1[idxa[:,None,None,None],idxa[:,None,None],idxa[:,None],idxa] = eri0aa

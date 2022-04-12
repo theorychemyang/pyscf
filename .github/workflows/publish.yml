@@ -17,7 +17,7 @@ jobs:
         uses: docker://pyscf/pyscf-pypa-env:latest
         with:
           entrypoint: /build-wheels.sh
-          #args: http://www.sunqm.net/pyscf/files/bin/pyscf-2.0-deps-openblas.tar.gz
+          #args: http://www.sunqm.net/pyscf/files/bin/pyscf-2.1a-deps.tar.gz
       - name: List available wheels
         run: |
           ls ${{ github.workspace }}/linux-wheels
@@ -57,7 +57,7 @@ jobs:
     runs-on: macos-latest
     strategy:
       matrix:
-        python-version: [3.6, 3.7]
+        python-version: [3.6, 3.7, 3.8]
     steps:
       - uses: actions/checkout@v2
       - name: Set up Python ${{ matrix.python-version }}
@@ -75,8 +75,7 @@ jobs:
         run: |
             pip install twine
             export TWINE_USERNAME=__token__
-            export TWINE_PASSWORD="${{ secrets.PYPI_TEST_API_TOKEN }}"
-            # export TWINE_REPOSITORY_URL="https://test.pypi.org/legacy/"
+            export TWINE_PASSWORD="${{ secrets.PYPI_API_TOKEN }}"
             twine upload --verbose ${{ github.workspace }}/mac-wheels/*
 
   # This pipeline builds conda-python3.7 only
