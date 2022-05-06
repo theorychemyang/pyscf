@@ -4,6 +4,7 @@
 Nuclear Electronic Orbital Hartree-Fock (NEO-HF)
 '''
 
+import copy
 import ctypes
 import numpy
 import scipy
@@ -477,7 +478,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     cput1 = logger.timer(mf, 'initialize scf', *cput0)
     for cycle in range(mf.max_cycle):
         dm_elec_last = numpy.copy(mf.dm_elec) # why didn't pyscf.scf.hf use copy?
-        dm_nuc_last = numpy.copy(mf.dm_nuc)
+        dm_nuc_last = copy.deepcopy(mf.dm_nuc)
         last_e = e_tot
 
         # set up the electronic Hamiltonian and diagonalize it
