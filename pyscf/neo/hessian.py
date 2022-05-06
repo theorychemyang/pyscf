@@ -254,9 +254,9 @@ class Hessian(lib.StreamObject):
                 s1aa = s1aa.reshape(3, 3, nao, nao)
                 s1aa += s1aa.transpose(0, 1, 3, 2)
 
-                r1aa = mf_nuc.mol.intor('int1e_ppr', comp=27).reshape(3, 3, 3, nao, nao)
+                r1aa = mf_nuc.mol.intor('int1e_ipipr', comp=27).reshape(3, 3, 3, nao, nao)
                 r1aa = numpy.einsum('xyzpq, z->xypq', r1aa, self.base.f[index])
-                r1aa2 = mf_nuc.mol.intor('int1e_prp', comp=27).reshape(3, 3, 3, nao, nao)
+                r1aa2 = mf_nuc.mol.intor('int1e_iprip', comp=27).reshape(3, 3, 3, nao, nao)
                 r1aa += numpy.einsum('xyzpq, y->xzpq', r1aa2, self.base.f[index])
                 r1aa += r1aa.transpose(0, 1, 3, 2)
 
@@ -516,5 +516,3 @@ class Hessian(lib.StreamObject):
 
 from pyscf.neo import CDFT
 CDFT.Hessian = lib.class_as_method(Hessian)
-
-
