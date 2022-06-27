@@ -91,7 +91,7 @@ class KS(HF):
         for i in range(mol.nuc_num):
             ia = self.mol.nuc[i].atom_index
             # only support electron-proton correlation
-            if self.epc is not None and self.mol.atom_symbol(ia) == 'H':
+            if self.epc is not None and self.mol.atom_pure_symbol(ia) == 'H':
                 self.mf_nuc[i] = dft.RKS(self.mol.nuc[i])
                 mf_nuc = self.mf_nuc[i]
                 # need to repeat these lines because self.mf_nuc got overwritten
@@ -150,7 +150,7 @@ class KS(HF):
         aow = None
         for i in range(self.mol.nuc_num):
             ia = self.mol.nuc[i].atom_index
-            if self.mol.atom_symbol(ia) == 'H':
+            if self.mol.atom_pure_symbol(ia) == 'H':
                 for ao, mask, weight, coords in ni.block_loop(mol, grids, nao):
                     aow = numpy.ndarray(ao.shape, order='F', buffer=aow)
                     ao_elec = eval_ao(mol, coords)
@@ -176,7 +176,7 @@ class KS(HF):
         '''energy of quantum nuclei by NEO-DFT'''
         n1 = numpy.einsum('ij,ji', h1n, dm_nuc)
         ia = mf_nuc.mol.atom_index
-        if self.mol.atom_symbol(ia) == 'H' and self.epc is not None:
+        if self.mol.atom_pure_symbol(ia) == 'H' and self.epc is not None:
             if veff_n is None:
                 veff_n = mf_nuc.get_veff(mf_nuc.mol, dm_nuc)
             n1 += veff_n.exc
