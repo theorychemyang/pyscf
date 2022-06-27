@@ -375,7 +375,7 @@ def init_guess_nuc_by_chkfile(mol, chkfile_name):
     return dm_nuc
 
 def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
-           dump_chk=False, dm0e=None, dm0n=[], callback=None, conv_check=True, **kwargs):
+           dump_chk=False, dm0e=None, dm0n=None, callback=None, conv_check=True, **kwargs):
     cput0 = (logger.process_clock(), logger.perf_counter())
     if conv_tol_grad is None:
         conv_tol_grad = numpy.sqrt(conv_tol)
@@ -385,7 +385,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mf.dm_elec = mf.get_init_guess_elec(mol, mf.init_guess)
     else:
         mf.dm_elec = dm0e
-    if len(dm0n) < mol.nuc_num:
+    if dm0n is None or len(dm0n) < mol.nuc_num:
         mf.dm_nuc = mf.get_init_guess_nuc(mol, mf.init_guess)
         # if mf.init_guess is not 'chkfile', then it only affects the electronic part
     else:
