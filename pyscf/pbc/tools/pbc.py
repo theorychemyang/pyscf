@@ -461,7 +461,7 @@ def madelung(cell, kpts):
         Gv, Gvbase, weights = ecell.get_Gv_weights(ecell.mesh)
         coulG = get_coulG(ecell, Gv=Gv)
         ZSI = np.einsum("i,ij->j", ecell.atom_charges(), ecell.get_SI(Gv))
-        return -np.einsum('i,i,i->', ZSI.conj(), ZSI, coulG*weights).real
+        return 2*cell.omega/np.pi**0.5-np.einsum('i,i,i->', ZSI.conj(), ZSI, coulG*weights).real
 
 
 def get_monkhorst_pack_size(cell, kpts):
@@ -633,7 +633,7 @@ def cutoff_to_mesh(a, cutoff):
 
     Args:
         a : (3,3) ndarray
-            The real-space unit cell lattice vectors. Each row represents a
+            The real-space cell lattice vectors. Each row represents a
             lattice vector.
         cutoff : float
             KE energy cutoff in a.u.

@@ -213,7 +213,7 @@ energy_elec = mol_hf.energy_elec
 
 def dip_moment(cell, dm, unit='Debye', verbose=logger.NOTE,
                grids=None, rho=None, kpt=np.zeros(3), origin=None):
-    ''' Dipole moment in the unit cell (is it well defined)?
+    ''' Dipole moment in the cell (is it well defined)?
 
     Args:
          cell : an instance of :class:`Cell`
@@ -246,7 +246,7 @@ def dip_moment(cell, dm, unit='Debye', verbose=logger.NOTE,
     if origin is None:
         origin = _search_dipole_gauge_origin(cell, grids, rho, log)
 
-    # Move the unit cell to the position around the origin.
+    # Move the cell to the position around the origin.
     def shift_grids(r):
         r_frac = lib.dot(r - origin, b.T)
         # Grids on the boundary (r_frac == +/-0.5) of the new cell may lead to
@@ -562,6 +562,8 @@ class SCF(mol_hf.SCF):
             logger.info(self, '    Total energy shift due to Ewald probe charge'
                         ' = -1/2 * Nelec*madelung = %.12g',
                         madelung*cell.nelectron * -.5)
+        if getattr(self, 'smearing_method', None) is not None:
+            logger.info(self, 'Smearing method = %s', self.smearing_method)
         logger.info(self, 'DF object = %s', self.with_df)
         if not getattr(self.with_df, 'build', None):
             # .dump_flags() is called in pbc.df.build function

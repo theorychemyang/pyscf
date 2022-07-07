@@ -359,7 +359,7 @@ def init_guess_by_chkfile(cell, chkfile_name, project=None, kpts=None):
 
 def dip_moment(cell, dm_kpts, unit='Debye', verbose=logger.NOTE,
                grids=None, rho=None, kpts=np.zeros((1,3))):
-    ''' Dipole moment in the unit cell (is it well defined)?
+    ''' Dipole moment in the cell (is it well defined)?
 
     Args:
          cell : an instance of :class:`Cell`
@@ -527,6 +527,8 @@ class KSCF(pbchf.SCF):
             logger.info(self, '    Total energy shift due to Ewald probe charge'
                         ' = -1/2 * Nelec*madelung = %.12g',
                         madelung*nelectron * -.5)
+        if getattr(self, 'smearing_method', None) is not None:
+            logger.info(self, 'Smearing method = %s', self.smearing_method)
         logger.info(self, 'DF object = %s', self.with_df)
         if not getattr(self.with_df, 'build', None):
             # .dump_flags() is called in pbc.df.build function
