@@ -253,7 +253,7 @@ def _get_epq(pindices,qindices,fac=[1.0,1.0],large_num=LARGE_DENOM):
     def get_idx(x0,x1,kx,n0_p):
         return np.logical_and(n0_p[kx] >= x0, n0_p[kx] < x1)
 
-    assert(all([len(x) == 5 for x in [pindices,qindices]]))
+    assert (all([len(x) == 5 for x in [pindices,qindices]]))
     p0,p1,kp,mo_e_p,nonzero_p = pindices
     q0,q1,kq,mo_e_q,nonzero_q = qindices
     fac_p, fac_q = fac
@@ -608,6 +608,11 @@ class RCCSD(pyscf.cc.ccsd.CCSD):
             # eris = self.ao2mo()
             eris = self.ao2mo(self.mo_coeff)
         self.eris = eris
+
+        self.e_hf = getattr(eris, 'e_hf', None)
+        if self.e_hf is None:
+            self.e_hf = self._scf.e_tot
+
         if mbpt2:
             self.e_corr, self.t1, self.t2 = self.init_amps(eris)
             return self.e_corr, self.t1, self.t2
