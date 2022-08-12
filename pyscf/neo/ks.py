@@ -15,7 +15,7 @@ def eval_xc_nuc(epc, rho_e, rho_n):
     b = 2.4
 
     if epc == '17-1':
-        c = 3.2 #TODO solve the convergence issue for epc17-1
+        c = 3.2
     elif epc == '17-2':
         c = 6.6
     else:
@@ -37,7 +37,7 @@ def eval_xc_elec(epc, rho_e, rho_n):
     b = 2.4
 
     if epc == '17-1':
-        c = 3.2 #TODO solve the convergence issue for epc17-1
+        c = 3.2
     elif epc == '17-2':
         c = 6.6
     else:

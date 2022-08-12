@@ -82,6 +82,8 @@ def get_hcore_nuc(mol, dm_elec, dm_nuc, mol_elec=None, mol_nuc=None,
     # nuclear kinetic energy and Coulomb interactions with classical nuclei
     h = mol.intor_symmetric('int1e_kin') / mass
     h -= mol.intor_symmetric('int1e_nuc') * charge
+    # TODO: this is not really the core Hamiltonian.
+    # TODO: avoid constructing the true core multiple times, as it is simply a waste.
     # find the index of mol
     # TODO: store this information
     i = 0
@@ -217,6 +219,7 @@ def get_init_guess_nuc(mf, mol):
         Returns:
         Density matrix, 2D ndarray
     '''
+    # TODO: SCF atom guess for quantum nuclei?
     h1n = mf.get_hcore(mol)
     s1n = mol.intor_symmetric('int1e_ovlp')
     mo_energy, mo_coeff = mf.eig(h1n, s1n)
@@ -241,10 +244,106 @@ def get_hcore_elec(mol, dm_nuc, mol_nuc=None, eri_ne=None):
                 j -= scf.jk.get_jk((mol, mol, mol_nuc[i], mol_nuc[i]),
                                    dm_nuc[i], scripts='ijkl,lk->ij', intor='int2e',
                                    aosym='s4') * charge
+    # TODO: this is not really the core Hamiltonian.
+    # TODO: avoid calling scf.hf.get_hcore multiple times, as it is simply a waste.
     return scf.hf.get_hcore(mol) + j
 
-def get_veff_nuc_bare(mol, dm):
+def get_veff_nuc_bare(mol):
     return numpy.zeros((mol.nao_nr(), mol.nao_nr()))
+
+def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
+             diis_start_cycle=None, level_shift_factor=None, damp_factor=None):
+    mol = mf.mol
+    if mf.dm_elec is None:
+        mf.dm_elec = mf.mf_elec.make_rdm1()
+    for i in range(mol.nuc_num):
+        if mf.dm_nuc[i] is None:
+            mf.dm_nuc[i] = mf.mf_nuc[i].make_rdm1()
+    if dm is None:
+        if mf.dm_elec.ndim > 2: # UHF/UKS
+            dm = [mf.dm_elec[0], mf.dm_elec[1]]
+        else:
+            dm = [mf.dm_elec]
+        dm += mf.dm_nuc
+    if s1e is None:
+        s1e_e = mf.mf_elec.get_ovlp(mol.elec)
+        if mf.dm_elec.ndim > 2: # UHF/UKS
+            s1e = [s1e_e, s1e_e]
+        else:
+            s1e = [s1e_e]
+        for i in range(mol.nuc_num):
+            s1e.append(mf.mf_nuc[i].get_ovlp(mol.nuc[i]))
+    if h1e is None:
+        h1e = [mf.mf_elec.get_hcore(mol.elec)] \
+              + [mf.mf_nuc[i].get_hcore(mol.nuc[i]) for i in range(mol.nuc_num)]
+    if vhf is None:
+        vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec)] \
+              + [mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i])
+                 for i in range(mol.nuc_num)]
+
+    if mf.dm_elec.ndim > 2: # UHF/UKS
+        f = [h1e[0] + vhf[0][0], h1e[0] + vhf[0][1]]
+    else:
+        f = [h1e[0] + vhf[0]]
+    for i in range(mol.nuc_num):
+        f.append(h1e[i + 1] + vhf[i + 1])
+
+    if cycle < 0 and diis is None:  # Not inside the SCF iteration
+        return f
+
+    if diis_start_cycle is None:
+        diis_start_cycle = mf.diis_start_cycle
+    if level_shift_factor is None:
+        level_shift_factor = mf.level_shift
+    if damp_factor is None:
+        damp_factor = mf.damp
+
+    if isinstance(level_shift_factor, (tuple, list, numpy.ndarray)):
+        if mf.dm_elec.ndim > 2:
+            shifta, shiftb, shiftp = level_shift_factor
+        else:
+            shifta, shiftp = level_shift_factor
+    else:
+        shifta = shiftb = shiftp = level_shift_factor
+    if isinstance(damp_factor, (tuple, list, numpy.ndarray)):
+        if mf.dm_elec.ndim > 2:
+            dampa, dampb, dampp = damp_factor
+        else:
+            dampa, dampp = damp_factor
+    else:
+        dampa = dampb = dampp = damp_factor
+
+    if 0 <= cycle < diis_start_cycle-1:
+        if mf.dm_elec.ndim > 2:
+            if abs(dampa)+abs(dampb) > 1e-4:
+                f[0] = scf.hf.damping(s1e[0], dm[0], f[0], dampa)
+                f[1] = scf.hf.damping(s1e[1], dm[1], f[1], dampb)
+            start = 2
+        else:
+            if abs(dampa) > 1e-4:
+                f[0] = scf.hf.damping(s1e[0], dm[0]*.5, f[0], dampa)
+            start = 1
+        if abs(dampp) > 1e-4:
+            for i in range(mol.nuc_num):
+                f[start + i] = scf.hf.damping(s1e[start + i], dm[start + i],
+                                              f[start + i], dampp)
+    if diis and cycle >= diis_start_cycle:
+        f = diis.update(s1e, dm, f)#, mf, h1e, vhf) # for now, CDIIS only
+        # WARNING: using EDIIS or ADIIS will give you errors
+    if mf.dm_elec.ndim > 2:
+        if abs(shifta)+abs(shiftb) > 1e-4:
+            f[0] = scf.hf.level_shift(s1e[0], dm[0], f[0], shifta)
+            f[1] = scf.hf.level_shift(s1e[1], dm[1], f[1], shiftb)
+        start = 2
+    else:
+        if abs(shifta) > 1e-4:
+            f[0] = scf.hf.level_shift(s1e[0], dm[0]*.5, f[0], shifta)
+        start = 1
+    if abs(shiftp) > 1e-4:
+        for i in range(mol.nuc_num):
+            f[start + i] = scf.hf.level_shift(s1e[start + i], dm[start + i],
+                                              f[start + i], shiftp)
+    return f
 
 def energy_qmnuc(mf, h1n, dm_nuc, veff_n=None):
     '''Energy of the quantum nucleus'''
@@ -375,30 +474,37 @@ def init_guess_nuc_by_chkfile(mol, chkfile_name):
     return dm_nuc
 
 def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
-           dump_chk=False, dm0e=None, dm0n=None, callback=None, conv_check=True, **kwargs):
+           dump_chk=False, dm0=None, callback=None, conv_check=True, **kwargs):
     cput0 = (logger.process_clock(), logger.perf_counter())
     if conv_tol_grad is None:
         conv_tol_grad = numpy.sqrt(conv_tol)
         logger.info(mf, 'Set gradient conv threshold to %g', conv_tol_grad)
     mol = mf.mol
-    if dm0e is None:
+    if dm0 is None:
         mf.dm_elec = mf.get_init_guess_elec(mol, mf.init_guess)
-    else:
-        mf.dm_elec = dm0e
-    if dm0n is None or len(dm0n) < mol.nuc_num:
+    elif isinstance(dm0, (tuple, list)):
+        mf.dm_elec = dm0[0]
+    elif isinstance(dm0, numpy.ndarray):
+        mf.dm_elec = dm0
+    if dm0 is None:
         mf.dm_nuc = mf.get_init_guess_nuc(mol, mf.init_guess)
         # if mf.init_guess is not 'chkfile', then it only affects the electronic part
+    elif isinstance(dm0, (tuple, list)) and len(dm0) >= mol.nuc_num + 1:
+        mf.dm_nuc = dm0[1 : 1+mol.nuc_num]
     else:
-        mf.dm_nuc = dm0n
+        mf.dm_nuc = mf.get_init_guess_nuc(mol, mf.init_guess)
 
-    h1e = mf.mf_elec.get_hcore(mol.elec)
-    vhf_e = mf.mf_elec.get_veff(mol.elec, mf.dm_elec)
-    h1n = []
-    veff_n = []
+    if mf.dm_elec.ndim > 2:
+        dm = [mf.dm_elec[0], mf.dm_elec[1]]
+    else:
+        dm = [mf.dm_elec]
+    dm += mf.dm_nuc
+    h1e = [mf.mf_elec.get_hcore(mol.elec)]
+    vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec)]
     for i in range(mol.nuc_num):
-        h1n.append(mf.mf_nuc[i].get_hcore(mol.nuc[i]))
-        veff_n.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i]))
-    e_tot = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e, vhf_e, h1n, veff_n)
+        h1e.append(mf.mf_nuc[i].get_hcore(mol.nuc[i]))
+        vhf.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i]))
+    e_tot = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e[0], vhf[0], h1e[1:], vhf[1:])
     logger.info(mf, 'init E= %.15g', e_tot)
 
     scf_conv = False
@@ -406,61 +512,53 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     mo_energy_n = [None] * mol.nuc_num
     mo_coeff_n = [None] * mol.nuc_num
     mo_occ_n = [None] * mol.nuc_num
-    fock_n = [None] * mol.nuc_num
 
-    s1e = mf.mf_elec.get_ovlp(mol.elec)
-    cond = lib.cond(s1e)
+    s1e_e = mf.mf_elec.get_ovlp(mol.elec)
+    if mf.dm_elec.ndim > 2:
+        s1e = [s1e_e, s1e_e]
+    else:
+        s1e = [s1e_e]
+    cond = lib.cond(s1e[0])
     logger.debug(mf, 'cond(S) = %s', cond)
     if numpy.max(cond) * 1e-17 > conv_tol:
         logger.warn(mf, 'Singularity detected in overlap matrix (condition number = %4.3g). '
                     'SCF may be inaccurate and hard to converge.', numpy.max(cond))
-    s1n = []
     for i in range(mol.nuc_num):
-        s1n.append(mf.mf_nuc[i].get_ovlp(mol.nuc[i]))
+        s1e.append(mf.mf_nuc[i].get_ovlp(mol.nuc[i]))
 
     # Skip SCF iterations. Compute only the total energy of the initial density
     if mf.max_cycle <= 0:
-        fock_e = mf.mf_elec.get_fock(h1e, s1e, vhf_e, mf.dm_elec)  # = h1e + vhf, no DIIS
-        mo_energy_e, mo_coeff_e = mf.mf_elec.eig(fock_e, s1e)
+        fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf, no DIIS
+        if mf.dm_elec.ndim > 2:
+            fock_e = numpy.array((fock[0], fock[1]))
+            start = 2
+        else:
+            fock_e = fock[0]
+            start = 1
+        mo_energy_e, mo_coeff_e = mf.mf_elec.eig(fock_e, s1e[0])
+        mf.mf_elec.mo_energy, mf.mf_elec.mo_coeff = mo_energy_e, mo_coeff_e
         mo_occ_e = mf.mf_elec.get_occ(mo_energy_e, mo_coeff_e)
-        mf.mf_elec.mo_energy = mo_energy_e
-        mf.mf_elec.mo_coeff = mo_coeff_e
         mf.mf_elec.mo_occ = mo_occ_e
         for i in range(mol.nuc_num):
-            fock_n[i] = mf.mf_nuc[i].get_fock(h1n[i], s1n[i], veff_n[i], mf.dm_nuc[i])
-            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(fock_n[i], s1n[i])
-            mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_e[i])
-            mf.mf_nuc[i].mo_energy = mo_energy_n[i]
-            mf.mf_nuc[i].mo_coeff = mo_coeff_n[i]
+            fock_n = fock[start + i]
+            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(fock_n, s1e[start + i])
+            mf.mf_nuc[i].mo_energy, mf.mf_nuc[i].mo_coeff = mo_energy_n[i], mo_coeff_n[i]
+            mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_n[i])
             mf.mf_nuc[i].mo_occ = mo_occ_n[i]
         if mf.dm_elec.ndim > 2:
             mf.dm_elec = mf.dm_elec[0] + mf.dm_elec[1]
         return scf_conv, e_tot, mo_energy_e, mo_coeff_e, mo_occ_e, \
                mo_energy_n, mo_coeff_n, mo_occ_n
 
-    if isinstance(mf.mf_elec.diis, lib.diis.DIIS):
-        mf_diis = mf.mf_elec.diis
-    elif mf.mf_elec.diis:
-        assert issubclass(mf.mf_elec.DIIS, lib.diis.DIIS)
-        mf_diis = mf.mf_elec.DIIS(mf.mf_elec, mf.mf_elec.diis_file)
-        mf_diis.space = mf.mf_elec.diis_space
-        mf_diis.rollback = mf.mf_elec.diis_space_rollback
+    if isinstance(mf.diis, lib.diis.DIIS):
+        mf_diis = mf.diis
+    elif mf.diis:
+        assert issubclass(mf.DIIS, lib.diis.DIIS)
+        mf_diis = mf.DIIS(mf, mf.diis_file)
+        mf_diis.space = mf.diis_space
+        mf_diis.rollback = mf.diis_space_rollback
     else:
         mf_diis = None
-    # Nuclei need DIIS when there is epc
-    mf_nuc_diis = [None] * mol.nuc_num
-    if hasattr(mf, 'epc') and mf.epc is not None:
-        for i in range(mol.nuc_num):
-            mf_nuc = mf.mf_nuc[i]
-            if isinstance(mf_nuc.diis, lib.diis.DIIS):
-                mf_nuc_diis[i] = mf_nuc.diis
-            elif mf_nuc.diis:
-                assert issubclass(mf_nuc.DIIS, lib.diis.DIIS)
-                mf_nuc_diis[i] = mf_nuc.DIIS(mf_nuc, mf_nuc.diis_file)
-                mf_nuc_diis[i].space = mf_nuc.diis_space
-                mf_nuc_diis[i].rollback = mf_nuc.diis_space_rollback
-            else:
-                mf_nuc_diis[i] = None
 
     if dump_chk and mf.chkfile:
         # Explicit overwrite the mol object in chkfile
@@ -481,63 +579,84 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         dm_nuc_last = copy.deepcopy(mf.dm_nuc)
         last_e = e_tot
 
-        # set up the electronic Hamiltonian and diagonalize it
-        fock_e = mf.mf_elec.get_fock(h1e, s1e, vhf_e, mf.dm_elec, cycle, mf_diis)
-        mo_energy_e, mo_coeff_e = mf.mf_elec.eig(fock_e, s1e)
+        fock = mf.get_fock(h1e, s1e, vhf, dm, cycle, mf_diis)
+        if mf.dm_elec.ndim > 2:
+            fock_e = numpy.array((fock[0], fock[1]))
+            start = 2
+        else:
+            fock_e = fock[0]
+            start = 1
+        mo_energy_e, mo_coeff_e = mf.mf_elec.eig(fock_e, s1e[0])
+        mf.mf_elec.mo_energy, mf.mf_elec.mo_coeff = mo_energy_e, mo_coeff_e
         mo_occ_e = mf.mf_elec.get_occ(mo_energy_e, mo_coeff_e)
+        mf.mf_elec.mo_occ = mo_occ_e
         mf.dm_elec = mf.mf_elec.make_rdm1(mo_coeff_e, mo_occ_e)
         # attach mo_coeff and mo_occ to dm to improve DFT get_veff efficiency
         mf.dm_elec = lib.tag_array(mf.dm_elec, mo_coeff=mo_coeff_e, mo_occ=mo_occ_e)
 
-        # set up the nuclear Hamiltonian and diagonalize it
         for i in range(mol.nuc_num):
-            # update nuclear core Hamiltonian after the electron density is updated
-            h1n[i] = mf.mf_nuc[i].get_hcore(mf.mf_nuc[i].mol)
             # optimize f in cNEO
-            skip = False
             if isinstance(mf, neo.CDFT):
-                ia = mf.mf_nuc[i].mol.atom_index
-                fx = numpy.einsum('xij,x->ij', int1e_r[i], mf.f[ia])
-                opt = scipy.optimize.root(mf.first_order_de, mf.f[ia],
-                                          args=(mf.mf_nuc[i], h1n[i] - fx, veff_n[i],
-                                                s1n[i], int1e_r[i]), method='hybr')
-                logger.debug(mf, 'f of %s(%i) atom: %s' %(mf.mf_nuc[i].mol.atom_symbol(ia), ia, mf.f[ia]))
-                logger.debug(mf, '1st de of L: %s', opt.fun)
-                if mf_nuc_diis[i] is None:
-                    # skip the extra diagonalization if epc is not present and DIIS is disabled
-                    skip = True
-            if not skip:
-                fock_n[i] = mf.mf_nuc[i].get_fock(h1n[i], s1n[i], veff_n[i], mf.dm_nuc[i],
-                                                  cycle, mf_nuc_diis[i])
-                mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(fock_n[i], s1n[i])
-                mf.mf_nuc[i].mo_energy, mf.mf_nuc[i].mo_coeff = mo_energy_n[i], mo_coeff_n[i]
-                mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_n[i])
-                mf.mf_nuc[i].mo_occ = mo_occ_n[i]
-                mf.dm_nuc[i] = mf.mf_nuc[i].make_rdm1(mo_coeff_n[i], mo_occ_n[i])
-            # update nuclear veff and possible ep correlation part after the diagonalization
-            veff_n[i] = mf.mf_nuc[i].get_veff(mf.mf_nuc[i].mol, mf.dm_nuc[i])
-        norm_ddm_n = numpy.linalg.norm(numpy.concatenate(mf.dm_nuc, axis=None).ravel()
-                                       - numpy.concatenate(dm_nuc_last, axis=None).ravel())
+                raise NotImplementedError("DIIS with CDFT is NYI.")
+                #ia = mf.mf_nuc[i].mol.atom_index
+                #fx = numpy.einsum('xij,x->ij', int1e_r[i], mf.f[ia])
+                #opt = scipy.optimize.root(mf.first_order_de, mf.f[ia],
+                #                          args=(mf.mf_nuc[i], h1n[i] - fx, veff_n[i],
+                #                                s1n[i], int1e_r[i]), method='hybr')
+                #logger.debug(mf, 'f of %s(%i) atom: %s' %(mf.mf_nuc[i].mol.atom_symbol(ia), ia, mf.f[ia]))
+                #logger.debug(mf, '1st de of L: %s', opt.fun)
+            fock_n = fock[start + i]
+            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(fock_n, s1e[start + i])
+            mf.mf_nuc[i].mo_energy, mf.mf_nuc[i].mo_coeff = mo_energy_n[i], mo_coeff_n[i]
+            mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_n[i])
+            mf.mf_nuc[i].mo_occ = mo_occ_n[i]
+            mf.dm_nuc[i] = mf.mf_nuc[i].make_rdm1(mo_coeff_n[i], mo_occ_n[i])
 
-        # update electronic core Hamiltonian after the nuclear density is updated
-        h1e = mf.mf_elec.get_hcore(mol.elec)
-        # also update the veff, along with the possible ep correlation part
-        vhf_e = mf.mf_elec.get_veff(mol.elec, mf.dm_elec, dm_elec_last, vhf_e)
+        if mf.dm_elec.ndim > 2:
+            dm = [mf.dm_elec[0], mf.dm_elec[1]]
+        else:
+            dm = [mf.dm_elec]
+        dm += mf.dm_nuc
+
+        # update the so-called "core" Hamiltonian and veff after the density is updated
+        h1e = [mf.mf_elec.get_hcore(mol.elec)]
+        vhf_last = vhf
+        vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec, dm_elec_last, vhf_last[0])]
+        for i in range(mol.nuc_num):
+            h1e.append(mf.mf_nuc[i].get_hcore(mol.nuc[i]))
+            vhf.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i], dm_nuc_last[i], vhf_last[1 + i]))
+        vhf_last = None
 
         # Here Fock matrix is h1e + vhf, without DIIS.  Calling get_fock
         # instead of the statement "fock = h1e + vhf" because Fock matrix may
         # be modified in some methods.
-        fock_e = mf.mf_elec.get_fock(h1e, s1e, vhf_e, mf.dm_elec)  # = h1e + vhf, no DIIS
+        fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf, no DIIS
+        if mf.dm_elec.ndim > 2:
+            fock_e = numpy.array((fock[0], fock[1]))
+            start = 2
+        else:
+            fock_e = fock[0]
+            start = 1
         norm_gorb_e = numpy.linalg.norm(mf.mf_elec.get_grad(mo_coeff_e, mo_occ_e, fock_e))
         if not TIGHT_GRAD_CONV_TOL:
             norm_gorb_e = norm_gorb_e / numpy.sqrt(norm_gorb_e.size)
         norm_ddm_e = numpy.linalg.norm(mf.dm_elec - dm_elec_last)
 
-        e_tot = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e, vhf_e, h1n, veff_n)
-        logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |ddm_n|= %4.3g',
-                    cycle + 1, e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e, norm_ddm_n)
+        grad_n = []
+        for i in range(mol.nuc_num):
+            fock_n = fock[start + i]
+            grad_n.append(mf.mf_nuc[i].get_grad(mo_coeff_n[i], mo_occ_n[i], fock_n))
+        norm_gorb_n = numpy.linalg.norm(numpy.concatenate(grad_n, axis=None))
+        if not TIGHT_GRAD_CONV_TOL:
+            norm_gorb_n = norm_gorb_n / numpy.sqrt(norm_gorb_n.size)
+        norm_ddm_n = numpy.linalg.norm(numpy.concatenate(mf.dm_nuc, axis=None)
+                                       - numpy.concatenate(dm_nuc_last, axis=None))
 
-        if abs(e_tot - last_e) < conv_tol and norm_gorb_e < conv_tol_grad:
+        e_tot = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e[0], vhf[0], h1e[1:], vhf[1:])
+        logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |g_n|= %4.3g  |ddm_n|= %4.3g',
+                    cycle + 1, e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e, norm_gorb_n, norm_ddm_n)
+
+        if abs(e_tot - last_e) < conv_tol and norm_gorb_e < conv_tol_grad and norm_gorb_n < conv_tol_grad:
             scf_conv = True
 
         if dump_chk:
@@ -554,38 +673,66 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     if scf_conv and conv_check:
         # An extra diagonalization, to remove level shift
         #fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf
-        mo_energy_e, mo_coeff_e = mf.mf_elec.eig(fock_e, s1e)
+        mo_energy_e, mo_coeff_e = mf.mf_elec.eig(fock_e, s1e[0])
+        mf.mf_elec.mo_energy, mf.mf_elec.mo_coeff = mo_energy_e, mo_coeff_e
         mo_occ_e = mf.mf_elec.get_occ(mo_energy_e, mo_coeff_e)
+        mf.mf_elec.mo_occ = mo_occ_e
         mf.dm_elec, dm_elec_last = mf.mf_elec.make_rdm1(mo_coeff_e, mo_occ_e), mf.dm_elec
         mf.dm_elec = lib.tag_array(mf.dm_elec, mo_coeff=mo_coeff_e, mo_occ=mo_occ_e)
 
         for i in range(mol.nuc_num):
-            h1n[i] = mf.mf_nuc[i].get_hcore(mf.mf_nuc[i].mol)
-            veff_n[i] = mf.mf_nuc[i].get_veff(mf.mf_nuc[i].mol, mf.dm_nuc[i])
-            fock_n[i] = mf.mf_nuc[i].get_fock(h1n[i], s1n[i], veff_n[i], mf.dm_nuc[i])
-            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(fock_n[i], s1n[i])
+            fock_n = fock[start + i]
+            mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(fock_n, s1e[start + i])
             mf.mf_nuc[i].mo_energy, mf.mf_nuc[i].mo_coeff = mo_energy_n[i], mo_coeff_n[i]
             mo_occ_n[i] = mf.mf_nuc[i].get_occ(mo_energy_n[i], mo_coeff_n[i])
             mf.mf_nuc[i].mo_occ = mo_occ_n[i]
             mf.dm_nuc[i], dm_nuc_last[i] = mf.mf_nuc[i].make_rdm1(mo_coeff_n[i], mo_occ_n[i]), mf.dm_nuc[i]
-        norm_ddm_n = numpy.linalg.norm(numpy.concatenate(mf.dm_nuc, axis=None).ravel()
-                                       - numpy.concatenate(dm_nuc_last, axis=None).ravel())
 
-        h1e = mf.mf_elec.get_hcore(mol.elec)
-        vhf_e = mf.mf_elec.get_veff(mol.elec, mf.dm_elec, dm_elec_last, vhf_e)
-        fock_e = mf.mf_elec.get_fock(h1e, s1e, vhf_e, mf.dm_elec)
+        if mf.dm_elec.ndim > 2:
+            dm = [mf.dm_elec[0], mf.dm_elec[1]]
+        else:
+            dm = [mf.dm_elec]
+        dm += mf.dm_nuc
+
+        # update the so-called "core" Hamiltonian and veff after the density is updated
+        h1e = [mf.mf_elec.get_hcore(mol.elec)]
+        vhf_last = vhf
+        vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec, dm_elec_last, vhf_last[0])]
+        for i in range(mol.nuc_num):
+            h1e.append(mf.mf_nuc[i].get_hcore(mol.nuc[i]))
+            vhf.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i], dm_nuc_last[i], vhf_last[1 + i]))
+        vhf_last = None
+
+        e_tot, last_e = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e[0], vhf[0], h1e[1:], vhf[1:]), e_tot
+
+        fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf, no DIIS
+        if mf.dm_elec.ndim > 2:
+            fock_e = numpy.array((fock[0], fock[1]))
+            start = 2
+        else:
+            fock_e = fock[0]
+            start = 1
         norm_gorb_e = numpy.linalg.norm(mf.mf_elec.get_grad(mo_coeff_e, mo_occ_e, fock_e))
         if not TIGHT_GRAD_CONV_TOL:
             norm_gorb_e = norm_gorb_e / numpy.sqrt(norm_gorb_e.size)
         norm_ddm_e = numpy.linalg.norm(mf.dm_elec - dm_elec_last)
 
-        e_tot, last_e = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e, vhf_e, h1n, veff_n), e_tot
+        grad_n = []
+        for i in range(mol.nuc_num):
+            fock_n = fock[start + i]
+            grad_n.append(mf.mf_nuc[i].get_grad(mo_coeff_n[i], mo_occ_n[i], fock_n))
+        norm_gorb_n = numpy.linalg.norm(numpy.concatenate(grad_n, axis=None))
+        if not TIGHT_GRAD_CONV_TOL:
+            norm_gorb_n = norm_gorb_n / numpy.sqrt(norm_gorb_n.size)
+        norm_ddm_n = numpy.linalg.norm(numpy.concatenate(mf.dm_nuc, axis=None)
+                                       - numpy.concatenate(dm_nuc_last, axis=None))
+
         conv_tol = conv_tol * 10
         conv_tol_grad = conv_tol_grad * 3
-        if abs(e_tot - last_e) < conv_tol or norm_gorb_e < conv_tol_grad:
+        if abs(e_tot - last_e) < conv_tol or (norm_gorb_e < conv_tol_grad and norm_gorb_n < conv_tol_grad):
             scf_conv = True
-        logger.info(mf, 'Extra cycle  E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |ddm_n|= %4.3g',
-                    e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e, norm_ddm_n)
+        logger.info(mf, 'Extra cycle  E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |g_n|=%4.3g  |ddm_n|= %4.3g',
+                    e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e, norm_gorb_n, norm_ddm_n)
         if dump_chk:
             mf.dump_chk(locals())
 
@@ -714,8 +861,12 @@ class HF(scf.hf.SCF):
         return get_hcore_nuc(mol, self.dm_elec, self.dm_nuc, self.mol.elec, self.mol.nuc,
                              eri_ne=self._eri_ne, eri_nn=self._eri_nn)
 
-    def get_veff_nuc_bare(self, mol, dm):
-        return get_veff_nuc_bare(mol, dm)
+    def get_veff_nuc_bare(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
+        if mol is None:
+            mol = self.mol
+        return get_veff_nuc_bare(mol)
+
+    get_fock = get_fock
 
     def energy_qmnuc(self, mf, h1n, dm_nuc, veff_n=None):
         return energy_qmnuc(mf, h1n, dm_nuc, veff_n=veff_n)

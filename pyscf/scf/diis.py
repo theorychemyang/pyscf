@@ -46,10 +46,26 @@ class CDIIS(lib.diis.DIIS):
     def update(self, s, d, f, *args, **kwargs):
         errvec = get_err_vec(s, d, f)
         logger.debug1(self, 'diis-norm(errvec)=%g', numpy.linalg.norm(errvec))
+        # for (C)NEO, need to ravel f and then reshape
+        sizes = [0]
+        shapes = []
+        need_reshape = False
+        if isinstance(f, (tuple, list)):
+            need_reshape = True
+            for a in f:
+                sizes.append(sizes[-1] + a.size)
+                shapes.append(a.shape)
+            f = numpy.concatenate(f, axis=None)
         xnew = lib.diis.DIIS.update(self, f, xerr=errvec)
         if self.rollback > 0 and len(self._bookkeep) == self.space:
             self._bookkeep = self._bookkeep[-self.rollback:]
-        return xnew
+        if need_reshape:
+            xnew_reshape = []
+            for i in range(len(shapes)):
+                xnew_reshape.append(xnew[sizes[i] : sizes[i+1]].reshape(shapes[i]))
+            return xnew_reshape
+        else:
+            return xnew
 
     def get_num_vec(self):
         if self.rollback:
@@ -72,10 +88,19 @@ def get_err_vec(s, d, f):
             errvec.append((sdf.T.conj() - sdf))
         errvec = numpy.vstack(errvec)
 
-    elif f.ndim == s.ndim+1 and f.shape[0] == 2:  # for UHF
+    elif isinstance(f, numpy.ndarray) and f.ndim == s.ndim+1 and \
+        f.shape[0] == 2:  # for UHF
         nao = s.shape[-1]
         s = lib.asarray((s,s)).reshape(-1,nao,nao)
         return get_err_vec(s, d.reshape(s.shape), f.reshape(s.shape))
+
+    elif isinstance(f, (tuple, list)):  # for (C)NEO
+        errvec = []
+        for i in range(len(f)):
+            sdf = reduce(numpy.dot, (s[i], d[i], f[i]))
+            errvec.append((sdf.T.conj() - sdf))
+        errvec = numpy.concatenate(errvec, axis=None)
+
     else:
         raise RuntimeError('Unknown SCF DIIS type')
     return errvec
@@ -204,4 +229,3 @@ def adiis_minimize(ds, fs, idnewest):
     res = scipy.optimize.minimize(costf, numpy.ones(nx), method='BFGS',
                                   jac=grad, tol=1e-9)
     return res.fun, (res.x**2)/(res.x**2).sum()
-
