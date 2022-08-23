@@ -8,6 +8,14 @@ from pyscf import lib
 from pyscf import scf
 from pyscf.neo.ks import KS
 
+def get_fock_add_cdft(f, int1e_r):
+    return numpy.einsum('xij,x->ij', int1e_r, f)
+
+def position_analysis(mf, fock, s1e, int1e_r):
+    mo_energy, mo_coeff = mf.eig(fock, s1e)
+    mo_occ = mf.get_occ(mo_energy, mo_coeff)
+    dm = mf.make_rdm1(mo_coeff, mo_occ)
+    return numpy.einsum('xij,ji->x', int1e_r, dm)
 
 class CDFT(KS):
     '''
@@ -27,48 +35,26 @@ class CDFT(KS):
         for i in range(len(self.mol.nuc)):
             mf = self.mf_nuc[i]
             mf.nuclei_expect_position = mf.mol.atom_coord(mf.mol.atom_index)
-            mf.get_hcore = self.get_hcore_nuc
-            mf.energy_qmnuc = self.energy_qmnuc
+            # the position matrix with its origin shifted to nuclear expectation position
+            s1e = mf.get_ovlp(mf.mol)
+            mf.int1e_r = mf.mol.intor_symmetric('int1e_r', comp=3) \
+                         - numpy.array([mf.nuclei_expect_position[i] * s1e for i in range(3)])
 
-    def get_hcore_nuc(self, mol):
-        '''get the core Hamiltonian for quantum nucleus in cNEO'''
-        h = super().get_hcore_nuc(mol)
-        # an extra term in cNEO due to the constraint on the expectation position
-        ia = mol.atom_index
-        h = lib.tag_array(h + numpy.einsum('xij,x->ij', mol.intor_symmetric('int1e_r', comp=3), self.f[ia]),
-                          ne_U=h.ne_U, nn_U=h.nn_U)
-        return h
+    def get_fock_add_cdft(self):
+        f_add = []
+        for i in range(len(self.mol.nuc)):
+            mf = self.mf_nuc[i]
+            ia = mf.mol.atom_index
+            f_add.append(get_fock_add_cdft(self.f[ia], mf.int1e_r))
+        return f_add
 
-    def first_order_de(self, f, mf, h1, veff, s1n, int1e_r):
-        '''The first order derivative of L w.r.t the Lagrange multiplier f'''
-        i = self.mf_nuc.index(mf)
+    def position_analysis(self, f, mf, fock0, s1e=None):
         ia = mf.mol.atom_index
         self.f[ia] = f
-        # add the f \cdot x potential to h1 (which is super().get_hcore_nuc) now
-        mf.mo_energy, mf.mo_coeff = mf.eig(h1 + veff + numpy.einsum('xij,x->ij', int1e_r, self.f[ia]), s1n)
-        mf.mo_occ = mf.get_occ(mf.mo_energy, mf.mo_coeff)
-        self.dm_nuc[i] = mf.make_rdm1(mf.mo_coeff, mf.mo_occ)
-
-        return numpy.einsum('xij,ji->x', int1e_r, self.dm_nuc[i]) - mf.nuclei_expect_position
-
-    def L_second_order(self, mf_nuc):
-        '''(not used) The (approximate) second-order derivative of L w.r.t f'''
-
-        energy = mf_nuc.mo_energy
-        coeff = mf_nuc.mo_coeff
-
-        ints = mf_nuc.mol.intor_symmetric('int1e_r', comp=3)
-
-        de = 1.0/(energy[0] - energy[1:])
-
-        ints = numpy.einsum('...pq,p,qj->...j', ints, coeff[:,0].conj(), coeff[:,1:])
-        return 2*numpy.einsum('ij,lj,j->il', ints, ints.conj(), de).real
-
-    def energy_qmnuc(self, mf_nuc, h1n, dm_nuc, veff_n=None):
-        ia = mf_nuc.mol.atom_index
-        h_r = numpy.einsum('xij,x->ij', mf_nuc.mol.intor_symmetric('int1e_r', comp=3), self.f[ia])
-        e = super().energy_qmnuc(mf_nuc, h1n, dm_nuc, veff_n=veff_n) - numpy.einsum('ij,ji', h_r, dm_nuc)
-        return e
+        if s1e is None:
+            s1e = mf.get_ovlp(mf.mol)
+        return position_analysis(mf, fock0 + get_fock_add_cdft(self.f[ia], mf.int1e_r),
+                                 s1e, mf.int1e_r)
 
     def nuc_grad_method(self):
         from pyscf.neo.grad import Gradients

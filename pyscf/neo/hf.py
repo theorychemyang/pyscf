@@ -252,7 +252,8 @@ def get_veff_nuc_bare(mol):
     return numpy.zeros((mol.nao_nr(), mol.nao_nr()))
 
 def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
-             diis_start_cycle=None, level_shift_factor=None, damp_factor=None):
+             diis_start_cycle=None, level_shift_factor=None, damp_factor=None,
+             diis_pos='both', diis_type=3):
     mol = mf.mol
     if mf.dm_elec is None:
         mf.dm_elec = mf.mf_elec.make_rdm1()
@@ -283,10 +284,21 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
 
     if mf.dm_elec.ndim > 2: # UHF/UKS
         f = [h1e[0] + vhf[0][0], h1e[0] + vhf[0][1]]
+        start = 2
     else:
         f = [h1e[0] + vhf[0]]
+        start = 1
     for i in range(mol.nuc_num):
         f.append(h1e[i + 1] + vhf[i + 1])
+
+    # CNEO constraint term
+    f0 = None
+    fock_add = None
+    if isinstance(mf, neo.CDFT):
+        f0 = copy.deepcopy(f) # Fock without constraint term
+        fock_add = mf.get_fock_add_cdft()
+        for i in range(mol.nuc_num):
+            f[start + i] = f0[start + i] + fock_add[i]
 
     if cycle < 0 and diis is None:  # Not inside the SCF iteration
         return f
@@ -298,6 +310,7 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
     if damp_factor is None:
         damp_factor = mf.damp
 
+    shifta = shiftb = shiftp = 0.0
     if isinstance(level_shift_factor, (tuple, list, numpy.ndarray)):
         if mf.dm_elec.ndim > 2:
             shifta, shiftb, shiftp = level_shift_factor
@@ -305,6 +318,7 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
             shifta, shiftp = level_shift_factor
     else:
         shifta = shiftb = shiftp = level_shift_factor
+    dampa = dampb = dampp = 0.0
     if isinstance(damp_factor, (tuple, list, numpy.ndarray)):
         if mf.dm_elec.ndim > 2:
             dampa, dampb, dampp = damp_factor
@@ -313,36 +327,99 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
     else:
         dampa = dampb = dampp = damp_factor
 
-    if 0 <= cycle < diis_start_cycle-1:
+    if isinstance(mf, neo.CDFT) and (diis_pos == 'pre' or diis_pos == 'both'):
+        # optimize f in cNEO
+        for i in range(mol.nuc_num):
+            ia = mf.mf_nuc[i].mol.atom_index
+            opt = scipy.optimize.root(mf.position_analysis, mf.f[ia],
+                                      args=(mf.mf_nuc[i], f0[start + i],
+                                            s1e[start + i]), method='hybr')
+            logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                         (mf.mf_nuc[i].mol.atom_symbol(ia), ia, mf.f[ia]))
+            logger.debug(mf, 'Position deviation: %s', opt.fun)
+        fock_add = mf.get_fock_add_cdft()
+        for i in range(mol.nuc_num):
+            f[start + i] = f0[start + i] + fock_add[i]
+
+    # damping only when not CNEO
+    if not isinstance(mf, neo.CDFT):
+        if 0 <= cycle < diis_start_cycle-1:
+            if mf.dm_elec.ndim > 2:
+                if abs(dampa)+abs(dampb) > 1e-4:
+                    f[0] = scf.hf.damping(s1e[0], dm[0], f[0], dampa)
+                    f[1] = scf.hf.damping(s1e[1], dm[1], f[1], dampb)
+                start = 2
+            else:
+                if abs(dampa) > 1e-4:
+                    f[0] = scf.hf.damping(s1e[0], dm[0]*.5, f[0], dampa)
+                start = 1
+            if abs(dampp) > 1e-4:
+                for i in range(mol.nuc_num):
+                    f[start + i] = scf.hf.damping(s1e[start + i], dm[start + i],
+                                                  f[start + i], dampp)
+
+    if diis and cycle >= diis_start_cycle:
+        if isinstance(mf, neo.CDFT):
+            # if CNEO, needs to manually use lib.diis and pack/unpack
+            sizes = [0]
+            shapes = []
+            for a in f:
+                sizes.append(sizes[-1] + a.size)
+                shapes.append(a.shape)
+            f_ravel = numpy.concatenate(f, axis=None)
+            if diis_type == 1:
+                f0_ravel = numpy.concatenate(f0, axis=None)
+                f_ravel = diis.update(f0_ravel, scf.diis.get_err_vec(s1e, dm, f))
+            elif diis_type == 2:
+                f_ravel = diis.update(f_ravel)
+            elif diis_type == 3:
+                f_ravel = diis.update(f_ravel, scf.diis.get_err_vec(s1e, dm, f))
+            else:
+                print("\nWARN: Unknow CDFT DIIS type, NO DIIS IS USED!!!\n")
+            f = []
+            for i in range(len(shapes)):
+                f.append(f_ravel[sizes[i] : sizes[i+1]].reshape(shapes[i]))
+            if diis_type == 1:
+                for i in range(mol.nuc_num):
+                    f[start + i] = f0[start + i] + fock_add[i]
+        else:
+            # if not CNEO, directly use the scf.diis object provided
+            f = diis.update(s1e, dm, f)
+            # WARNING: CDIIS only. Using EDIIS or ADIIS will cause errors
+
+    if isinstance(mf, neo.CDFT) and (diis_pos == 'post' or diis_pos == 'both'):
+        # notice that we redefine f0 as the extrapolated value, as f got extrapolated
+        f0 = copy.deepcopy(f)
+        for i in range(mol.nuc_num):
+            f0[start + i] = f[start + i] - fock_add[i]
+        # optimize f in cNEO
+        for i in range(mol.nuc_num):
+            ia = mf.mf_nuc[i].mol.atom_index
+            opt = scipy.optimize.root(mf.position_analysis, mf.f[ia],
+                                      args=(mf.mf_nuc[i], f0[start + i],
+                                            s1e[start + i]), method='hybr')
+            logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                         (mf.mf_nuc[i].mol.atom_symbol(ia), ia, mf.f[ia]))
+            logger.debug(mf, 'Position deviation: %s', opt.fun)
+        fock_add = mf.get_fock_add_cdft()
+        for i in range(mol.nuc_num):
+            f[start + i] = f0[start + i] + fock_add[i]
+
+    # level shift only when not CNEO
+    if not isinstance(mf, neo.CDFT):
         if mf.dm_elec.ndim > 2:
-            if abs(dampa)+abs(dampb) > 1e-4:
-                f[0] = scf.hf.damping(s1e[0], dm[0], f[0], dampa)
-                f[1] = scf.hf.damping(s1e[1], dm[1], f[1], dampb)
+            if abs(shifta)+abs(shiftb) > 1e-4:
+                f[0] = scf.hf.level_shift(s1e[0], dm[0], f[0], shifta)
+                f[1] = scf.hf.level_shift(s1e[1], dm[1], f[1], shiftb)
             start = 2
         else:
-            if abs(dampa) > 1e-4:
-                f[0] = scf.hf.damping(s1e[0], dm[0]*.5, f[0], dampa)
+            if abs(shifta) > 1e-4:
+                f[0] = scf.hf.level_shift(s1e[0], dm[0]*.5, f[0], shifta)
             start = 1
-        if abs(dampp) > 1e-4:
+        if abs(shiftp) > 1e-4:
             for i in range(mol.nuc_num):
-                f[start + i] = scf.hf.damping(s1e[start + i], dm[start + i],
-                                              f[start + i], dampp)
-    if diis and cycle >= diis_start_cycle:
-        f = diis.update(s1e, dm, f)#, mf, h1e, vhf) # for now, CDIIS only
-        # WARNING: using EDIIS or ADIIS will give you errors
-    if mf.dm_elec.ndim > 2:
-        if abs(shifta)+abs(shiftb) > 1e-4:
-            f[0] = scf.hf.level_shift(s1e[0], dm[0], f[0], shifta)
-            f[1] = scf.hf.level_shift(s1e[1], dm[1], f[1], shiftb)
-        start = 2
-    else:
-        if abs(shifta) > 1e-4:
-            f[0] = scf.hf.level_shift(s1e[0], dm[0]*.5, f[0], shifta)
-        start = 1
-    if abs(shiftp) > 1e-4:
-        for i in range(mol.nuc_num):
-            f[start + i] = scf.hf.level_shift(s1e[start + i], dm[start + i],
-                                              f[start + i], shiftp)
+                f[start + i] = scf.hf.level_shift(s1e[start + i], dm[start + i],
+                                                  f[start + i], shiftp)
     return f
 
 def energy_qmnuc(mf, h1n, dm_nuc, veff_n=None):
@@ -569,9 +646,9 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     mf.pre_kernel(locals())
 
     if isinstance(mf, neo.CDFT):
-        int1e_r = []
-        for i in range(mol.nuc_num):
-            int1e_r.append(mf.mf_nuc[i].mol.intor_symmetric('int1e_r', comp=3))
+        # mf_diis needs to be the raw lib.diis.DIIS() for CNEO
+        mf_diis = lib.diis.DIIS()
+        mf_diis.space = 8
 
     cput1 = logger.timer(mf, 'initialize scf', *cput0)
     for cycle in range(mf.max_cycle):
@@ -595,16 +672,6 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mf.dm_elec = lib.tag_array(mf.dm_elec, mo_coeff=mo_coeff_e, mo_occ=mo_occ_e)
 
         for i in range(mol.nuc_num):
-            # optimize f in cNEO
-            if isinstance(mf, neo.CDFT):
-                raise NotImplementedError("DIIS with CDFT is NYI.")
-                #ia = mf.mf_nuc[i].mol.atom_index
-                #fx = numpy.einsum('xij,x->ij', int1e_r[i], mf.f[ia])
-                #opt = scipy.optimize.root(mf.first_order_de, mf.f[ia],
-                #                          args=(mf.mf_nuc[i], h1n[i] - fx, veff_n[i],
-                #                                s1n[i], int1e_r[i]), method='hybr')
-                #logger.debug(mf, 'f of %s(%i) atom: %s' %(mf.mf_nuc[i].mol.atom_symbol(ia), ia, mf.f[ia]))
-                #logger.debug(mf, '1st de of L: %s', opt.fun)
             fock_n = fock[start + i]
             mo_energy_n[i], mo_coeff_n[i] = mf.mf_nuc[i].eig(fock_n, s1e[start + i])
             mf.mf_nuc[i].mo_energy, mf.mf_nuc[i].mo_coeff = mo_energy_n[i], mo_coeff_n[i]
