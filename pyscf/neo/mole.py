@@ -29,7 +29,7 @@ class Mole(gto.mole.Mole):
         self.elec = None # a Mole object for NEO-electron and classical nuclei
         self.nuc = [] # a list of Mole objects for quantum nuclei
 
-    def build_nuc_mole(self, atom_index, frac=None):
+    def build_nuc_mole(self, atom_index, nuc_basis='pb4d', frac=None):
         '''
         Return a Mole object for specified quantum nuclei.
 
@@ -43,12 +43,18 @@ class Mole(gto.mole.Mole):
         nuc = gto.Mole() # a Mole object for quantum nuclei
         nuc.atom_index = atom_index
         nuc.super_mol = self
+        nuc.basis_name = None
 
         dirnow = os.path.realpath(os.path.join(__file__, '..'))
         if self.atom_symbol(atom_index) == 'H@2':
-            basis = gto.basis.parse(open(os.path.join(dirnow, 'basis/s-pb4d.dat')).read())
+            with open(os.path.join(dirnow, 'basis/s-'+nuc_basis+'.dat'), 'r') as f:
+                basis = gto.basis.parse(f.read())
+                nuc.basis_name = nuc_basis
         elif self.atom_pure_symbol(atom_index) == 'H':
-            basis = gto.basis.parse(open(os.path.join(dirnow, 'basis/pb4d.dat')).read())
+            with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
+                basis = gto.basis.parse(f.read())
+                nuc.basis_name = nuc_basis
+            # old even-tempered basis for H
             #alpha = 2 * numpy.sqrt(2) * self.mass[atom_index]
             #beta = numpy.sqrt(2)
             #n = 8
@@ -83,7 +89,7 @@ class Mole(gto.mole.Mole):
 
         return nuc
 
-    def build(self, quantum_nuc='all', q_nuc_occ=None, **kwargs):
+    def build(self, quantum_nuc='all', nuc_basis='pb4d', q_nuc_occ=None, **kwargs):
         '''assign which nuclei are treated quantum mechanically by quantum_nuc (list)'''
         super().build(self, **kwargs)
 
@@ -146,5 +152,5 @@ class Mole(gto.mole.Mole):
         idx = 0
         for i in range(self.natm):
             if self.quantum_nuc[i] == True:
-                self.nuc.append(self.build_nuc_mole(i, frac=q_nuc_occ[idx]))
+                self.nuc.append(self.build_nuc_mole(i, nuc_basis=nuc_basis, frac=q_nuc_occ[idx]))
                 idx += 1

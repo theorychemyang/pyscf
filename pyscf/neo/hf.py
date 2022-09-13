@@ -538,7 +538,8 @@ def init_guess_nuc_by_calculation(mf_nuc, mol):
     for i in range(mol.nuc_num):
         ia = mol.nuc[i].atom_index
         mol_tmp = neo.Mole()
-        mol_tmp.build(atom=mol.atom, charge=mol.charge, spin=mol.spin, quantum_nuc=[ia])
+        mol_tmp.build(atom=mol.atom, charge=mol.charge, spin=mol.spin,
+                      quantum_nuc=[ia], nuc_basis=mol.nuc[i].basis_name)
         dm_nuc[i] = get_init_guess_nuc(mf_nuc[i], mol_tmp.nuc[0])
     return dm_nuc
 
