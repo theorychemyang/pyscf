@@ -61,7 +61,7 @@ class Gradients(lib.StreamObject):
         return vrinv + vrinv.transpose(0,2,1)
 
     def grad_jcross_elec_nuc(self):
-        'get the gradient for the cross term of Coulomb interactions between electrons and quantum nuclus'
+        'get the gradient for the cross term of Coulomb interactions between electrons and quantum nucleus'
         jcross = 0
         for i in range(len(self.mol.nuc)):
             index = self.mol.nuc[i].atom_index
@@ -117,11 +117,6 @@ class Gradients(lib.StreamObject):
                 for i in range(len(self.mol.nuc)):
                     if self.mol.nuc[i].atom_index == ia:
                         self.de[k] += numpy.einsum('xij,ij->x', self.get_hcore(self.mol.nuc[i]), self.scf.dm_nuc[i])*2
-                        self.de[k] -= numpy.einsum('xij,ij->x', self.get_ovlp(self.mol.nuc[i]),
-                                                   self.make_rdm1e(self.scf.mf_nuc[i]))*2
-                        self.de[k] -= self.scf.f[ia]
-                        f_deriv = numpy.einsum('ijk,jk->i', -self.mol.nuc[i].intor('int1e_irp'), self.scf.dm_nuc[i])*2
-                        self.de[k] += numpy.dot(f_deriv.reshape(3,3), self.scf.f[ia])
                         jcross_nuc_elec = self.grad_jcross_nuc_elec(self.mol.nuc[i])
                         self.de[k] -= numpy.einsum('xij,ij->x', jcross_nuc_elec, self.scf.dm_nuc[i])*2
                         jcross_nuc_nuc = self.grad_jcross_nuc_nuc(self.mol.nuc[i])

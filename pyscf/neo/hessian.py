@@ -17,13 +17,13 @@ class Hessian(lib.StreamObject):
     Example:
 
     >>> mol = neo.Mole()
-    >>> mol.build(atom = 'H 0 0 0.00; C 0 0 1.064; N 0 0 2.220', basis = 'ccpvdz')
+    >>> mol.build(atom='H 0 0 0.00; C 0 0 1.064; N 0 0 2.220', basis='ccpvdz')
     >>> mf = neo.CDFT(mol)
     >>> mf.mf_elec.xc = 'b3lyp'
     >>> mf.scf()
 
-    >>> g = neo.Hessian(mf)
-    >>> g.kernel()
+    >>> h = neo.Hessian(mf)
+    >>> h.kernel()
     >>> results = hess.harmonic_analysis(mol, h)
     >>> print(results)
     '''
@@ -40,7 +40,7 @@ class Hessian(lib.StreamObject):
     def hess_elec(self, mo1_e, e1_e):
         'Hessian of electrons and classic nuclei in cNEO'
         hobj = self.base.mf_elec.Hessian()
-        de2 = hobj.hess_elec(mo1 = mo1_e, mo_e1 = e1_e) + hobj.hess_nuc()
+        de2 = hobj.hess_elec(mo1=mo1_e, mo_e1=e1_e) + hobj.hess_nuc()
         return de2
 
     def hess_elec_nuc1(self, i, mo1_n, mo1_e):
@@ -61,7 +61,6 @@ class Hessian(lib.StreamObject):
         mo_coeff_n = mf_nuc.mo_coeff
         mo_occ_n = mf_nuc.mo_occ
         mocc_n = mo_coeff_n[:, mo_occ_n>0]
-        nao_n = mo_coeff_n.shape[0]
         dm0_n = self.base.dm_nuc[i]
 
         for i0, ia in enumerate(self.atmlst):
@@ -75,7 +74,8 @@ class Hessian(lib.StreamObject):
             v1ao[:, :, p0:p1] += v1en_ao[:, p0:p1].transpose(0, 2, 1)
 
             v1en_ao2 = -scf.jk.get_jk((self.mol.elec, self.mol.elec, nuc, nuc),
-                                      dm0_e[:,p0:p1], scripts='ijkl,ji->kl', intor='int2e_ip1', shls_slice=shls_slice, comp=3, aosym='s2kl')*2
+                                      dm0_e[:,p0:p1], scripts='ijkl,ji->kl', intor='int2e_ip1',
+                                      shls_slice=shls_slice, comp=3, aosym='s2kl')*2
 
             if ia == index:
                 v1en_ao3 = -scf.jk.get_jk((nuc, nuc, self.mol.elec, self.mol.elec), dm0_n,
@@ -101,8 +101,6 @@ class Hessian(lib.StreamObject):
 
     def hess_elec_nuc2(self, i):
         'part of hessian for Coulomb interactions between electrons and the i-th quantum nuclei'
-        mo_coeff_e = self.base.mf_elec.mo_coeff
-        mo_occ_e = self.base.mf_elec.mo_occ
         dm0_e = self.base.dm_elec
         nao_e = dm0_e.shape[0]
 
@@ -113,10 +111,7 @@ class Hessian(lib.StreamObject):
         nuc = mf_nuc.mol
         index = nuc.atom_index
         charge = self.mol.atom_charge(index)
-        mo_coeff_n = mf_nuc.mo_coeff
-        mo_occ_n = mf_nuc.mo_occ
         dm0_n = self.base.dm_nuc[i]
-        nao_n, nmo_n = mf_nuc.mo_coeff.shape
         i = self.atmlst.index(index)
 
         hess_naa = scf.jk.get_jk((nuc, nuc, self.mol.elec, self.mol.elec), dm0_e,
@@ -165,32 +160,19 @@ class Hessian(lib.StreamObject):
         'part of hessian for the i-th quantum nuclei'
         de2 = numpy.zeros((self.mol.natm, self.mol.natm, 3, 3))
         mf_nuc = self.base.mf_nuc[i]
-        dm0_n = self.base.dm_nuc[i]
         index = mf_nuc.mol.atom_index
-        mo_energy = mf_nuc.mo_energy
         mo_coeff = mf_nuc.mo_coeff
         mo_occ = mf_nuc.mo_occ
         mocc = mo_coeff[:, mo_occ>0]
-        nocc = mocc.shape[1]
-        nao, nmo = mo_coeff.shape
+        nao = mo_coeff.shape[0]
 
         for i0, ia in enumerate(self.atmlst):
             h1a = numpy.zeros((3, nao, nao))
-            r1a = numpy.zeros((3, 3, nao, nao))
-            s1ao = numpy.zeros((3, nao, nao))
-            s1oo = numpy.zeros((3, nocc, nocc))
 
             if ia == index:
                 h1a = -mf_nuc.mol.intor('int1e_ipkin', comp=3)/(self.mol.mass[index]*nist.ATOMIC_MASS/nist.E_MASS)
                 h1a += mf_nuc.mol.intor('int1e_ipnuc', comp=3)*self.mol.atom_charge(index)
                 h1a += h1a.transpose(0, 2, 1)
-
-                r1a = -mf_nuc.mol.intor('int1e_irp', comp=9).reshape(3, 3, nao, nao)
-                r1a += r1a.transpose(0, 1, 3, 2)
-
-                s1a = -mf_nuc.mol.intor('int1e_ipovlp', comp=3)
-                s1ao = s1a + s1a.transpose(0, 2, 1)
-                s1oo = numpy.einsum('xpq,pi,qj->xij', s1ao, mocc, mocc)
 
             elif self.mol.quantum_nuc[ia] == False:
                 with mf_nuc.mol.with_rinv_as_nucleus(ia):
@@ -200,22 +182,8 @@ class Hessian(lib.StreamObject):
 
             for j0 in range(i0+1):
                 ja = self.atmlst[j0]
-                # if ia == index: # test
-                #    de2[i0, j0] -= f1[ja]
-
                 dm1_n = numpy.einsum('ypi,qi->ypq', mo1_n[ja], mocc)
-
                 de2[i0, j0] += numpy.einsum('xpq,ypq->xy', h1a, dm1_n)*2 # *2 for c.c. of dm1
-
-                r1a_f = numpy.einsum('xypq, y->xpq', r1a, self.base.f[index])
-                de2[i0, j0] += numpy.einsum('xpq,ypq->xy', r1a_f, dm1_n)*2
-
-                r1a_dm = numpy.einsum('xzpq, pq->xz', r1a, dm0_n)
-                # de2[i0, j0] += numpy.einsum('xz, zy->xy', r1a_dm, f1[ja]) # test: yz or zy?
-
-                dm1_n = numpy.einsum('ypi,qi,i->ypq', mo1_n[ja], mocc, mo_energy[mo_occ>0])
-                de2[i0, j0] -= numpy.einsum('xpq,ypq->xy', s1ao, dm1_n)*2
-                de2[i0, j0] -= numpy.einsum('xpq,ypq->xy', s1oo, e1_n[ja])
 
             for j0 in range(i0):
                 de2[j0, i0] = de2[i0, j0].T
@@ -237,7 +205,7 @@ class Hessian(lib.StreamObject):
         mo_coeff = mf_nuc.mo_coeff
         mo_occ = mf_nuc.mo_occ
         mocc = mo_coeff[:, mo_occ>0]
-        nao, nmo = mo_coeff.shape
+        nao = mo_coeff.shape[0]
         dme0 = numpy.einsum('pi,qi,i->pq', mocc, mocc, mo_energy[mo_occ>0])
 
         for i0, ia in enumerate(self.atmlst):
@@ -249,49 +217,35 @@ class Hessian(lib.StreamObject):
                 h1aa = h1aa.reshape(3, 3, nao, nao)
                 h1aa += h1aa.transpose(0, 1, 3, 2)
 
-                s1aa = mf_nuc.mol.intor('int1e_ipipovlp', comp=9)
-                s1aa += mf_nuc.mol.intor('int1e_ipovlpip', comp=9)
-                s1aa = s1aa.reshape(3, 3, nao, nao)
-                s1aa += s1aa.transpose(0, 1, 3, 2)
-
-                r1aa = mf_nuc.mol.intor('int1e_ipipr', comp=27).reshape(3, 3, 3, nao, nao)
-                r1aa = numpy.einsum('xyzpq, z->xypq', r1aa, self.base.f[index])
-                r1aa2 = mf_nuc.mol.intor('int1e_iprip', comp=27).reshape(3, 3, 3, nao, nao)
-                r1aa += numpy.einsum('xyzpq, y->xzpq', r1aa2, self.base.f[index])
-                r1aa += r1aa.transpose(0, 1, 3, 2)
-
                 de2[i0, i0] += numpy.einsum('xypq, pq->xy', h1aa, dm0_n)
-                de2[i0, i0] -= numpy.einsum('xypq, pq->xy', s1aa, dme0)
-                de2[i0, i0] += numpy.einsum('xypq, pq->xy', r1aa, dm0_n)
 
                 # for j0, ja in enumerate(self.atmlst):
                 for j0 in range(i0+1):
                     ja = self.atmlst[j0]
-                    if self.mol.quantum_nuc[ja] == False:
+                    if self.mol.quantum_nuc[ja] is False:
                         with mf_nuc.mol.with_rinv_at_nucleus(ja):
                             rinv_ab = -mf_nuc.mol.intor('int1e_ipiprinv', comp=9).reshape(3, 3, nao, nao)
                             rinv_ab -= mf_nuc.mol.intor('int1e_iprinvip', comp=9).reshape(3, 3, nao, nao)
-                            rinv_ab *= (charge*self.mol.atom_charge(ja))
-                            #rinv_ab += rinv_ab.transpose(0, 1, 3, 2)
+                            rinv_ab *= charge * self.mol.atom_charge(ja)
                         de2[i0, j0] += numpy.einsum('xypq,pq->xy', rinv_ab, dm0_n)*2
 
-            # test: hessian for quantum-classsical nuclei replusions
-            elif self.mol.quantum_nuc[ia] == False:
+            # test: hessian for quantum-classical nucler replusions
+            elif self.mol.quantum_nuc[ia] is False:
                 with mf_nuc.mol.with_rinv_at_nucleus(ia):
-                    rinv_aa = mf_nuc.mol.intor('int1e_ipiprinv', comp=9).reshape(
-                        3, 3, nao, nao)*charge*self.mol.atom_charge(ia)
-                    rinv_aa += mf_nuc.mol.intor('int1e_iprinvip', comp=9).reshape(3, 3,
-                                                                                  nao, nao)*charge*self.mol.atom_charge(ia)
+                    rinv_aa = mf_nuc.mol.intor('int1e_ipiprinv', comp=9).reshape(3, 3, nao, nao) \
+                              * charge * self.mol.atom_charge(ia)
+                    rinv_aa += mf_nuc.mol.intor('int1e_iprinvip', comp=9).reshape(3, 3, nao, nao) \
+                               * charge * self.mol.atom_charge(ia)
                 de2[i0, i0] += numpy.einsum('xypq,pq->xy', rinv_aa, dm0_n)*2
 
                 for j0 in range(i0+1):
                     ja = self.atmlst[j0]
                     if ja == index:
                         with mf_nuc.mol.with_rinv_as_nucleus(ia):
-                            rinv_ab = -mf_nuc.mol.intor('int1e_ipiprinv', comp=9).reshape(3,
-                                                                                          3, nao, nao)*charge*self.mol.atom_charge(ia)
-                            rinv_ab -= mf_nuc.mol.intor('int1e_iprinvip', comp=9).reshape(3,
-                                                                                          3, nao, nao)*charge*self.mol.atom_charge(ia)
+                            rinv_ab = -mf_nuc.mol.intor('int1e_ipiprinv', comp=9).reshape(3, 3, nao, nao) \
+                                      * charge * self.mol.atom_charge(ia)
+                            rinv_ab -= mf_nuc.mol.intor('int1e_iprinvip', comp=9).reshape(3, 3, nao, nao) \
+                                       * charge * self.mol.atom_charge(ia)
                         de2[i0, j0] += numpy.einsum('xypq,pq->xy', rinv_ab, dm0_n)*2
 
             for j0 in range(i0):
@@ -401,7 +355,7 @@ class Hessian(lib.StreamObject):
 
         mo_coeff_e = self.base.mf_elec.mo_coeff
         mo_occ_e = self.base.mf_elec.mo_occ
-        nao_e, nmo_e = mo_coeff_e.shape
+        nmo_e = mo_coeff_e.shape[1]
         mocc_e = mo_coeff_e[:,mo_occ_e>0]
         nocc_e = mocc_e.shape[1]
 
@@ -415,7 +369,7 @@ class Hessian(lib.StreamObject):
         for i in range(len(self.mol.nuc)):
             mo_coeff_n = self.base.mf_nuc[i].mo_coeff
             mo_occ_n = self.base.mf_nuc[i].mo_occ
-            nao_n, nmo_n = mo_coeff_n.shape
+            nmo_n = mo_coeff_n.shape[1]
             mocc_n = mo_coeff_n[:,mo_occ_n>0]
             nocc_n = mocc_n.shape[1]
 
@@ -452,7 +406,7 @@ class Hessian(lib.StreamObject):
         '''
         results = {}
         atom_coords = mol.atom_coords()
-        mass = mol.mass
+        mass = mol.mass # This line is different from pyscf.hessian.thermo.harmonic_analysis
         mass_center = numpy.einsum('z,zx->x', mass, atom_coords) / mass.sum()
         atom_coords = atom_coords - mass_center
         natm = atom_coords.shape[0]
