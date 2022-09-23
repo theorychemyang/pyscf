@@ -5,17 +5,19 @@ Analytical Hessian for constrained nuclear-electronic orbitals
 '''
 import numpy
 from pyscf import lib
-from pyscf import scf
 from pyscf.lib import logger
 from pyscf.data import nist
 from pyscf.hessian.thermo import _get_TR, rotation_const, _get_rotor_type
 from pyscf.neo.cphf import CPHF
 from functools import reduce
+# TODO: remove this
+from pyscf import scf
 
 class Hessian(lib.StreamObject):
     '''
-    Example:
+    Examples::
 
+    >>> from pyscf import neo
     >>> mol = neo.Mole()
     >>> mol.build(atom='H 0 0 0.00; C 0 0 1.064; N 0 0 2.220', basis='ccpvdz')
     >>> mf = neo.CDFT(mol)
@@ -29,10 +31,11 @@ class Hessian(lib.StreamObject):
     '''
 
     def __init__(self, scf_method):
+        self.verbose = scf_method.verbose
         self.mol = scf_method.mol
         self.base = scf_method
+        self.max_memory = self.mol.max_memory
         self.atmlst = range(self.mol.natm)
-        self.verbose = 4
         if self.base.epc is not None:
             raise NotImplementedError('Hessian with epc is not implemented')
 
@@ -68,16 +71,19 @@ class Hessian(lib.StreamObject):
             shls_slice = (shl0, shl1) + (0, self.mol.elec.nbas) + (0, nuc.nbas)*2
 
             v1ao = numpy.zeros((3, nao_e, nao_e))
+            # TODO: use stored _eri instead of on-the-fly
             v1en_ao = -scf.jk.get_jk((self.mol.elec, self.mol.elec, nuc, nuc), dm0_n,
                                      scripts='ijkl,lk->ij', intor='int2e_ip1', comp=3, aosym='s2kl')
             v1ao[:, p0:p1] += v1en_ao[:, p0:p1]
             v1ao[:, :, p0:p1] += v1en_ao[:, p0:p1].transpose(0, 2, 1)
 
+            # TODO: use stored _eri instead of on-the-fly
             v1en_ao2 = -scf.jk.get_jk((self.mol.elec, self.mol.elec, nuc, nuc),
                                       dm0_e[:,p0:p1], scripts='ijkl,ji->kl', intor='int2e_ip1',
                                       shls_slice=shls_slice, comp=3, aosym='s2kl')*2
 
             if ia == index:
+                # TODO: use stored _eri instead of on-the-fly
                 v1en_ao3 = -scf.jk.get_jk((nuc, nuc, self.mol.elec, self.mol.elec), dm0_n,
                                           scripts='ijkl,ji->kl', intor='int2e_ip1', comp=3, aosym='s2kl')*2
                 v1en_ao4 = -scf.jk.get_jk((nuc, nuc, self.mol.elec, self.mol.elec), dm0_e,
@@ -114,10 +120,12 @@ class Hessian(lib.StreamObject):
         dm0_n = self.base.dm_nuc[i]
         i = self.atmlst.index(index)
 
+        # TODO: use stored _eri instead of on-the-fly
         hess_naa = scf.jk.get_jk((nuc, nuc, self.mol.elec, self.mol.elec), dm0_e,
                                  scripts='ijkl,lk->ij', intor='int2e_ipip1', comp=9, aosym='s2kl')
         hess_naa += hess_naa.transpose(0, 2, 1)
 
+        # TODO: use stored _eri instead of on-the-fly
         hess_eaa = scf.jk.get_jk((self.mol.elec, self.mol.elec, nuc, nuc), dm0_n,
                                  scripts='ijkl,lk->ij', intor='int2e_ipip1', comp=9, aosym='s2kl')
 
@@ -129,6 +137,7 @@ class Hessian(lib.StreamObject):
             if ia == index:
                 de2[i0, i0] -= numpy.einsum('xpq, pq->x', hess_naa, dm0_n).reshape(3, 3)
 
+            # TODO: use stored _eri instead of on-the-fly
             hess_eaeb = scf.jk.get_jk((self.mol.elec, self.mol.elec, nuc, nuc), dm0_n,
                                       scripts='ijkl,lk->ij', intor='int2e_ipvip1', comp=9)
 
@@ -144,10 +153,12 @@ class Hessian(lib.StreamObject):
                     de2[i0, j0] -= numpy.einsum('xpq,pq->x', test, dm0_e).reshape(3,3)*2
 
                 if index == ja:
+                    # TODO: use stored _eri instead of on-the-fly
                     hess_eanb = scf.jk.get_jk((self.mol.elec, self.mol.elec, nuc, nuc),
                                               dm0_e[:, p0:p1], scripts='ijkl,ji->kl', intor='int2e_ip1ip2', shls_slice=shls_slice, comp=9)
                     de2[i0, j0] -= numpy.einsum('xpq,pq->x', hess_eanb, dm0_n).reshape(3, 3)*4
                 if index == ia and index == ja:
+                    # TODO: use stored _eri instead of on-the-fly
                     hess_nanb = scf.jk.get_jk((nuc, nuc, self.mol.elec, self.mol.elec), dm0_n,
                                               scripts='ijkl,ji->kl', intor='int2e_ipvip1', comp=9)
                     de2[i0, j0] -= numpy.einsum('xpq,pq->x', hess_nanb, dm0_e).reshape(3, 3)*2
@@ -170,14 +181,15 @@ class Hessian(lib.StreamObject):
             h1a = numpy.zeros((3, nao, nao))
 
             if ia == index:
-                h1a = -mf_nuc.mol.intor('int1e_ipkin', comp=3)/(self.mol.mass[index]*nist.ATOMIC_MASS/nist.E_MASS)
+                h1a = -mf_nuc.mol.intor('int1e_ipkin', comp=3) \
+                      / (self.mol.mass[index] * nist.ATOMIC_MASS / nist.E_MASS)
                 h1a += mf_nuc.mol.intor('int1e_ipnuc', comp=3)*self.mol.atom_charge(index)
                 h1a += h1a.transpose(0, 2, 1)
 
             elif self.mol.quantum_nuc[ia] == False:
                 with mf_nuc.mol.with_rinv_as_nucleus(ia):
                     vrinv = mf_nuc.mol.intor('int1e_iprinv', comp=3)
-                    vrinv *= (self.mol.atom_charge(ia)*self.mol.atom_charge(index))
+                    vrinv *= (self.mol.atom_charge(ia) * self.mol.atom_charge(index))
                 h1a = vrinv + vrinv.transpose(0,2,1)
 
             for j0 in range(i0+1):
@@ -277,22 +289,24 @@ class Hessian(lib.StreamObject):
                             v1 = numpy.zeros((3, nao_j, nao_j))
                             v2 = numpy.zeros((3, nao_i, nao_i))
                             if ia == index1:
+                                # TODO: use stored _eri instead of on-the-fly
                                 v1 = -scf.jk.get_jk((self.mol.nuc[i], self.mol.nuc[i], self.mol.nuc[j], self.mol.nuc[j]),
                                                     self.base.dm_nuc[i], scripts='ijkl,ji->kl', intor='int2e_ip1', comp=3, aosym='s2kl')*2
                                 v2 = -scf.jk.get_jk((self.mol.nuc[i], self.mol.nuc[i], self.mol.nuc[j], self.mol.nuc[j]),
                                                     self.base.dm_nuc[j], scripts='ijkl,lk->ij', intor='int2e_ip1', comp=3, aosym='s2kl')
                                 v2 += v2.transpose(0, 2, 1)
                             elif ia == index2:
+                                # TODO: use stored _eri instead of on-the-fly
                                 v1 = -scf.jk.get_jk((self.mol.nuc[j], self.mol.nuc[j], self.mol.nuc[i], self.mol.nuc[i]),
                                                     self.base.dm_nuc[i], scripts='ijkl,lk->ij', intor='int2e_ip1', comp=3, aosym='s2kl')
                                 v1 += v1.transpose(0, 2, 1)
                                 v2 = -scf.jk.get_jk((self.mol.nuc[j], self.mol.nuc[j], self.mol.nuc[i], self.mol.nuc[i]),
                                                     self.base.dm_nuc[j], scripts='ijkl,ji->kl', intor='int2e_ip1', comp=3, aosym='s2kl')*2
 
-                            de2[i0, j0] += numpy.einsum('xpq,ypq->xy', v1, dm1_j)* \
-                                                        self.mol.atom_charge(index1)*self.mol.atom_charge(index2)*2
-                            de2[i0, j0] += numpy.einsum('xpq,ypq->xy', v2, dm1_i)* \
-                                                        self.mol.atom_charge(index1)*self.mol.atom_charge(index2)*2
+                            de2[i0, j0] += numpy.einsum('xpq,ypq->xy', v1, dm1_j) \
+                                           * self.mol.atom_charge(index1)*self.mol.atom_charge(index2)*2
+                            de2[i0, j0] += numpy.einsum('xpq,ypq->xy', v2, dm1_i) \
+                                           * self.mol.atom_charge(index1)*self.mol.atom_charge(index2)*2
 
                         for j0 in range(i0):
                             de2[j0, i0] = de2[i0, j0].T
@@ -314,6 +328,7 @@ class Hessian(lib.StreamObject):
                             charge = self.mol.atom_charge(index_i)*self.mol.atom_charge(index_j)
                             if ia == index_i:
                                 if ja == index_i:
+                                    # TODO: use stored _eri instead of on-the-fly
                                     v2_aa = scf.jk.get_jk((self.mol.nuc[i], self.mol.nuc[i], self.mol.nuc[j], self.mol.nuc[j]),
                                                           self.base.dm_nuc[j], scripts='ijkl,lk->ij', intor='int2e_ipip1', comp=9, aosym='s2kl')
                                     v2_aa += scf.jk.get_jk((self.mol.nuc[i], self.mol.nuc[i], self.mol.nuc[j], self.mol.nuc[j]),
@@ -322,6 +337,7 @@ class Hessian(lib.StreamObject):
                                     de2[i0, j0] += numpy.einsum('xpq,pq->x', v2_aa,
                                                                 self.base.dm_nuc[i]).reshape(3, 3)*charge
                                 elif ja == index_j:
+                                    # TODO: use stored _eri instead of on-the-fly
                                     v2_ab = scf.jk.get_jk((self.mol.nuc[i], self.mol.nuc[i], self.mol.nuc[j], self.mol.nuc[j]),
                                                           self.base.dm_nuc[j], scripts='ijkl,lk->ij', intor='int2e_ip1ip2', comp=9)*2
                                     v2_ab += v2_ab.transpose(0, 2, 1)
@@ -329,6 +345,7 @@ class Hessian(lib.StreamObject):
                                                                 self.base.dm_nuc[i]).reshape(3, 3)*charge
                             elif ia == index_j:
                                 if ja == index_j:
+                                    # TODO: use stored _eri instead of on-the-fly
                                     v2_aa = scf.jk.get_jk((self.mol.nuc[j], self.mol.nuc[j], self.mol.nuc[i], self.mol.nuc[i]),
                                                           self.base.dm_nuc[i], scripts='ijkl,lk->ij', intor='int2e_ipip1', comp=9, aosym='s2kl')
                                     v2_aa += scf.jk.get_jk((self.mol.nuc[j], self.mol.nuc[j], self.mol.nuc[i], self.mol.nuc[i]),
@@ -337,6 +354,7 @@ class Hessian(lib.StreamObject):
                                     de2[i0, j0] += numpy.einsum('xpq,pq->x', v2_aa,
                                                                 self.base.dm_nuc[j]).reshape(3, 3)*charge
                                 elif ja == index_i:
+                                    # TODO: use stored _eri instead of on-the-fly
                                     v2_ab = scf.jk.get_jk((self.mol.nuc[j], self.mol.nuc[j], self.mol.nuc[i], self.mol.nuc[i]),
                                                           self.base.dm_nuc[i], scripts='ijkl,lk->ij', intor='int2e_ip1ip2', comp=9)*2
                                     v2_ab += v2_ab.transpose(0, 2, 1)

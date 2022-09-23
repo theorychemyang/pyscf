@@ -4,51 +4,54 @@
 Analytical nuclear gradient for constrained nuclear-electronic orbital
 '''
 import numpy
-from pyscf import scf
-from pyscf import grad
-from pyscf import lib
+from pyscf import lib, neo
 from pyscf.lib import logger
-from pyscf.neo import Mole, CDFT
-from pyscf.grad.rhf import _write
 from pyscf.data import nist
+
+# TODO: remove them
+from pyscf import scf
+from pyscf.grad.rhf import _write
+
+# TODO: create Gradients class from GradientsMixin
+#from pyscf.grad import rhf as rhf_grad
+#class Gradients(rhf_grad.GradientsMixin):
 
 class Gradients(lib.StreamObject):
     '''
-    Example:
+    Examples::
 
+    >>> from pyscf import neo
     >>> mol = neo.Mole()
     >>> mol.build(atom='H 0 0 0.00; C 0 0 1.064; N 0 0 2.220', basis='ccpvtz')
     >>> mf = neo.CDFT(mol)
     >>> mf.mf_elec.xc = 'b3lyp'
     >>> mf.scf()
-
     >>> g = neo.Gradients(mf)
     >>> g.kernel()
     '''
 
     def __init__(self, scf_method):
+        self.verbose = scf_method.verbose
         self.mol = scf_method.mol
         self.base = scf_method
-        self.scf = scf_method
-        self.verbose = 4
+        self.max_memory = self.mol.max_memory
         self.grad = self.kernel
         if self.base.epc is not None:
             raise NotImplementedError('Gradient with epc is not implemented')
 
-    #as_scanner = grad.rhf.as_scanner
-
     def grad_elec(self, atmlst=None):
         'gradients of electrons and classic nuclei'
-        g = self.scf.mf_elec.nuc_grad_method()
-        g.verbose = 2
-        return g.grad(atmlst = atmlst)
+        g = self.base.mf_elec.nuc_grad_method()
+        g.verbose = self.verbose - 1
+        return g.grad(atmlst=atmlst)
 
     def get_hcore(self, mol):
         'part of the gradients of core Hamiltonian of quantum nucleus'
         i = mol.atom_index
-        mass = self.mol.mass[i] * nist.ATOMIC_MASS/nist.E_MASS
-        h = -mol.intor('int1e_ipkin', comp=3)/mass # minus sign for the derivative is taken w.r.t 'r' instead of 'R'
-        h += mol.intor('int1e_ipnuc', comp=3)*self.mol.atom_charge(i)
+        mass = self.mol.mass[i] * nist.ATOMIC_MASS / nist.E_MASS
+        # minus sign for the derivative is taken w.r.t 'r' instead of 'R'
+        h = -mol.intor('int1e_ipkin', comp=3) / mass
+        h += mol.intor('int1e_ipnuc', comp=3) * self.mol.atom_charge(i)
         return h
 
     def hcore_deriv(self, atm_id, mol):
@@ -65,14 +68,16 @@ class Gradients(lib.StreamObject):
         jcross = 0
         for i in range(len(self.mol.nuc)):
             index = self.mol.nuc[i].atom_index
-            jcross -= scf.jk.get_jk((self.mol.elec, self.mol.elec, self.mol.nuc[i], self.mol.nuc[i]), self.scf.dm_nuc[i],
+            # TODO: calculate j from stored _eri, not on-the-fly
+            jcross -= scf.jk.get_jk((self.mol.elec, self.mol.elec, self.mol.nuc[i], self.mol.nuc[i]), self.base.dm_nuc[i],
                                     scripts='ijkl,lk->ij', intor='int2e_ip1', comp=3, aosym='s2kl')*self.mol.atom_charge(index)
         return jcross
 
     def grad_jcross_nuc_elec(self, mol):
         'get the gradient for the cross term of Coulomb interactions between quantum nucleus and electrons'
         i = mol.atom_index
-        jcross = -scf.jk.get_jk((mol, mol, self.mol.elec, self.mol.elec), self.scf.dm_elec,
+        # TODO: calculate j from stored _eri, not on-the-fly
+        jcross = -scf.jk.get_jk((mol, mol, self.mol.elec, self.mol.elec), self.base.dm_elec,
                                 scripts='ijkl,lk->ij', intor='int2e_ip1', comp=3, aosym='s2kl')*self.mol.atom_charge(i)
 
         return jcross
@@ -84,20 +89,10 @@ class Gradients(lib.StreamObject):
         for j in range(len(self.mol.nuc)):
             k = self.mol.nuc[j].atom_index
             if k != i:
-                jcross -= scf.jk.get_jk((mol, mol, self.mol.nuc[j], self.mol.nuc[j]), self.scf.dm_nuc[j], scripts='ijkl,lk->ij',
+                # TODO: calculate j from stored _eri, not on-the-fly
+                jcross -= scf.jk.get_jk((mol, mol, self.mol.nuc[j], self.mol.nuc[j]), self.base.dm_nuc[j], scripts='ijkl,lk->ij',
                                         intor='int2e_ip1', comp=3, aosym='s2kl')*self.mol.atom_charge(i)*self.mol.atom_charge(k)
         return jcross
-
-    def get_ovlp(self, mol):
-        return -mol.intor('int1e_ipovlp', comp=3)
-
-    def make_rdm1e(self, mf_nuc):
-        mo_energy = mf_nuc.mo_energy
-        mo_coeff = mf_nuc.mo_coeff
-        mo_occ = mf_nuc.get_occ(mo_energy, mo_coeff)
-        mo0 = mo_coeff[:,mo_occ>0]
-        mo0e = mo0 * (mo_energy[mo_occ>0] * mo_occ[mo_occ>0])
-        return numpy.dot(mo0e, mo0.T.conj())
 
     def kernel(self, atmlst=None):
         'Unit: Hartree/Bohr'
@@ -111,20 +106,20 @@ class Gradients(lib.StreamObject):
         for k, ia in enumerate(atmlst):
             p0, p1 = aoslices[ia, 2:]
             # *2 for c.c.
-            self.de[k] -= numpy.einsum('xij,ij->x', jcross_elec_nuc[:,p0:p1], self.scf.dm_elec[p0:p1])*2
+            self.de[k] -= numpy.einsum('xij,ij->x', jcross_elec_nuc[:,p0:p1], self.base.dm_elec[p0:p1])*2
 
             if self.mol.quantum_nuc[ia] == True:
                 for i in range(len(self.mol.nuc)):
                     if self.mol.nuc[i].atom_index == ia:
-                        self.de[k] += numpy.einsum('xij,ij->x', self.get_hcore(self.mol.nuc[i]), self.scf.dm_nuc[i])*2
+                        self.de[k] += numpy.einsum('xij,ij->x', self.get_hcore(self.mol.nuc[i]), self.base.dm_nuc[i])*2
                         jcross_nuc_elec = self.grad_jcross_nuc_elec(self.mol.nuc[i])
-                        self.de[k] -= numpy.einsum('xij,ij->x', jcross_nuc_elec, self.scf.dm_nuc[i])*2
+                        self.de[k] -= numpy.einsum('xij,ij->x', jcross_nuc_elec, self.base.dm_nuc[i])*2
                         jcross_nuc_nuc = self.grad_jcross_nuc_nuc(self.mol.nuc[i])
-                        self.de[k] += numpy.einsum('xij,ij->x', jcross_nuc_nuc, self.scf.dm_nuc[i])*2
+                        self.de[k] += numpy.einsum('xij,ij->x', jcross_nuc_nuc, self.base.dm_nuc[i])*2
             else:
                 for i in range(len(self.mol.nuc)):
                     h1ao = self.hcore_deriv(ia, self.mol.nuc[i])
-                    self.de[k] += numpy.einsum('xij,ij->x', h1ao, self.scf.dm_nuc[i])
+                    self.de[k] += numpy.einsum('xij,ij->x', h1ao, self.base.dm_nuc[i])
 
         grad_elec = self.grad_elec()
         self.de = grad_elec + self.de
@@ -149,7 +144,7 @@ class Gradients(lib.StreamObject):
                 lib.GradScanner.__init__(self, g)
 
             def __call__(self, mol_or_geom, **kwargs):
-                if isinstance(mol_or_geom, Mole):
+                if isinstance(mol_or_geom, neo.Mole):
                     mol = mol_or_geom
                 else:
                     mol = self.mol.set_geom_(mol_or_geom, inplace=True)
@@ -162,5 +157,7 @@ class Gradients(lib.StreamObject):
 
         return SCF_GradScanner(self)
 
+Grad = Gradients
+
 # Inject to CDFT class
-CDFT.Gradients = lib.class_as_method(Gradients)
+neo.CDFT.Gradients = lib.class_as_method(Gradients)
