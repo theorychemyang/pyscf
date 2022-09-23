@@ -19,12 +19,14 @@ def position_analysis(mf, fock, s1e, int1e_r):
 
 class CDFT(KS):
     '''
-    Example:
+    Examples::
 
+    >>> from pyscf import neo
     >>> mol = neo.Mole()
-    >>> mol.build(atom='H 0.0 0.0 0.0; C 0.0 0.0 1.064; N 0.0 0.0 2.220', basis='ccpvdz')
+    >>> mol.build(atom='H 0.0 0.0 0.0; C 0.0 0.0 1.064; N 0.0 0.0 2.220', quantum_nuc=[0], basis='ccpvdz', nuc_basis='pb4d')
     >>> mf = neo.CDFT(mol)
     >>> mf.scf()
+    -93.33840234527442
     '''
 
     def __init__(self, mol, **kwargs):

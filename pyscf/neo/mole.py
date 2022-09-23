@@ -9,15 +9,18 @@ class Mole(gto.mole.Mole):
     '''A subclass of gto.mole.Mole to handle quantum nuclei in NEO.
     By default, all atoms would be treated quantum mechanically.
 
-    Example:
+    Examples::
 
     >>> from pyscf import neo
     >>> mol = neo.Mole()
-    >>> mol.build(atom = 'H 0 0 0; C 0 0 1.1; N 0 0 2.2', quantum_nuc = [0,1], basis = 'ccpvdz')
+    >>> mol.build(atom = 'H 0 0 0; C 0 0 1.1; N 0 0 2.2', quantum_nuc=[0,1], basis='ccpvdz')
     # H and C would be treated quantum mechanically
-    >>> mol.build(atom = 'H 0 0 0; C 0 0 1.1; N 0 0 2.2', basis = 'ccpvdz')
+    >>> mol = neo.Mole()
+    >>> mol.build(atom = 'H 0 0 0; C 0 0 1.1; N 0 0 2.2', basis='ccpvdz')
     # All atoms are treated quantum mechanically by default
-
+    >>> mol = neo.Mole()
+    >>> mol.build(atom = 'H 0 0 0; C 0 0 1.1; N 0 0 2.2', quantum_nuc=[0], basis='ccpvdz', nuc_basis='pb4d')
+    # Pick the nuclear basis for protons
     '''
 
     def __init__(self, **kwargs):

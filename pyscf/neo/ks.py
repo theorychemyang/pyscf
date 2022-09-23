@@ -54,12 +54,15 @@ def eval_xc_elec(epc, rho_e, rho_n):
 
 class KS(HF):
     '''
-    Example:
+    Examples::
+
     >>> from pyscf import neo
     >>> mol = neo.Mole()
-    >>> mol.build(atom='H 0 0 0; F 0 0 0.917', basis='ccpvdz', quantum_nuc=[0])
+    >>> mol.build(atom='H 0 0 0; F 0 0 0.917', quantum_nuc=[0], basis='ccpvdz', nuc_basis='pb4d')
     >>> mf = neo.KS(mol, epc='17-2')
+    >>> mf.max_cycle = 100
     >>> mf.scf()
+    -100.38833734158459
     '''
 
     def __init__(self, mol, unrestricted=False, epc=None):

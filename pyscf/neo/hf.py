@@ -817,14 +817,14 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
 class HF(scf.hf.SCF):
     '''Hartree Fock for NEO
 
-    Example:
+    Examples::
 
     >>> from pyscf import neo
     >>> mol = neo.Mole()
-    >>> mol.build(atom='H 0 0 0; F 0 0 0.917', basis='ccpvdz')
+    >>> mol.build(atom='H 0 0 0; F 0 0 0.917', quantum_nuc=[0], basis='ccpvdz', nuc_basis='pb4d')
     >>> mf = neo.HF(mol)
     >>> mf.scf()
-
+    -99.98104139461894
     '''
 
     def __init__(self, mol, unrestricted=False):
