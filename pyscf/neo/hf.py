@@ -942,7 +942,7 @@ class HF(scf.hf.SCF):
     def energy_tot(self, dm_elec, dm_nuc, h1e, vhf_e, h1n, veff_n=None):
         return energy_tot(self.mf_elec, self.mf_nuc, dm_elec, dm_nuc, h1e, vhf_e, h1n, veff_n=veff_n)
 
-    def scf(self, dm0e=None, dm0n=[], **kwargs):
+    def scf(self, dm0=None, **kwargs):
         cput0 = (logger.process_clock(), logger.perf_counter())
 
         self.dump_flags()
@@ -951,11 +951,11 @@ class HF(scf.hf.SCF):
             self.converged, self.e_tot, self.mf_elec.mo_energy, \
                 self.mf_elec.mo_coeff, self.mf_elec.mo_occ = \
                     kernel(self, self.conv_tol, self.conv_tol_grad,
-                           dm0e=dm0e, dm0n=dm0n, callback=self.callback,
+                           dm0=dm0, callback=self.callback,
                            conv_check=self.conv_check, **kwargs)[0 : 5]
         else:
             self.e_tot = kernel(self, self.conv_tol, self.conv_tol_grad,
-                                dm0e=dm0e, dm0n=dm0n, callback=self.callback,
+                                dm0=dm0, callback=self.callback,
                                 conv_check=self.conv_check, **kwargs)[1]
 
         logger.timer(self, 'SCF', *cput0)
