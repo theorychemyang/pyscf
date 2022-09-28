@@ -7,7 +7,8 @@ import numpy
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.data import nist
-from pyscf.hessian.thermo import _get_TR, rotation_const, _get_rotor_type
+from pyscf.hessian.thermo import _get_TR, rotation_const, \
+                                 rotational_symmetry_number, _get_rotor_type
 from pyscf.neo.cphf import CPHF
 from functools import reduce
 # TODO: remove this
@@ -482,6 +483,104 @@ class Hessian(lib.StreamObject):
         results['force_const_dyne'] = reduced_mass * force_const_au * dyne  #cm^-1/a0^2
 
         # TODO: IR intensity
+        return results
+
+    def thermo(self, model, freq, temperature=298.15, pressure=101325):
+        '''Copy from pyscf.hessian.thermo.thermo only to change the definition of mass'''
+        mol = model.mol
+        atom_coords = mol.atom_coords()
+        mass = mol.mass # Only this line is different from pyscf.hessian.thermo.thermo
+        mass_center = numpy.einsum('z,zx->x', mass, atom_coords) / mass.sum()
+        atom_coords = atom_coords - mass_center
+
+        kB = nist.BOLTZMANN
+        h = nist.PLANCK
+        # c = nist.LIGHT_SPEED_SI
+        # beta = 1. / (kB * temperature)
+        R_Eh = kB*nist.AVOGADRO / (nist.HARTREE2J * nist.AVOGADRO)
+
+        results = {}
+        results['temperature'] = (temperature, 'K')
+        results['pressure'] = (pressure, 'Pa')
+
+        E0 = model.e_tot
+        results['E0'] = (E0, 'Eh')
+
+        # Electronic part
+        results['S_elec' ] = (R_Eh * numpy.log(mol.multiplicity), 'Eh/K')
+        results['Cv_elec'] = results['Cp_elec'] = (0, 'Eh/K')
+        results['E_elec' ] = results['H_elec' ] = (E0, 'Eh')
+
+        # Translational part. See also https://cccbdb.nist.gov/thermo.asp for the
+        # partition function q_trans
+        mass_tot = mass.sum() * nist.ATOMIC_MASS
+        q_trans = ((2.0 * numpy.pi * mass_tot * kB * temperature / h**2)**1.5
+                   * kB * temperature / pressure)
+        results['S_trans' ] = (R_Eh * (2.5 + numpy.log(q_trans)), 'Eh/K')
+        results['Cv_trans'] = (1.5 * R_Eh, 'Eh/K')
+        results['Cp_trans'] = (2.5 * R_Eh, 'Eh/K')
+        results['E_trans' ] = (1.5 * R_Eh * temperature, 'Eh')
+        results['H_trans' ] = (2.5 * R_Eh * temperature, 'Eh')
+
+        # Rotational part
+        rot_const = rotation_const(mass, atom_coords, 'GHz')
+        results['rot_const'] = (rot_const, 'GHz')
+        rotor_type = _get_rotor_type(rot_const)
+
+        sym_number = rotational_symmetry_number(mol)
+        results['sym_number'] = (sym_number, '')
+
+        # partition function q_rot (https://cccbdb.nist.gov/thermo.asp)
+        if rotor_type == 'ATOM':
+            results['S_rot' ] = (0, 'Eh/K')
+            results['Cv_rot'] = results['Cp_rot'] = (0, 'Eh/K')
+            results['E_rot' ] = results['H_rot' ] = (0, 'Eh')
+        elif rotor_type == 'LINEAR':
+            B = rot_const[1] * 1e9
+            q_rot = kB * temperature / (sym_number * h * B)
+            results['S_rot' ] = (R_Eh * (1 + numpy.log(q_rot)), 'Eh/K')
+            results['Cv_rot'] = results['Cp_rot'] = (R_Eh, 'Eh/K')
+            results['E_rot' ] = results['H_rot' ] = (R_Eh * temperature, 'Eh')
+        else:
+            ABC = rot_const * 1e9
+            q_rot = ((kB*temperature/h)**1.5 * numpy.pi**.5
+                     / (sym_number * numpy.prod(ABC)**.5))
+            results['S_rot' ] = (R_Eh * (1.5 + numpy.log(q_rot)), 'Eh/K')
+            results['Cv_rot'] = results['Cp_rot'] = (1.5 * R_Eh, 'Eh/K')
+            results['E_rot' ] = results['H_rot' ] = (1.5 * R_Eh * temperature, 'Eh')
+
+        # Vibrational part.
+        au2hz = (nist.HARTREE2J / (nist.ATOMIC_MASS * nist.BOHR_SI**2))**.5 / (2 * numpy.pi)
+        idx = freq.real > 0
+        vib_temperature = freq.real[idx] * au2hz * h / kB
+        # reduced_temperature
+        rt = vib_temperature / max(1e-14, temperature)
+        e = numpy.exp(-rt)
+
+        ZPE = R_Eh * .5 * vib_temperature.sum()
+        results['ZPE'] = (ZPE, 'Eh')
+
+        results['S_vib' ] = (R_Eh * (rt*e/(1-e) - numpy.log(1-e)).sum(), 'Eh/K')
+        results['Cv_vib'] = results['Cp_vib'] = (R_Eh * (e * rt**2/(1-e)**2).sum(), 'Eh/K')
+        results['E_vib' ] = results['H_vib' ] = \
+                (ZPE + R_Eh * temperature * (rt * e / (1-e)).sum(), 'Eh')
+
+        results['G_elec' ] = (results['H_elec' ][0] - temperature * results['S_elec' ][0], 'Eh')
+        results['G_trans'] = (results['H_trans'][0] - temperature * results['S_trans'][0], 'Eh')
+        results['G_rot'  ] = (results['H_rot'  ][0] - temperature * results['S_rot'  ][0], 'Eh')
+        results['G_vib'  ] = (results['H_vib'  ][0] - temperature * results['S_vib'  ][0], 'Eh')
+
+        def _sum(f):
+            keys = ('elec', 'trans', 'rot', 'vib')
+            return sum(results.get(f+'_'+key, (0,))[0] for key in keys)
+        results['S_tot' ] = (_sum('S' ), 'Eh/K')
+        results['Cv_tot'] = (_sum('Cv'), 'Eh/K')
+        results['Cp_tot'] = (_sum('Cp'), 'Eh/K')
+        results['E_0K' ]  = (E0 + ZPE, 'Eh')
+        results['E_tot' ] = (_sum('E'), 'Eh')
+        results['H_tot' ] = (_sum('H'), 'Eh')
+        results['G_tot' ] = (_sum('G'), 'Eh')
+
         return results
 
 
