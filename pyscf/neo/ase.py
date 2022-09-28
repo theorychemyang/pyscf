@@ -16,7 +16,8 @@ class Pyscf_NEO(Calculator):
                           'charge': 0,
                           'spin': 0,
                           'xc': 'b3lyp',
-                          'quantum_nuc': 'all'}
+                          'quantum_nuc': 'all',
+                          'atom_grid' : None}
 
 
     def __init__(self, **kwargs):
@@ -45,6 +46,8 @@ class Pyscf_NEO(Calculator):
         else:
             mf = neo.CDFT(mol, unrestricted = True)
         mf.mf_elec.xc = self.parameters.xc
+        if self.parameters.atom_grid is not None:
+            mf.mf_elec.grids.atom_grid = self.parameters.atom_grid
         self.results['energy'] = mf.scf()*Hartree
         g = mf.Gradients()
         self.results['forces'] = -g.grad()*Hartree/Bohr
@@ -66,7 +69,8 @@ class Pyscf_DFT(Calculator):
                           'charge': 0,
                           'spin': 0,
                           'xc': 'b3lyp',
-                          }
+                          'atom_grid' : None,
+                         }
 
 
     def __init__(self, **kwargs):
@@ -91,6 +95,8 @@ class Pyscf_DFT(Calculator):
         else:
             mf = dft.RKS(mol)
         mf.xc = self.parameters.xc
+        if self.parameters.atom_grid is not None:
+            mf.grids.atom_grid = self.parameters.atom_grid
         self.results['energy'] = mf.scf()*Hartree
         g = mf.Gradients()
         self.results['forces'] = -g.grad()*Hartree/Bohr
