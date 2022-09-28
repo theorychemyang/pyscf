@@ -328,17 +328,8 @@ class CPHF(lib.StreamObject):
 
             mo1base = numpy.concatenate((mo1base, B_n.ravel()))
 
-        for i in range(len(self.mol.nuc)):
-            ia = self.mol.nuc[i].atom_index
-            for j in self.atmlst:
-                if ia == j:
-                    irp = -self.mol.nuc[i].intor('int1e_irp', comp=9)
-                    r = numpy.identity(3) - 2*numpy.einsum('xij,ji->x', irp, self.base.dm_nuc[i]).reshape(3,3)
-                    mo1base = numpy.concatenate((mo1base, r.ravel()))
-                else:
-                    mo1base = numpy.concatenate((mo1base, numpy.zeros(9)))
+        mo1base = numpy.concatenate((mo1base, numpy.zeros(9 * len(self.mol.nuc) * self.mol.natm)))
         logger.info(self, 'The size of CPHF equations: %s', len(mo1base))
-
 
         mo1 = lib.krylov(self.full_response, mo1base, tol=tol, max_cycle=max_cycle, hermi=hermi)
         mo1_e, mo1_n, f1 = self.mo12ne(mo1)
