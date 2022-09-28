@@ -23,11 +23,10 @@ class Hessian(lib.StreamObject):
     >>> mf = neo.CDFT(mol)
     >>> mf.mf_elec.xc = 'b3lyp'
     >>> mf.scf()
-
-    >>> h = neo.Hessian(mf)
-    >>> h.kernel()
-    >>> results = hess.harmonic_analysis(mol, h)
-    >>> print(results)
+    >>> hess = neo.Hessian(mf)
+    >>> h = hess.kernel()
+    >>> freq_info = hess.harmonic_analysis(mol, h)
+    >>> print(freq_info)
     '''
 
     def __init__(self, scf_method):
