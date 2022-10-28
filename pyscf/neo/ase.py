@@ -34,7 +34,7 @@ class Pyscf_NEO(Calculator):
             if atoms[i] == 'Mu':
                 atom_pyscf.append(['H@0', tuple(positions[i])])
             elif atoms[i] == 'D':
-                atom_pyscf.append(['H@2', tuple(positions[i])])
+                atom_pyscf.append(['H+%i' %i, tuple(positions[i])])
             else:
                 atom_pyscf.append(['%s%i' %(atoms[i],i), tuple(positions[i])])
         mol.build(quantum_nuc = self.parameters.quantum_nuc,
@@ -85,7 +85,7 @@ class Pyscf_DFT(Calculator):
         atom_pyscf = []
         for i in range(len(atoms)):
             if atoms[i] == 'D':
-                atom_pyscf.append(['H@2', tuple(positions[i])])
+                atom_pyscf.append(['H+', tuple(positions[i])])
             else:
                 atom_pyscf.append(['%s' %(atoms[i]), tuple(positions[i])])
         mol.build(atom = atom_pyscf, basis = self.parameters.basis,
