@@ -16,7 +16,7 @@ class Pyscf_NEO(Calculator):
                           'charge': 0,
                           'spin': 0,
                           'xc': 'b3lyp',
-                          'quantum_nuc': 'all',
+                          'quantum_nuc': 'H',
                           'atom_grid' : None}
 
 
