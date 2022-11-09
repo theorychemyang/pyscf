@@ -8,6 +8,22 @@ from pyscf.data import nist
 from pyscf import neo
 from pyscf import gto, dft
 from pyscf.scf.hf import dip_moment
+from pyscf.lib import logger
+
+# from examples/scf/17-stability.py
+def stable_opt_internal(mf):
+    log = logger.new_logger(mf)
+    mo1, _, stable, _ = mf.stability(return_status=True)
+    cyc = 0
+    while (not stable and cyc < 10):
+        log.note('Try to optimize orbitals until stable, attempt %d' % cyc)
+        dm1 = mf.make_rdm1(mo1, mf.mo_occ)
+        mf = mf.run(dm1)
+        mo1, _, stable, _ = mf.stability(return_status=True)
+        cyc += 1
+    if not stable:
+        log.note('Stability Opt failed after %d attempts' % cyc)
+    return mf
 
 class Pyscf_NEO(Calculator):
 
@@ -97,7 +113,11 @@ class Pyscf_DFT(Calculator):
         mf.xc = self.parameters.xc
         if self.parameters.atom_grid is not None:
             mf.grids.atom_grid = self.parameters.atom_grid
-        self.results['energy'] = mf.scf()*Hartree
+        # check stability for UKS
+        mf.scf()
+        if self.parameters.spin !=0:
+            mf = stable_opt_internal(mf)
+        self.results['energy'] = mf.e_tot*Hartree
         g = mf.Gradients()
         self.results['forces'] = -g.grad()*Hartree/Bohr
         self.results['dipole'] = dip_moment(mol, mf.make_rdm1())
