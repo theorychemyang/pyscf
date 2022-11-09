@@ -916,7 +916,8 @@ class HF(scf.hf.SCF):
         else:
             return init_guess_nuc_by_chkfile(mol, self.chkfile)
 
-    def get_hcore_elec(self, mol):
+    def get_hcore_elec(self, mol=None):
+        if mol is None: mol = self.mol.elec
         return get_hcore_elec(mol, self.dm_nuc, self.mol.nuc, eri_ne=self._eri_ne)
 
     def get_occ_nuc(self, mf):

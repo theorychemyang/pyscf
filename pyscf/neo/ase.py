@@ -13,13 +13,17 @@ from pyscf.lib import logger
 # from examples/scf/17-stability.py
 def stable_opt_internal(mf):
     log = logger.new_logger(mf)
-    mo1, _, stable, _ = mf.stability(return_status=True)
+    if hasattr(mf, 'mf_elec'):
+        mf_elec = mf.mf_elec
+    else:
+        mf_elec = mf
+    mo1, _, stable, _ = mf_elec.stability(return_status=True)
     cyc = 0
     while (not stable and cyc < 10):
         log.note('Try to optimize orbitals until stable, attempt %d' % cyc)
-        dm1 = mf.make_rdm1(mo1, mf.mo_occ)
+        dm1 = mf_elec.make_rdm1(mo1, mf_elec.mo_occ)
         mf = mf.run(dm1)
-        mo1, _, stable, _ = mf.stability(return_status=True)
+        mo1, _, stable, _ = mf_elec.stability(return_status=True)
         cyc += 1
     if not stable:
         log.note('Stability Opt failed after %d attempts' % cyc)
@@ -64,7 +68,11 @@ class Pyscf_NEO(Calculator):
         mf.mf_elec.xc = self.parameters.xc
         if self.parameters.atom_grid is not None:
             mf.mf_elec.grids.atom_grid = self.parameters.atom_grid
-        self.results['energy'] = mf.scf()*Hartree
+        # check stability for UKS
+        mf.scf()
+        if self.parameters.spin !=0:
+            mf = stable_opt_internal(mf)
+        self.results['energy'] = mf.e_tot*Hartree
         g = mf.Gradients()
         self.results['forces'] = -g.grad()*Hartree/Bohr
 
