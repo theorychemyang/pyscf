@@ -2,6 +2,7 @@
 
 import os
 import numpy
+import contextlib 
 from pyscf import gto
 from pyscf.lib import logger
 
@@ -75,8 +76,9 @@ class Mole(gto.mole.Mole):
             n = 12
             basis = gto.expand_etbs([(0, n, alpha, beta), (1, n, alpha, beta), (2, n, alpha, beta)])
             #logger.info(self, 'Nuclear basis for %s: n %s alpha %s beta %s' %(self.atom_symbol(atom_index), n, alpha, beta))
-        nuc.build(atom = self.atom, basis={self.atom_symbol(atom_index): basis},
-                  charge = self.charge, cart = self.cart, spin = self.spin)
+        with contextlib.redirect_stderr(open(os.devnull, 'w')): # suppress "Warning: Basis not found for atom" in line 921 of gto/mole.py
+            nuc.build(atom = self.atom, basis={self.atom_symbol(atom_index): basis},
+                charge = self.charge, cart = self.cart, spin = self.spin)
 
         # set all quantum nuclei to have zero charges
         quantum_nuclear_charge = 0
