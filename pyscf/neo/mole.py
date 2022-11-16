@@ -112,7 +112,8 @@ class Mole(gto.mole.Mole):
                 logger.info(self, 'The %s(%i) atom is treated quantum-mechanically' %(self.atom_symbol(i), i))
             elif isinstance(i, str):
                 for j in range(self.natm):
-                    if i in self.atom_symbol(j):
+                    if self.atom_pure_symbol(j) == i: 
+                        # NOTE: isotopes are labelled with '+', e.g., 'H+' stands for 'D', thus both 'H+' and 'H' are treated by q.m. even quantum_nuc=['H']
                         self.quantum_nuc[j] = True
                 logger.info(self, 'All %s atoms are treated quantum-mechanically.' %i)
 
