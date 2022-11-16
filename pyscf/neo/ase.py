@@ -48,12 +48,17 @@ class Pyscf_NEO(Calculator):
         Calculator.calculate(self, atoms, properties, system_changes)
         mol = neo.Mole()
         atoms = self.atoms.get_chemical_symbols()
+        ase_masses = self.atoms.get_masses()
         positions = self.atoms.get_positions()
         atom_pyscf = []
         for i in range(len(atoms)):
             if atoms[i] == 'Mu':
                 atom_pyscf.append(['H@0', tuple(positions[i])])
             elif atoms[i] == 'D':
+                atom_pyscf.append(['H+%i' %i, tuple(positions[i])])
+            elif atoms[i] == 'H' and abs(ase_masses[i]-2.014) < 0.01:
+                # this is for person who does not want to modify ase
+                # by changing the mass array, pyscf still accepts H as D
                 atom_pyscf.append(['H+%i' %i, tuple(positions[i])])
             else:
                 atom_pyscf.append(['%s%i' %(atoms[i],i), tuple(positions[i])])
