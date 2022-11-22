@@ -37,7 +37,9 @@ class Pyscf_NEO(Calculator):
                           'spin': 0,
                           'xc': 'b3lyp',
                           'quantum_nuc': ['H'],
-                          'atom_grid' : None}
+                          'atom_grid' : None,
+                          'grid_response' : False
+                         }
 
 
     def __init__(self, **kwargs):
@@ -79,6 +81,7 @@ class Pyscf_NEO(Calculator):
             mf = stable_opt_internal(mf)
         self.results['energy'] = mf.e_tot*Hartree
         g = mf.Gradients()
+        g.grid_response = self.parameters.grid_response
         self.results['forces'] = -g.grad()*Hartree/Bohr
 
         dip_elec = dip_moment(mol.elec, mf.mf_elec.make_rdm1()) # dipole of electrons and classical nuclei
@@ -99,6 +102,7 @@ class Pyscf_DFT(Calculator):
                           'spin': 0,
                           'xc': 'b3lyp',
                           'atom_grid' : None,
+                          'grid_response' : False
                          }
 
 
@@ -132,5 +136,6 @@ class Pyscf_DFT(Calculator):
             mf = stable_opt_internal(mf)
         self.results['energy'] = mf.e_tot*Hartree
         g = mf.Gradients()
+        g.grid_response = self.parameters.grid_response
         self.results['forces'] = -g.grad()*Hartree/Bohr
         self.results['dipole'] = dip_moment(mol, mf.make_rdm1())
