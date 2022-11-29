@@ -38,6 +38,7 @@ class Mole(gto.mole.Mole):
         self.mass = [] # masses of nuclei
         self.elec = None # a Mole object for NEO-electron and classical nuclei
         self.nuc = [] # a list of Mole objects for quantum nuclei
+        self._keys.update(['quantum_nuc', 'nuc_num', 'mass', 'elec', 'nuc'])
 
     def build_nuc_mole(self, atom_index, nuc_basis='pb4d', frac=None):
         '''
@@ -131,6 +132,7 @@ class Mole(gto.mole.Mole):
         # build the Mole object for electrons and classical nuclei
         self.elec = gto.Mole()
         self.elec.super_mol = self
+        self.elec._keys.update(['super_mol'])
         self.elec.build(**kwargs)
 
         # deal with fractional number of nuclei
