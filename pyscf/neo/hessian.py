@@ -36,6 +36,7 @@ class Hessian(lib.StreamObject):
         self.base = scf_method
         self.max_memory = self.mol.max_memory
         self.atmlst = range(self.mol.natm)
+        self.grid_response = None
         if self.base.epc is not None:
             raise NotImplementedError('Hessian with epc is not implemented')
 
@@ -43,6 +44,8 @@ class Hessian(lib.StreamObject):
     def hess_elec(self, mo1_e, e1_e):
         'Hessian of electrons and classic nuclei in cNEO'
         hobj = self.base.mf_elec.Hessian()
+        if self.grid_response is not None:
+            hobj.grid_response = self.grid_response
         de2 = hobj.hess_elec(mo1=mo1_e, mo_e1=e1_e) + hobj.hess_nuc()
         return de2
 

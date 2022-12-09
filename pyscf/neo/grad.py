@@ -36,12 +36,15 @@ class Gradients(lib.StreamObject):
         self.base = scf_method
         self.max_memory = self.mol.max_memory
         self.grad = self.kernel
+        self.grid_response = None
         if self.base.epc is not None:
             raise NotImplementedError('Gradient with epc is not implemented')
 
     def grad_elec(self, atmlst=None):
         'gradients of electrons and classic nuclei'
         g = self.base.mf_elec.nuc_grad_method()
+        if self.grid_response is not None:
+            g.grid_response = self.grid_response
         g.verbose = self.verbose - 1
         return g.grad(atmlst=atmlst)
 
