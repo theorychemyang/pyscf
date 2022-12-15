@@ -81,9 +81,9 @@ class Pyscf_NEO(Calculator):
         if self.parameters.init_guess is not None:
             mf.init_guess = self.parameters.init_guess
         if self.parameters.conv_tol is not None:
-            mf.conv_tol = parameters.conv_tol
+            mf.conv_tol = self.parameters.conv_tol
         if self.parameters.conv_tol_grad is not None:
-            mf.conv_tol = parameters.conv_tol_grad
+            mf.conv_tol = self.parameters.conv_tol_grad
         # check stability for UKS
         mf.scf()
         if self.parameters.spin !=0:
@@ -145,9 +145,9 @@ class Pyscf_DFT(Calculator):
         if self.parameters.init_guess is not None:
             mf.init_guess = self.parameters.init_guess
         if self.parameters.conv_tol is not None:
-            mf.conv_tol = parameters.conv_tol
+            mf.conv_tol = self.parameters.conv_tol
         if self.parameters.conv_tol_grad is not None:
-            mf.conv_tol = parameters.conv_tol_grad
+            mf.conv_tol = self.parameters.conv_tol_grad
         # check stability for UKS
         mf.scf()
         if self.parameters.spin !=0:
