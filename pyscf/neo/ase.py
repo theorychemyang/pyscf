@@ -37,8 +37,11 @@ class Pyscf_NEO(Calculator):
                           'spin': 0,
                           'xc': 'b3lyp',
                           'quantum_nuc': ['H'],
-                          'atom_grid' : None,
-                          'grid_response' : False
+                          'atom_grid' : None, # recommend (99,590) or even (99,974)
+                          'grid_response' : None, # for meta-GGA, must be True!!!
+                          'init_guess' : None, # 'huckel' for unrestricted might be good
+                          'conv_tol' : None, # 1e-12 for tight convergence
+                          'conv_tol_grad' : None # 1e-8 for tight convergence
                          }
 
 
@@ -75,13 +78,20 @@ class Pyscf_NEO(Calculator):
         mf.mf_elec.xc = self.parameters.xc
         if self.parameters.atom_grid is not None:
             mf.mf_elec.grids.atom_grid = self.parameters.atom_grid
+        if self.parameters.init_guess is not None:
+            mf.init_guess = self.parameters.init_guess
+        if self.parameters.conv_tol is not None:
+            mf.conv_tol = parameters.conv_tol
+        if self.parameters.conv_tol_grad is not None:
+            mf.conv_tol = parameters.conv_tol_grad
         # check stability for UKS
         mf.scf()
         if self.parameters.spin !=0:
             mf = stable_opt_internal(mf)
         self.results['energy'] = mf.e_tot*Hartree
         g = mf.Gradients()
-        g.grid_response = self.parameters.grid_response
+        if self.parameters.grid_response is not None:
+            g.grid_response = self.parameters.grid_response
         self.results['forces'] = -g.grad()*Hartree/Bohr
 
         dip_elec = dip_moment(mol.elec, mf.mf_elec.make_rdm1()) # dipole of electrons and classical nuclei
@@ -96,13 +106,15 @@ class Pyscf_NEO(Calculator):
 class Pyscf_DFT(Calculator):
 
     implemented_properties = ['energy', 'forces', 'dipole']
-    default_parameters = {'mf':'RKS',
-                          'basis': 'ccpvdz',
+    default_parameters = {'basis': 'ccpvdz',
                           'charge': 0,
                           'spin': 0,
                           'xc': 'b3lyp',
-                          'atom_grid' : None,
-                          'grid_response' : False
+                          'atom_grid' : None, # recommend (99,590) or even (99,974)
+                          'grid_response' : None, # for meta-GGA, must be True!!!
+                          'init_guess' : None, # 'huckel' for unrestricted might be good
+                          'conv_tol' : None, # 1e-12 for tight convergence
+                          'conv_tol_grad' : None # 1e-8 for tight convergence
                          }
 
 
@@ -130,12 +142,19 @@ class Pyscf_DFT(Calculator):
         mf.xc = self.parameters.xc
         if self.parameters.atom_grid is not None:
             mf.grids.atom_grid = self.parameters.atom_grid
+        if self.parameters.init_guess is not None:
+            mf.init_guess = self.parameters.init_guess
+        if self.parameters.conv_tol is not None:
+            mf.conv_tol = parameters.conv_tol
+        if self.parameters.conv_tol_grad is not None:
+            mf.conv_tol = parameters.conv_tol_grad
         # check stability for UKS
         mf.scf()
         if self.parameters.spin !=0:
             mf = stable_opt_internal(mf)
         self.results['energy'] = mf.e_tot*Hartree
         g = mf.Gradients()
-        g.grid_response = self.parameters.grid_response
+        if self.parameters.grid_response is not None:
+            g.grid_response = self.parameters.grid_response
         self.results['forces'] = -g.grad()*Hartree/Bohr
         self.results['dipole'] = dip_moment(mol, mf.make_rdm1())
