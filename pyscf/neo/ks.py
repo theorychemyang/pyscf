@@ -119,7 +119,7 @@ class KS(HF):
 
         aow = None
         for ao, mask, weight, coords in ni.block_loop(mol, grids, nao):
-            aow = numpy.ndarray(ao.shape, order='F')
+            aow = numpy.ndarray(ao.shape, order='F', buffer=aow)
             ao_elec = eval_ao(self.mol.elec, coords)
             if self.dm_elec.ndim > 2:
                 rho_elec = eval_rho(self.mol.elec, ao_elec, self.dm_elec[0] + self.dm_elec[1])
