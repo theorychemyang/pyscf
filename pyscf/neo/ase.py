@@ -85,7 +85,7 @@ class Pyscf_NEO(Calculator):
         if self.parameters.conv_tol is not None:
             mf.conv_tol = self.parameters.conv_tol
         if self.parameters.conv_tol_grad is not None:
-            mf.conv_tol = self.parameters.conv_tol_grad
+            mf.conv_tol_grad = self.parameters.conv_tol_grad
         if self.parameters.add_d3:
             mf.mf_elec = dftd3.dftd3(mf.mf_elec)
         # check stability for UKS
@@ -152,7 +152,7 @@ class Pyscf_DFT(Calculator):
         if self.parameters.conv_tol is not None:
             mf.conv_tol = self.parameters.conv_tol
         if self.parameters.conv_tol_grad is not None:
-            mf.conv_tol = self.parameters.conv_tol_grad
+            mf.conv_tol_grad = self.parameters.conv_tol_grad
         if self.parameters.add_d3:
             mf = dftd3.dftd3(mf)
         # check stability for UKS
