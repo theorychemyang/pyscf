@@ -43,6 +43,7 @@ class Pyscf_NEO(Calculator):
                           'xc': 'b3lyp',
                           'quantum_nuc': ['H'],
                           'add_d3' : False, # add dispersion correction D3
+                          'add_vv10' : False, # add dispersion correction VV10
                           'atom_grid' : None, # recommend (99,590) or even (99,974)
                           'grid_response' : None, # for meta-GGA, must be True!!!
                           'init_guess' : None, # 'huckel' for unrestricted might be good
@@ -84,6 +85,11 @@ class Pyscf_NEO(Calculator):
         mf.mf_elec.xc = self.parameters.xc
         if self.parameters.atom_grid is not None:
             mf.mf_elec.grids.atom_grid = self.parameters.atom_grid
+        if self.parameters.add_vv10:
+            mf.mf_elec.nlc = 'VV10'
+            mf.mf_elec.grids.prune = None
+            mf.mf_elec.nlcgrids.atom_grid = (50,194)
+            mf.mf_elec.nlcgrids.prune = dft.gen_grid.sg1_prune
         if self.parameters.init_guess is not None:
             mf.init_guess = self.parameters.init_guess
         if self.parameters.conv_tol is not None:
@@ -121,6 +127,7 @@ class Pyscf_DFT(Calculator):
                           'spin': 0,
                           'xc': 'b3lyp',
                           'add_d3' : False, # add dispersion correction D3
+                          'add_vv10' : False, # add dispersion correction VV10
                           'atom_grid' : None, # recommend (99,590) or even (99,974)
                           'grid_response' : None, # for meta-GGA, must be True!!!
                           'init_guess' : None, # 'huckel' for unrestricted might be good
@@ -153,6 +160,11 @@ class Pyscf_DFT(Calculator):
         mf.xc = self.parameters.xc
         if self.parameters.atom_grid is not None:
             mf.grids.atom_grid = self.parameters.atom_grid
+        if self.parameters.add_vv10:
+            mf.nlc = 'VV10'
+            mf.grids.prune = None
+            mf.nlcgrids.atom_grid = (50,194)
+            mf.nlcgrids.prune = dft.gen_grid.sg1_prune
         if self.parameters.init_guess is not None:
             mf.init_guess = self.parameters.init_guess
         if self.parameters.conv_tol is not None:
