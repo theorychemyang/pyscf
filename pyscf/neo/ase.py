@@ -9,6 +9,7 @@ from pyscf import neo
 from pyscf import gto, dft
 from pyscf.scf.hf import dip_moment
 from pyscf.lib import logger
+from pyscf import dftd3
 
 # from examples/scf/17-stability.py
 def stable_opt_internal(mf):
@@ -37,6 +38,7 @@ class Pyscf_NEO(Calculator):
                           'spin': 0,
                           'xc': 'b3lyp',
                           'quantum_nuc': ['H'],
+                          'add_d3' : False, # add dispersion correction D3
                           'atom_grid' : None, # recommend (99,590) or even (99,974)
                           'grid_response' : None, # for meta-GGA, must be True!!!
                           'init_guess' : None, # 'huckel' for unrestricted might be good
@@ -84,6 +86,8 @@ class Pyscf_NEO(Calculator):
             mf.conv_tol = self.parameters.conv_tol
         if self.parameters.conv_tol_grad is not None:
             mf.conv_tol = self.parameters.conv_tol_grad
+        if self.parameters.add_d3:
+            mf.mf_elec = dftd3.dftd3(mf.mf_elec)
         # check stability for UKS
         mf.scf()
         if self.parameters.spin !=0:
@@ -110,6 +114,7 @@ class Pyscf_DFT(Calculator):
                           'charge': 0,
                           'spin': 0,
                           'xc': 'b3lyp',
+                          'add_d3' : False, # add dispersion correction D3
                           'atom_grid' : None, # recommend (99,590) or even (99,974)
                           'grid_response' : None, # for meta-GGA, must be True!!!
                           'init_guess' : None, # 'huckel' for unrestricted might be good
@@ -148,6 +153,8 @@ class Pyscf_DFT(Calculator):
             mf.conv_tol = self.parameters.conv_tol
         if self.parameters.conv_tol_grad is not None:
             mf.conv_tol = self.parameters.conv_tol_grad
+        if self.parameters.add_d3:
+            mf = dftd3.dftd3(mf)
         # check stability for UKS
         mf.scf()
         if self.parameters.spin !=0:
