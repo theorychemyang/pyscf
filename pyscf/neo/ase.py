@@ -9,7 +9,11 @@ from pyscf import neo
 from pyscf import gto, dft
 from pyscf.scf.hf import dip_moment
 from pyscf.lib import logger
-from pyscf import dftd3
+try:
+    from pyscf import dftd3
+    DFTD3_AVAILABLE = True
+except ImportError:
+    DFTD3_AVAILABLE = False
 
 # from examples/scf/17-stability.py
 def stable_opt_internal(mf):
@@ -87,6 +91,8 @@ class Pyscf_NEO(Calculator):
         if self.parameters.conv_tol_grad is not None:
             mf.conv_tol_grad = self.parameters.conv_tol_grad
         if self.parameters.add_d3:
+            if not DFTD3_AVAILABLE:
+                raise RuntimeError('DFTD3 PySCF extension not available')
             mf.mf_elec = dftd3.dftd3(mf.mf_elec)
         # check stability for UKS
         mf.scf()
@@ -154,6 +160,8 @@ class Pyscf_DFT(Calculator):
         if self.parameters.conv_tol_grad is not None:
             mf.conv_tol_grad = self.parameters.conv_tol_grad
         if self.parameters.add_d3:
+            if not DFTD3_AVAILABLE:
+                raise RuntimeError('DFTD3 PySCF extension not available')
             mf = dftd3.dftd3(mf)
         # check stability for UKS
         mf.scf()
