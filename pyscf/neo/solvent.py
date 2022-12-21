@@ -12,6 +12,7 @@ from pyscf.lib import logger
 from pyscf.dft import numint
 from pyscf.solvent.ddcosmo import make_phi, _vstack_factor_fak_pol, make_grids_one_sphere, DDCOSMO
 from pyscf.neo.hf import HF
+from pyscf.solvent._attach_solvent import _Solvation
 
 
 def make_psi(pcmobj, dm, r_vdw, cached_pol, with_nuc=True):
@@ -157,7 +158,7 @@ def _for_scf_neo(mf, solvent_obj, dm=None):
         solvent_obj.e, solvent_obj.v = solvent_obj.kernel(dm)
         solvent_obj.frozen = True
 
-    class SCFWithSolvent(oldMF):
+    class SCFWithSolvent(oldMF, _Solvation):
         def __init__(self, mf, solvent):
             self.__dict__.update(mf.__dict__)
             self.with_solvent = solvent
@@ -200,13 +201,12 @@ def _for_scf_neo(mf, solvent_obj, dm=None):
             'add solvation energy to total energy'
             return self.e_solvent + oldMF.energy_tot(self, dm_elec, dm_nuc, h1e, vhf_e, h1n, veff_n)
         
-        '''
         def nuc_grad_method(self):
             grad_method = oldMF.nuc_grad_method(self)
             return self.with_solvent.nuc_grad_method(grad_method)
 
         Gradients = nuc_grad_method
-
+        '''
         def gen_response(self, *args, **kwargs):
             vind = oldMF.gen_response(self, *args, **kwargs)
             is_uhf = isinstance(self, scf.uhf.UHF)
@@ -270,7 +270,7 @@ class Solvent(DDCOSMO):
         for i in range(self.mol.nuc_num):
             ia = self.mol.nuc[i].atom_index
             charge = self.mol.atom_charge(ia)
-            phi -= make_phi(self.pcm_nuc[i], dm_nuc[i], r_vdw, ui, ylm_1sph, with_nuc=False) * charge
+            phi -= charge * make_phi(self.pcm_nuc[i], dm_nuc[i], r_vdw, ui, ylm_1sph, with_nuc=False)
         # minus sign for induced potential by quantum nuclei and the contributions from class nuclei are muted to avoid double counting
 
         Xvec = numpy.linalg.solve(Lmat, phi.ravel()).reshape(self.mol.natm,-1)
@@ -284,9 +284,8 @@ class Solvent(DDCOSMO):
         for i in range(self.mol.nuc_num):
             ia = self.mol.nuc[i].atom_index
             charge = self.mol.atom_charge(ia)
-            psi_n = make_psi(self.pcm_nuc[i], dm_nuc[i], r_vdw, cached_pol, with_nuc=False)
-                                 
-            psi -= psi_n * charge
+            psi_n = charge * make_psi(self.pcm_nuc[i], dm_nuc[i], r_vdw, cached_pol, with_nuc=False)                                 
+            psi -= psi_n
 
         vmat_e = make_vmat(self.pcm_elec, dm_elec, r_vdw, ui, ylm_1sph, cached_pol, Xvec, Lmat, psi)
         vmat.append(vmat_e)
@@ -307,6 +306,13 @@ class Solvent(DDCOSMO):
 
         return epcm, vpcm
         
+    def nuc_grad_method(self, grad_method):
+        'For grad_method in vacuum, add nuclear gradients of solvent'
+        from pyscf.neo.solvent_grad import make_grad_object
+        if self.frozen:
+            raise RuntimeError('Frozen solvent model is not supported for energy gradients')
+        else:
+            return make_grad_object(grad_method)
 
 # inject ddcosmo
 HF.ddCOSMO = HF.DDCOSMO = ddcosmo_for_neo
