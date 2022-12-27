@@ -42,6 +42,7 @@ class Pyscf_NEO(Calculator):
                           'spin': 0,
                           'xc': 'b3lyp',
                           'quantum_nuc': ['H'],
+                          'add_solvent': False, # add implict solvent model ddCOSMO
                           'add_d3' : False, # add dispersion correction D3
                           'add_vv10' : False, # add dispersion correction VV10
                           'atom_grid' : None, # recommend (99,590) or even (99,974)
@@ -100,6 +101,10 @@ class Pyscf_NEO(Calculator):
             if not DFTD3_AVAILABLE:
                 raise RuntimeError('DFTD3 PySCF extension not available')
             mf.mf_elec = dftd3.dftd3(mf.mf_elec)
+        if self.parameters.add_solvent:
+            from pyscf.neo.solvent import ddcosmo_for_neo
+            mf.scf(cycle=1) # TODO: remove this
+            mf = ddcosmo_for_neo(mf)
         # check stability for UKS
         mf.scf()
         if self.parameters.spin !=0:
@@ -126,6 +131,7 @@ class Pyscf_DFT(Calculator):
                           'charge': 0,
                           'spin': 0,
                           'xc': 'b3lyp',
+                          'add_solvent': False, # add implict solvent model ddCOSMO
                           'add_d3' : False, # add dispersion correction D3
                           'add_vv10' : False, # add dispersion correction VV10
                           'atom_grid' : None, # recommend (99,590) or even (99,974)
@@ -175,6 +181,9 @@ class Pyscf_DFT(Calculator):
             if not DFTD3_AVAILABLE:
                 raise RuntimeError('DFTD3 PySCF extension not available')
             mf = dftd3.dftd3(mf)
+        if self.parameters.add_solvent:
+            from pyscf import solvent
+            mf = mf.ddCOSMO()
         # check stability for UKS
         mf.scf()
         if self.parameters.spin !=0:
