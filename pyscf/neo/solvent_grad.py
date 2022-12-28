@@ -11,20 +11,20 @@ from pyscf import df
 from pyscf.solvent import ddcosmo
 from pyscf.symm import sph
 from pyscf.lib import logger
-from pyscf.solvent.ddcosmo_grad import make_L1, make_e_psi1, make_fi1
+from pyscf.dft import gen_grid, numint
+from pyscf.solvent.ddcosmo_grad import make_L1, make_e_psi1, make_fi1, make_phi1
 from pyscf.neo.solvent import make_psi
 from pyscf.grad.rhf import _write
 from pyscf.solvent._attach_solvent import _Solvation
+from pyscf.grad import rks as rks_grad
 
 
-def make_phi1(pcmobj, dm, r_vdw, ui, ylm_1sph, with_nuc=True):
+def make_phi1_nuc(pcmobj, dm, r_vdw, ui, ylm_1sph):
     mol = pcmobj.mol
     natm = mol.natm
     lmax = pcmobj.lmax
     nlm = (lmax+1)**2
 
-    if not (isinstance(dm, numpy.ndarray) and dm.ndim == 2):
-        dm = dm[0] + dm[1]
     tril_dm = lib.pack_tril(dm+dm.T)
     nao = dm.shape[0]
     diagidx = numpy.arange(nao)
@@ -32,8 +32,6 @@ def make_phi1(pcmobj, dm, r_vdw, ui, ylm_1sph, with_nuc=True):
     tril_dm[diagidx] *= .5
 
     atom_coords = mol.atom_coords()
-    atom_charges = mol.atom_charges()
-
     coords_1sph, weights_1sph = ddcosmo.make_grids_one_sphere(pcmobj.lebedev_order)
     #extern_point_idx = ui > 0
 
@@ -41,30 +39,11 @@ def make_phi1(pcmobj, dm, r_vdw, ui, ylm_1sph, with_nuc=True):
     fi1[:,:,ui==0] = 0
     ui1 = -fi1
 
-    phi1 = numpy.zeros((natm, 3, natm, nlm)) # test
-
-    if with_nuc: # the response of classical nuclei
-        ngrid_1sph = weights_1sph.size
-        v_phi0 = numpy.empty((natm,ngrid_1sph))
-        for ia in range(natm):
-            cav_coords = atom_coords[ia] + r_vdw[ia] * coords_1sph
-            d_rs = atom_coords.reshape(-1,1,3) - cav_coords
-            v_phi0[ia] = numpy.einsum('z,zp->p', atom_charges, 1./lib.norm(d_rs,axis=2))
-        phi1 = -numpy.einsum('n,ln,azjn,jn->azjl', weights_1sph, ylm_1sph, ui1, v_phi0)
-
-        for ia in range(natm):
-            cav_coords = atom_coords[ia] + r_vdw[ia] * coords_1sph
-            for ja in range(natm):
-                rs = atom_coords[ja] - cav_coords
-                d_rs = lib.norm(rs, axis=1)
-                v_phi = atom_charges[ja] * numpy.einsum('px,p->px', rs, 1./d_rs**3)
-                tmp = numpy.einsum('n,ln,n,nx->xl', weights_1sph, ylm_1sph, ui[ia], v_phi)
-                phi1[ja,:,ia] += tmp  # response of the other atoms
-                phi1[ia,:,ia] -= tmp  # response of cavity grids
+    phi1 = numpy.zeros((natm, 3, natm, nlm))
 
     int3c2e = mol._add_suffix('int3c2e')
     int3c2e_ip1 = mol._add_suffix('int3c2e_ip1')
-    aoslices = mol.aoslice_by_atom()
+
     for ia in range(natm):
         cav_coords = atom_coords[ia] + r_vdw[ia] * coords_1sph
         #fakemol = gto.fakemol_for_charges(cav_coords[ui[ia]>0])
@@ -78,12 +57,51 @@ def make_phi1(pcmobj, dm, r_vdw, ui, ylm_1sph, with_nuc=True):
         phi1_e2_nj += numpy.einsum('ji,xijr->xr', dm, v_e1_nj)
         phi1[ia,:,ia] += numpy.einsum('n,ln,n,xn->xl', weights_1sph, ylm_1sph, ui[ia], phi1_e2_nj)
 
-        for ja in range(natm):
-            shl0, shl1, p0, p1 = aoslices[ja]
-            phi1_nj  = numpy.einsum('ij,xijr->xr', dm[p0:p1  ], v_e1_nj[:,p0:p1])
-            phi1_nj += numpy.einsum('ji,xijr->xr', dm[:,p0:p1], v_e1_nj[:,p0:p1])
-            phi1[ja,:,ia] -= numpy.einsum('n,ln,n,xn->xl', weights_1sph, ylm_1sph, ui[ia], phi1_nj)
+        ja = mol.atom_index
+        phi1[ja,:,ia] -= numpy.einsum('n,ln,n,xn->xl', weights_1sph, ylm_1sph, ui[ia], phi1_e2_nj)
+        
     return phi1
+
+
+def make_e_psi1_nuc(pcmobj, dm, cached_pol, Xvec):
+    mol = pcmobj.mol
+    natm = mol.natm
+    lmax = pcmobj.lmax
+    grids = pcmobj.grids
+
+    ni = numint.NumInt()
+    make_rho, nset, nao = ni._gen_rho_evaluator(mol, dm)
+    den = numpy.empty((4,grids.weights.size))
+
+    ao_loc = mol.ao_loc_nr()
+    vmat = numpy.zeros((3,nao,nao))
+    psi1 = numpy.zeros((natm,3))
+    i1 = 0
+    for ia, (coords, weight, weight1) in enumerate(rks_grad.grids_response_cc(grids)):
+        i0, i1 = i1, i1 + weight.size
+        ao = ni.eval_ao(mol, coords, deriv=1)
+        mask = gen_grid.make_mask(mol, coords)
+        den[:,i0:i1] = make_rho(0, ao, mask, 'GGA')
+
+        fak_pol, leak_idx = cached_pol[mol.atom_symbol(ia)]
+        eta_nj = 0
+        p1 = 0
+        for l in range(lmax+1):
+            fac = 4*numpy.pi/(l*2+1)
+            p0, p1 = p1, p1 + (l*2+1)
+            eta_nj += fac * numpy.einsum('mn,m->n', fak_pol[l], Xvec[ia,p0:p1])
+        psi1 -= numpy.einsum('n,n,zxn->zx', den[0,i0:i1], eta_nj, weight1)
+        psi1[ia] -= numpy.einsum('xn,n,n->x', den[1:4,i0:i1], eta_nj, weight)
+
+        vtmp = numpy.zeros((3,nao,nao))
+        aow = numpy.einsum('pi,p->pi', ao[0], weight*eta_nj)
+        rks_grad._d1_dot_(vtmp, mol, ao[1:4], aow, mask, ao_loc, True)
+        vmat += vtmp
+
+    ja = mol.atom_index
+    psi1[ja] += numpy.einsum('xij,ij->x', vmat, dm) * 2
+
+    return psi1
 
 
 def kernel(pcmobj, dm, verbose=None):
@@ -116,13 +134,13 @@ def kernel(pcmobj, dm, verbose=None):
     L1 = make_L1(pcmobj, r_vdw, ylm_1sph, fi)
 
     phi0 = ddcosmo.make_phi(pcmobj.pcm_elec, dm_elec, r_vdw, ui, ylm_1sph, with_nuc=True)
-    phi1 = make_phi1(pcmobj.pcm_elec, dm_elec, r_vdw, ui, ylm_1sph, with_nuc=True)
+    phi1 = make_phi1(pcmobj.pcm_elec, dm_elec, r_vdw, ui, ylm_1sph)
     psi0 = make_psi(pcmobj.pcm_elec, dm_elec, r_vdw, cached_pol, with_nuc=True)
     for i in range(mol.nuc_num):
         ia = mol.nuc[i].atom_index
         charge = mol.atom_charge(ia)
         phi0 -= charge * ddcosmo.make_phi(pcmobj.pcm_nuc[i], dm_nuc[i], r_vdw, ui, ylm_1sph, with_nuc=False)
-        phi1 -= charge * make_phi1(pcmobj.pcm_nuc[i], dm_nuc[i], r_vdw, ui, ylm_1sph, with_nuc=False)
+        phi1 -= charge * make_phi1_nuc(pcmobj.pcm_nuc[i], dm_nuc[i], r_vdw, ui, ylm_1sph)
         psi0 -= charge * make_psi(pcmobj.pcm_nuc[i], dm_nuc[i], r_vdw, cached_pol, with_nuc=False)
 
     L0_X = numpy.linalg.solve(L0, phi0.ravel()).reshape(natm, nlm)
@@ -133,8 +151,7 @@ def kernel(pcmobj, dm, verbose=None):
     for i in range(mol.nuc_num):
         ia = mol.nuc[i].atom_index
         charge = mol.atom_charge(ia)
-        e_psi1 -= charge * make_e_psi1(pcmobj.pcm_nuc[i], dm_nuc[i], r_vdw, ui, ylm_1sph,
-                         cached_pol, L0_X, L0)
+        e_psi1 -= charge * make_e_psi1_nuc(pcmobj.pcm_nuc[i], dm_nuc[i], cached_pol, L0_X)
 
     dielectric = pcmobj.eps
     if dielectric > 0:
