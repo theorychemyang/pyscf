@@ -38,6 +38,7 @@ class Pyscf_NEO(Calculator):
 
     implemented_properties = ['energy', 'forces', 'dipole']
     default_parameters = {'basis': 'ccpvdz',
+                          'nuc_basis' : 'pb4d',
                           'charge': 0,
                           'spin': 0,
                           'xc': 'b3lyp',
@@ -75,10 +76,12 @@ class Pyscf_NEO(Calculator):
                 atom_pyscf.append(['H+%i' %i, tuple(positions[i])])
             else:
                 atom_pyscf.append(['%s%i' %(atoms[i],i), tuple(positions[i])])
-        mol.build(quantum_nuc = self.parameters.quantum_nuc,
-                  atom = atom_pyscf,
-                  basis = self.parameters.basis,
-                  charge = self.parameters.charge, spin = self.parameters.spin)
+        mol.build(quantum_nuc=self.parameters.quantum_nuc,
+                  atom=atom_pyscf,
+                  basis=self.parameters.basis,
+                  nuc_basis=self.parameters.nuc_basis,
+                  charge=self.parameters.charge,
+                  spin=self.parameters.spin)
         if self.parameters.spin == 0:
             mf = neo.CDFT(mol)
         else:
@@ -157,8 +160,8 @@ class Pyscf_DFT(Calculator):
                 atom_pyscf.append(['H+', tuple(positions[i])])
             else:
                 atom_pyscf.append(['%s' %(atoms[i]), tuple(positions[i])])
-        mol.build(atom = atom_pyscf, basis = self.parameters.basis,
-                  charge = self.parameters.charge, spin = self.parameters.spin)
+        mol.build(atom=atom_pyscf, basis=self.parameters.basis,
+                  charge=self.parameters.charge, spin=self.parameters.spin)
         if self.parameters.spin != 0:
             mf = dft.UKS(mol)
         else:
