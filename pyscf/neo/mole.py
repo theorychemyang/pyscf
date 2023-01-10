@@ -130,8 +130,8 @@ class Mole(gto.mole.Mole):
                 self.mass[i] = 2.01410177811
             elif self.atom_symbol(i) == 'H@0': # Muonium (TODO: precise mass)
                 self.mass[i] = 0.114
-            elif self.atom_pure_symbol(i) == 'H': # Proton (from Wikipedia)
-                self.mass[i] = 1.007276466621
+            elif self.atom_pure_symbol(i) == 'H': # Hydrogen (from Wikipedia)
+                self.mass[i] = 1.007825
 
         # build the Mole object for electrons and classical nuclei
         self.elec = gto.Mole()
