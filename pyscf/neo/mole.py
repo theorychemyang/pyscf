@@ -14,19 +14,19 @@ class Mole(gto.mole.Mole):
 
     >>> from pyscf import neo
     >>> mol = neo.Mole()
-    >>> mol.build(atom = 'H 0.00 0.76 -0.48; H 0.00 -0.76 -0.48; O 0.00 0.00 0.00', basis = 'ccpvdz')
+    >>> mol.build(atom='H 0.00 0.76 -0.48; H 0.00 -0.76 -0.48; O 0.00 0.00 0.00', basis='ccpvdz')
     # All hydrogen atoms are treated quantum mechanically by default
     >>> mol = neo.Mole()
-    >>> mol.build(atom = 'H 0.00 0.76 -0.48; H 0.00 -0.76 -0.48; O 0.00 0.00 0.00', quantum_nuc = [0,1], basis = 'ccpvdz')
+    >>> mol.build(atom='H 0.00 0.76 -0.48; H 0.00 -0.76 -0.48; O 0.00 0.00 0.00', quantum_nuc=[0,1], basis='ccpvdz')
     # Explictly assign the first two H atoms to be treated quantum mechanically
     >>> mol = neo.Mole()
-    >>> mol.build(atom = 'H 0.00 0.76 -0.48; H 0.00 -0.76 -0.48; O 0.00 0.00 0.00', quantum_nuc = ['H'], basis = 'ccpvdz')
+    >>> mol.build(atom='H 0.00 0.76 -0.48; H 0.00 -0.76 -0.48; O 0.00 0.00 0.00', quantum_nuc=['H'], basis='ccpvdz')
     # All hydrogen atoms are treated quantum mechanically
     >>> mol = neo.Mole()
-    >>> mol.build(atom = 'H0 0.00 0.76 -0.48; H1 0.00 -0.76 -0.48; O 0.00 0.00 0.00', quantum_nuc = ['H'], basis = 'ccpvdz')
+    >>> mol.build(atom='H0 0.00 0.76 -0.48; H1 0.00 -0.76 -0.48; O 0.00 0.00 0.00', quantum_nuc=['H'], basis='ccpvdz')
     # Avoid repeated nuclear basis by labelling atoms of the same type
     >>> mol = neo.Mole()
-    >>> mol.build(atom = 'H 0 0 0; C 0 0 1.1; N 0 0 2.2', quantum_nuc=[0], basis='ccpvdz', nuc_basis='pb4d')
+    >>> mol.build(atom='H 0 0 0; C 0 0 1.1; N 0 0 2.2', quantum_nuc=[0], basis='ccpvdz', nuc_basis='pb4d')
     # Pick the nuclear basis for protons
     '''
 
@@ -58,8 +58,11 @@ class Mole(gto.mole.Mole):
 
         dirnow = os.path.realpath(os.path.join(__file__, '..'))
         if 'H+' in self.atom_symbol(atom_index): # H+ for deuterium
-            with open(os.path.join(dirnow, 'basis/s-'+nuc_basis+'.dat'), 'r') as f:
+            with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
                 basis = gto.basis.parse(f.read())
+                # read in H basis, but scale the exponents by sqrt(mass_D/mass_H)
+                for x in basis:
+                    x[1][0] *= numpy.sqrt(2.01410177811/1.007825)
                 nuc.basis_name = nuc_basis
         elif self.atom_pure_symbol(atom_index) == 'H':
             with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
@@ -77,9 +80,10 @@ class Mole(gto.mole.Mole):
             n = 12
             basis = gto.expand_etbs([(0, n, alpha, beta), (1, n, alpha, beta), (2, n, alpha, beta)])
             #logger.info(self, 'Nuclear basis for %s: n %s alpha %s beta %s' %(self.atom_symbol(atom_index), n, alpha, beta))
-        with contextlib.redirect_stderr(open(os.devnull, 'w')): # suppress "Warning: Basis not found for atom" in line 921 of gto/mole.py
-            nuc.build(atom = self.atom, basis={self.atom_symbol(atom_index): basis},
-                charge = self.charge, cart = self.cart, spin = self.spin)
+        # suppress "Warning: Basis not found for atom" in line 921 of gto/mole.py
+        with contextlib.redirect_stderr(open(os.devnull, 'w')):
+            nuc.build(atom=self.atom, basis={self.atom_symbol(atom_index): basis},
+                      charge=self.charge, cart=self.cart, spin=self.spin)
 
         # set all quantum nuclei to have zero charges
         quantum_nuclear_charge = 0
