@@ -69,57 +69,95 @@ def dot_eri_dm(eri, dms, nao_v=None, eri_dot_dm=True):
         vj = vj.reshape((n_dm,nao_v,nao_v))
     return vj
 
+def _is_mem_enough(nao1, nao2, max_memory):
+    return nao1**2*nao2**2*2/1e6+lib.current_memory()[0] < max_memory*.95
+
+def _build_eri_ne(mol_elec, mol_nuc):
+    eri_ne = None
+    if mol_elec.super_mol.incore_anyway or \
+        _is_mem_enough(mol_elec.nao_nr(), mol_nuc.nao_nr(), mol_elec.super_mol.max_memory):
+        atm, bas, env = gto.conc_env(mol_nuc._atm, mol_nuc._bas, mol_nuc._env,
+                                     mol_elec._atm, mol_elec._bas, mol_elec._env)
+        eri_ne = \
+            gto.moleintor.getints('int2e_sph', atm, bas, env,
+                                  shls_slice=(0, mol_nuc._bas.shape[0], 0, mol_nuc._bas.shape[0],
+                                              mol_nuc._bas.shape[0],
+                                              mol_nuc._bas.shape[0] + mol_elec._bas.shape[0],
+                                              mol_nuc._bas.shape[0],
+                                              mol_nuc._bas.shape[0] + mol_elec._bas.shape[0]),
+                                  aosym='s4')
+    return eri_ne
+
+def _build_eri_nn(mol_nuc1, mol_nuc2):
+    '''idx mole_nuc2 > mole_nuc1'''
+    eri_nn = None
+    if mol_nuc1.super_mol.incore_anyway or \
+        _is_mem_enough(mol_nuc1.nao_nr(), mol_nuc2.nao_nr(), mol_nuc1.super_mol.max_memory):
+        atm, bas, env = gto.conc_env(mol_nuc1._atm, mol_nuc1._bas, mol_nuc1._env,
+                                     mol_nuc2._atm, mol_nuc2._bas, mol_nuc2._env)
+        eri_nn = \
+            gto.moleintor.getints('int2e_sph', atm, bas, env,
+                                  shls_slice=(0, mol_nuc1._bas.shape[0], 0, mol_nuc1._bas.shape[0],
+                                              mol_nuc1._bas.shape[0],
+                                              mol_nuc1._bas.shape[0] + mol_nuc2._bas.shape[0],
+                                              mol_nuc1._bas.shape[0],
+                                              mol_nuc1._bas.shape[0] + mol_nuc2._bas.shape[0]),
+                                  aosym='s4')
+    return eri_nn
+
 def get_j_e_dm_n(idx_nuc, dm_n, mol_elec=None, mol_nuc=None, eri_ne=None):
     '''Get electronic Coulomb matrix from e-n interaction'''
     ia = mol_nuc.atom_index
     charge = mol_elec.super_mol.atom_charge(ia)
-    if eri_ne is not None and isinstance(eri_ne, (tuple, list)) \
-        and isinstance(eri_ne[idx_nuc], numpy.ndarray): # incore
-        return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_n, nao_v=mol_elec.nao_nr(),
-                                    eri_dot_dm=False)
-    else:
-        return -charge * scf.jk.get_jk((mol_elec, mol_elec, mol_nuc, mol_nuc),
-                                       dm_n, scripts='ijkl,lk->ij',
-                                       intor='int2e', aosym='s4')
+    if eri_ne is not None and isinstance(eri_ne, (tuple, list)):
+        if eri_ne[idx_nuc] is None:
+            eri_ne[idx_nuc] = _build_eri_ne(mol_elec, mol_nuc)
+        if eri_ne[idx_nuc] is not None:
+            return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_n, nao_v=mol_elec.nao_nr(),
+                                        eri_dot_dm=False)
+    return -charge * scf.jk.get_jk((mol_elec, mol_elec, mol_nuc, mol_nuc),
+                                   dm_n, scripts='ijkl,lk->ij',
+                                   intor='int2e', aosym='s4')
 
 def get_j_n_dm_e(idx_nuc, dm_e, mol_elec=None, mol_nuc=None, eri_ne=None):
     '''Get nuclear Coulomb matrix from e-n interaction'''
     ia = mol_nuc.atom_index
     charge = mol_elec.super_mol.atom_charge(ia)
-    if eri_ne is not None and isinstance(eri_ne, (tuple, list)) \
-        and isinstance(eri_ne[idx_nuc], numpy.ndarray): # incore
-        return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_e, nao_v=mol_nuc.nao_nr(),
-                                    eri_dot_dm=True)
-    else:
-        return -charge * scf.jk.get_jk((mol_nuc, mol_nuc, mol_elec, mol_elec),
-                                       dm_e, scripts='ijkl,lk->ij',
-                                       intor='int2e', aosym='s4')
+    if eri_ne is not None and isinstance(eri_ne, (tuple, list)):
+        if eri_ne[idx_nuc] is None:
+            eri_ne[idx_nuc] = _build_eri_ne(mol_elec, mol_nuc)
+        if eri_ne[idx_nuc] is not None:
+            return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_e, nao_v=mol_nuc.nao_nr(),
+                                        eri_dot_dm=True)
+    return -charge * scf.jk.get_jk((mol_nuc, mol_nuc, mol_elec, mol_elec),
+                                   dm_e, scripts='ijkl,lk->ij',
+                                   intor='int2e', aosym='s4')
 
 def get_j_nn(idx1, idx2, dm_n2, mol_nuc1=None, mol_nuc2=None, eri_nn=None):
     '''Get nuclear Coulomb matrix from n-n interaction'''
     ia = mol_nuc1.atom_index
     ja = mol_nuc2.atom_index
     charge = mol_nuc1.super_mol.atom_charge(ia) * mol_nuc2.super_mol.atom_charge(ja)
-    need_on_the_fly = False
     if eri_nn is not None and isinstance(eri_nn, (tuple, list)):
-        if idx1 < idx2 and isinstance(eri_nn[idx1][idx2], numpy.ndarray):
-            return charge * dot_eri_dm(eri_nn[idx1][idx2], dm_n2,
-                                       nao_v=mol_nuc1.nao_nr(),
-                                       eri_dot_dm=True)
-        elif idx1 > idx2 and isinstance(eri_nn[idx2][idx1], numpy.ndarray):
-            return charge * dot_eri_dm(eri_nn[idx2][idx1], dm_n2,
-                                       nao_v=mol_nuc1.nao_nr(),
-                                       eri_dot_dm=False)
-        elif idx1 != idx2:
-            need_on_the_fly = True
-        else:
+        if idx1 < idx2:
+            if eri_nn[idx1][idx2] is None:
+                eri_nn[idx1][idx2] = _build_eri_nn(mol_nuc1, mol_nuc2)
+            if eri_nn[idx1][idx2] is not None:
+                return charge * dot_eri_dm(eri_nn[idx1][idx2], dm_n2,
+                                           nao_v=mol_nuc1.nao_nr(),
+                                           eri_dot_dm=True)
+        elif idx1 > idx2:
+            if eri_nn[idx2][idx1] is None:
+                eri_nn[idx2][idx1] = _build_eri_nn(mol_nuc2, mol_nuc1)
+            if eri_nn[idx2][idx1] is not None:
+                return charge * dot_eri_dm(eri_nn[idx2][idx1], dm_n2,
+                                           nao_v=mol_nuc1.nao_nr(),
+                                           eri_dot_dm=False)
+        elif idx1 == idx2:
             return 0.0
-    else:
-        need_on_the_fly = True
-    if need_on_the_fly:
-        return charge * scf.jk.get_jk((mol_nuc1, mol_nuc1, mol_nuc2, mol_nuc2),
-                                      dm_n2, scripts='ijkl,lk->ij',
-                                      intor='int2e', aosym='s4')
+    return charge * scf.jk.get_jk((mol_nuc1, mol_nuc1, mol_nuc2, mol_nuc2),
+                                  dm_n2, scripts='ijkl,lk->ij',
+                                  intor='int2e', aosym='s4')
 
 def get_hcore_nuc(mol, dm_elec, dm_nuc, mol_elec=None, mol_nuc=None,
                   eri_ne=None, eri_nn=None):
@@ -851,14 +889,18 @@ class HF(scf.hf.SCF):
         self.dm_elec = None
         self.mf_nuc = []
         self.dm_nuc = []
-        self._eri_ne = []
-        self._eri_nn = []
         # The verbosity flag is passed now instead of when creating those mol
         # objects because users need time to change mol's verbose level after
         # the mol object is created.
         self.mol.elec.verbose = self.mol.verbose
         for i in range(mol.nuc_num):
             self.mol.nuc[i].verbose = self.mol.verbose
+        # placeholder for ERIs
+        self._eri_ne = []
+        self._eri_nn = []
+        for i in range(mol.nuc_num):
+            self._eri_ne.append(None)
+            self._eri_nn.append([None] * mol.nuc_num)
 
         # initialize sub mf objects for electrons and quantum nuclei
         # electronic part:
@@ -883,39 +925,7 @@ class HF(scf.hf.SCF):
             mf_nuc.super_mf = self
             self.dm_nuc.append(None)
 
-        # build ne and nn ERIs if there is enough memory
-        for i in range(mol.nuc_num):
-            self._eri_ne.append(None)
-            self._eri_nn.append([None] * mol.nuc_num)
-            if mol.incore_anyway or self._is_mem_enough(mol.elec.nao_nr(), mol.nuc[i].nao_nr()):
-                atm, bas, env = gto.conc_env(mol.nuc[i]._atm, mol.nuc[i]._bas, mol.nuc[i]._env,
-                                             mol.elec._atm, mol.elec._bas, mol.elec._env)
-                self._eri_ne[i] = \
-                    gto.moleintor.getints('int2e_sph', atm, bas, env,
-                                          shls_slice=(0, mol.nuc[i]._bas.shape[0], 0, mol.nuc[i]._bas.shape[0],
-                                                      mol.nuc[i]._bas.shape[0],
-                                                      mol.nuc[i]._bas.shape[0] + mol.elec._bas.shape[0],
-                                                      mol.nuc[i]._bas.shape[0],
-                                                      mol.nuc[i]._bas.shape[0] + mol.elec._bas.shape[0]),
-                                          aosym='s4')
-        for i in range(mol.nuc_num - 1):
-            for j in range(i + 1, mol.nuc_num):
-                if mol.incore_anyway or self._is_mem_enough(mol.nuc[i].nao_nr(), mol.nuc[j].nao_nr()):
-                    atm, bas, env = gto.conc_env(mol.nuc[i]._atm, mol.nuc[i]._bas, mol.nuc[i]._env,
-                                                 mol.nuc[j]._atm, mol.nuc[j]._bas, mol.nuc[j]._env)
-                    self._eri_nn[i][j] = \
-                        gto.moleintor.getints('int2e_sph', atm, bas, env,
-                                              shls_slice=(0, mol.nuc[i]._bas.shape[0], 0, mol.nuc[i]._bas.shape[0],
-                                                          mol.nuc[i]._bas.shape[0],
-                                                          mol.nuc[i]._bas.shape[0] + mol.nuc[j]._bas.shape[0],
-                                                          mol.nuc[i]._bas.shape[0],
-                                                          mol.nuc[i]._bas.shape[0] + mol.nuc[j]._bas.shape[0]),
-                                              aosym='s4')
-
     #def dump_chk():
-
-    def _is_mem_enough(self, nao1, nao2):
-        return nao1**2*nao2**2*2/1e6+lib.current_memory()[0] < self.max_memory*.95
 
     def get_init_guess_elec(self, mol, init_guess):
         if init_guess != 'chkfile':
