@@ -69,6 +69,58 @@ def dot_eri_dm(eri, dms, nao_v=None, eri_dot_dm=True):
         vj = vj.reshape((n_dm,nao_v,nao_v))
     return vj
 
+def get_j_e_dm_n(idx_nuc, dm_n, mol_elec=None, mol_nuc=None, eri_ne=None):
+    '''Get electronic Coulomb matrix from e-n interaction'''
+    ia = mol_nuc.atom_index
+    charge = mol_elec.super_mol.atom_charge(ia)
+    if eri_ne is not None and isinstance(eri_ne, (tuple, list)) \
+        and isinstance(eri_ne[idx_nuc], numpy.ndarray): # incore
+        return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_n, nao_v=mol_elec.nao_nr(),
+                                    eri_dot_dm=False)
+    else:
+        return -charge * scf.jk.get_jk((mol_elec, mol_elec, mol_nuc, mol_nuc),
+                                       dm_n, scripts='ijkl,lk->ij',
+                                       intor='int2e', aosym='s4')
+
+def get_j_n_dm_e(idx_nuc, dm_e, mol_elec=None, mol_nuc=None, eri_ne=None):
+    '''Get nuclear Coulomb matrix from e-n interaction'''
+    ia = mol_nuc.atom_index
+    charge = mol_elec.super_mol.atom_charge(ia)
+    if eri_ne is not None and isinstance(eri_ne, (tuple, list)) \
+        and isinstance(eri_ne[idx_nuc], numpy.ndarray): # incore
+        return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_e, nao_v=mol_nuc.nao_nr(),
+                                    eri_dot_dm=True)
+    else:
+        return -charge * scf.jk.get_jk((mol_nuc, mol_nuc, mol_elec, mol_elec),
+                                       dm_e, scripts='ijkl,lk->ij',
+                                       intor='int2e', aosym='s4')
+
+def get_j_nn(idx1, idx2, dm_n2, mol_nuc1=None, mol_nuc2=None, eri_nn=None):
+    '''Get nuclear Coulomb matrix from n-n interaction'''
+    ia = mol_nuc1.atom_index
+    ja = mol_nuc2.atom_index
+    charge = mol_nuc1.super_mol.atom_charge(ia) * mol_nuc2.super_mol.atom_charge(ja)
+    need_on_the_fly = False
+    if eri_nn is not None and isinstance(eri_nn, (tuple, list)):
+        if idx1 < idx2 and isinstance(eri_nn[idx1][idx2], numpy.ndarray):
+            return charge * dot_eri_dm(eri_nn[idx1][idx2], dm_n2,
+                                       nao_v=mol_nuc1.nao_nr(),
+                                       eri_dot_dm=True)
+        elif idx1 > idx2 and isinstance(eri_nn[idx2][idx1], numpy.ndarray):
+            return charge * dot_eri_dm(eri_nn[idx2][idx1], dm_n2,
+                                       nao_v=mol_nuc1.nao_nr(),
+                                       eri_dot_dm=False)
+        elif idx1 != idx2:
+            need_on_the_fly = True
+        else:
+            return 0.0
+    else:
+        need_on_the_fly = True
+    if need_on_the_fly:
+        return charge * scf.jk.get_jk((mol_nuc1, mol_nuc1, mol_nuc2, mol_nuc2),
+                                      dm_n2, scripts='ijkl,lk->ij',
+                                      intor='int2e', aosym='s4')
+
 def get_hcore_nuc(mol, dm_elec, dm_nuc, mol_elec=None, mol_nuc=None,
                   eri_ne=None, eri_nn=None):
     '''Get the core Hamiltonian for quantum nucleus.'''
@@ -97,23 +149,11 @@ def get_hcore_nuc(mol, dm_elec, dm_nuc, mol_elec=None, mol_nuc=None,
     # Coulomb interaction between the quantum nucleus and electrons
     ne_U = 0.0
     if dm_elec.ndim > 2:
-        if eri_ne is not None and isinstance(eri_ne, (tuple, list)) \
-            and isinstance(eri_ne[i], numpy.ndarray): # incore
-            jcross = -dot_eri_dm(eri_ne[i], dm_elec[0] + dm_elec[1],
-                                 nao_v=mol.nao_nr(), eri_dot_dm=True) * charge
-        else: # on-the-fly
-            jcross = -scf.jk.get_jk((mol, mol, mol_elec, mol_elec),
-                                    dm_elec[0] + dm_elec[1], scripts='ijkl,lk->ij',
-                                    intor='int2e', aosym='s4') * charge
+        jcross = get_j_n_dm_e(i, dm_elec[0]+dm_elec[1], mol_elec=mol_elec,
+                              mol_nuc=mol, eri_ne=eri_ne)
     else:
-        if eri_ne is not None and isinstance(eri_ne, (tuple, list)) \
-            and isinstance(eri_ne[i], numpy.ndarray): # incore
-            jcross = -dot_eri_dm(eri_ne[i], dm_elec, nao_v=mol.nao_nr(),
-                                 eri_dot_dm=True) * charge
-        else: # on-the-fly
-            jcross = -scf.jk.get_jk((mol, mol, mol_elec, mol_elec),
-                                    dm_elec, scripts='ijkl,lk->ij',
-                                    intor='int2e', aosym='s4') * charge
+        jcross = get_j_n_dm_e(i, dm_elec, mol_elec=mol_elec, mol_nuc=mol,
+                              eri_ne=eri_ne)
     h += jcross
     if isinstance(dm_nuc[i], numpy.ndarray):
         ne_U = numpy.einsum('ij,ji', jcross, dm_nuc[i]) # n-e Coulomb energy
@@ -125,27 +165,8 @@ def get_hcore_nuc(mol, dm_elec, dm_nuc, mol_elec=None, mol_nuc=None,
             for j in range(super_mol.nuc_num):
                 ja = mol_nuc[j].atom_index
                 if ja != ia and isinstance(dm_nuc[j], numpy.ndarray):
-                    need_on_the_fly = False
-                    if eri_nn is not None and isinstance(eri_nn, (tuple, list)):
-                        if i < j and isinstance(eri_nn[i][j], numpy.ndarray): # incore
-                            jcross += dot_eri_dm(eri_nn[i][j], dm_nuc[j],
-                                                 nao_v=mol.nao_nr(),
-                                                 eri_dot_dm=True) * charge \
-                                      * super_mol.atom_charge(ja)
-                        elif i > j and isinstance(eri_nn[j][i], numpy.ndarray): # incore
-                            jcross += dot_eri_dm(eri_nn[j][i], dm_nuc[j],
-                                                 nao_v=mol.nao_nr(),
-                                                 eri_dot_dm=False) * charge \
-                                      * super_mol.atom_charge(ja)
-                        else:
-                            need_on_the_fly = True
-                    else: # on-the-fly
-                        need_on_the_fly = True
-                    if need_on_the_fly:
-                        jcross += scf.jk.get_jk((mol, mol, mol_nuc[j], mol_nuc[j]),
-                                                dm_nuc[j], scripts='ijkl,lk->ij',
-                                                intor='int2e', aosym='s4') * charge \
-                                  * super_mol.atom_charge(ja)
+                    jcross += get_j_nn(i, j, dm_nuc[j], mol_nuc1=mol,
+                                       mol_nuc2=mol_nuc[j], eri_nn=eri_nn)
         h += jcross
         if isinstance(dm_nuc[i], numpy.ndarray):
             nn_U = numpy.einsum('ij,ji', jcross, dm_nuc[i]) # n-n Coulomb energy
@@ -233,17 +254,9 @@ def get_hcore_elec(mol, dm_nuc, mol_nuc=None, eri_ne=None):
     j = 0
     # Coulomb interactions between electrons and all quantum nuclei
     for i in range(super_mol.nuc_num):
-        ia = mol_nuc[i].atom_index
-        charge = super_mol.atom_charge(ia)
         if isinstance(dm_nuc[i], numpy.ndarray):
-            if eri_ne is not None and isinstance(eri_ne, (tuple, list)) \
-                and isinstance(eri_ne[i], numpy.ndarray): # incore
-                j -= dot_eri_dm(eri_ne[i], dm_nuc[i], nao_v=mol.nao_nr(),
-                                eri_dot_dm=False) * charge
-            else: # on-the-fly
-                j -= scf.jk.get_jk((mol, mol, mol_nuc[i], mol_nuc[i]),
-                                   dm_nuc[i], scripts='ijkl,lk->ij', intor='int2e',
-                                   aosym='s4') * charge
+            j += get_j_e_dm_n(i, dm_nuc[i], mol_elec=mol, mol_nuc=mol_nuc[i],
+                              eri_ne=eri_ne)
     # TODO: this is not really the core Hamiltonian.
     # TODO: avoid calling scf.hf.get_hcore multiple times, as it is simply a waste.
     return scf.hf.get_hcore(mol) + j
@@ -915,6 +928,33 @@ class HF(scf.hf.SCF):
             return init_guess_nuc_by_calculation(self.mf_nuc, mol)
         else:
             return init_guess_nuc_by_chkfile(mol, self.chkfile)
+
+    def get_j_e_dm_n(self, idx_nuc, dm_n, mol_elec=None, mol_nuc=None, eri_ne=None):
+        if mol_elec is None:
+            mol_elec = self.mol.elec
+        if mol_nuc is None:
+            mol_nuc = self.mol.nuc[idx_nuc]
+        if eri_ne is None:
+            eri_ne = self._eri_ne
+        return get_j_e_dm_n(idx_nuc, dm_n, mol_elec=mol_elec, mol_nuc=mol_nuc, eri_ne=eri_ne)
+
+    def get_j_n_dm_e(self, idx_nuc, dm_e, mol_elec=None, mol_nuc=None, eri_ne=None):
+        if mol_elec is None:
+            mol_elec = self.mol.elec
+        if mol_nuc is None:
+            mol_nuc = self.mol.nuc[idx_nuc]
+        if eri_ne is None:
+            eri_ne = self._eri_ne
+        return get_j_n_dm_e(idx_nuc, dm_e, mol_elec=mol_elec, mol_nuc=mol_nuc, eri_ne=eri_ne)
+
+    def get_j_nn(self, idx1, idx2, dm_n2, mol_nuc1=None, mol_nuc2=None, eri_nn=None):
+        if mol_nuc1 is None:
+            mol_nuc1 = self.mol.nuc[idx1]
+        if mol_nuc2 is None:
+            mol_nuc2 = self.mol.nuc[idx2]
+        if eri_nn is None:
+            eri_nn = self._eri_nn
+        return get_j_nn(idx1, idx2, dm_n2, mol_nuc1=mol_nuc1, mol_nuc2=mol_nuc2, eri_nn=eri_nn)
 
     def get_hcore_elec(self, mol=None):
         if mol is None: mol = self.mol.elec

@@ -92,11 +92,9 @@ class CPHF(lib.StreamObject):
             C = numpy.empty_like(mo1_e)
             for j, x in enumerate(mo1_n[i]):
                 dm_n = numpy.einsum('ij, mi, nj->mn', x, mo_coeff_n, mo_coeff_n[:,mo_occ_n>0])
-                # TODO: use stored _eri instead of on-the-fly
-                v1en_ao = scf.jk.get_jk((self.mol.elec, self.mol.elec, self.mol.nuc[i], self.mol.nuc[i]),
-                                        dm_n, scripts='ijkl,lk->ij', intor='int2e', aosym='s4')
+                v1en_ao = -self.base.get_j_e_dm_n(i, dm_n)
                 v1en_mo = numpy.einsum('mn, mi, na->ia', v1en_ao, mo_coeff_e, mo_coeff_e[:,mo_occ_e>0])
-                C[j] = 2*self.mol.atom_charge(ia)*v1en_mo
+                C[j] = 2.0 * v1en_mo
 
             v1vo += C
 
@@ -117,11 +115,9 @@ class CPHF(lib.StreamObject):
         C = numpy.empty_like(mo1_n[i])
         for j, x in enumerate(mo1_e):
             dm_e = numpy.einsum('ij, mi, nj->mn', x, mo_coeff_e, mo_coeff_e[:,mo_occ_e>0])
-            # TODO: use stored _eri instead of on-the-fly
-            v_ne_ao = scf.jk.get_jk((self.mol.nuc[i], self.mol.nuc[i], self.mol.elec,
-                                    self.mol.elec), dm_e, scripts='ijkl,lk->ij', intor='int2e', aosym='s4')
+            v_ne_ao = -self.base.get_j_n_dm_e(i, dm_e)
             v_ne_mo = numpy.einsum('mn, mi, na->ia', v_ne_ao, mo_coeff_n, mo_coeff_n[:,mo_occ_n>0])
-            C[j] = 4*self.mol.atom_charge(ia)*v_ne_mo
+            C[j] = 4.0 * v_ne_mo
 
         for j in range(self.mol.nuc_num):
             if j != i:
@@ -132,11 +128,9 @@ class CPHF(lib.StreamObject):
 
                 for k, x in enumerate(mo1_n[j]):
                     dm_nj = numpy.einsum('ij, mi, nj->mn', x, mo_coeff_j, mo_coeff_j[:,mo_occ_j>0])
-                    # TODO: use stored _eri instead of on-the-fly
-                    v_nn_ao = scf.jk.get_jk((self.mol.nuc[i], self.mol.nuc[i], self.mol.nuc[j],
-                                            self.mol.nuc[j]), dm_nj, scripts='ijkl,lk->ij', intor='int2e', aosym='s4')
+                    v_nn_ao = self.base.get_j_nn(i, j, dm_nj)
                     v_nn_mo = numpy.einsum('mn,mi,na->ia', v_nn_ao, mo_coeff_n, mo_coeff_n[:,mo_occ_n>0])
-                    C[k] -= 2*self.mol.atom_charge(ja)*self.mol.atom_charge(ia)*v_nn_mo
+                    C[k] -= 2.0 * v_nn_mo
 
         # calculate R * F
         R_ao = mf_n.int1e_r
