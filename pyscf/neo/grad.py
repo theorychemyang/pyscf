@@ -4,12 +4,9 @@
 Analytical nuclear gradient for constrained nuclear-electronic orbital
 '''
 import numpy
-from pyscf import lib, neo
+from pyscf import lib, neo, scf
 from pyscf.lib import logger
 from pyscf.data import nist
-
-# TODO: remove them
-from pyscf import scf
 from pyscf.grad.rhf import _write
 
 # TODO: create Gradients class from GradientsMixin
@@ -58,7 +55,8 @@ class Gradients(lib.StreamObject):
         return h
 
     def hcore_deriv(self, atm_id, mol):
-        'The change of Coulomb interactions between quantum and classical nuclei due to the change of the coordinates of classical nuclei'
+        '''The change of Coulomb interactions between quantum and classical
+        nuclei due to the change of the coordinates of classical nuclei'''
         i = mol.atom_index
         with mol.with_rinv_as_nucleus(atm_id):
             vrinv = mol.intor('int1e_iprinv', comp=3) # <\nabla|1/r|>
@@ -67,34 +65,40 @@ class Gradients(lib.StreamObject):
         return vrinv + vrinv.transpose(0,2,1)
 
     def grad_jcross_elec_nuc(self):
-        'get the gradient for the cross term of Coulomb interactions between electrons and quantum nucleus'
+        '''get the gradient for the cross term of Coulomb interactions between
+        electrons and quantum nucleus'''
         jcross = 0
         for i in range(len(self.mol.nuc)):
             index = self.mol.nuc[i].atom_index
-            # TODO: calculate j from stored _eri, not on-the-fly
-            jcross -= scf.jk.get_jk((self.mol.elec, self.mol.elec, self.mol.nuc[i], self.mol.nuc[i]), self.base.dm_nuc[i],
-                                    scripts='ijkl,lk->ij', intor='int2e_ip1', comp=3, aosym='s2kl')*self.mol.atom_charge(index)
+            jcross -= scf.jk.get_jk((self.mol.elec, self.mol.elec,
+                                     self.mol.nuc[i], self.mol.nuc[i]),
+                                    self.base.dm_nuc[i], scripts='ijkl,lk->ij',
+                                    intor='int2e_ip1', comp=3, aosym='s2kl') \
+                      * self.mol.atom_charge(index)
         return jcross
 
     def grad_jcross_nuc_elec(self, mol):
-        'get the gradient for the cross term of Coulomb interactions between quantum nucleus and electrons'
+        '''get the gradient for the cross term of Coulomb interactions between
+        quantum nucleus and electrons'''
         i = mol.atom_index
-        # TODO: calculate j from stored _eri, not on-the-fly
-        jcross = -scf.jk.get_jk((mol, mol, self.mol.elec, self.mol.elec), self.base.dm_elec,
-                                scripts='ijkl,lk->ij', intor='int2e_ip1', comp=3, aosym='s2kl')*self.mol.atom_charge(i)
-
+        jcross = -scf.jk.get_jk((mol, mol, self.mol.elec, self.mol.elec),
+                                self.base.dm_elec, scripts='ijkl,lk->ij',
+                                intor='int2e_ip1', comp=3, aosym='s2kl') \
+                 * self.mol.atom_charge(i)
         return jcross
 
     def grad_jcross_nuc_nuc(self, mol):
-        'get the gradient for the cross term of Coulomb interactions between quantum nuclei'
+        '''get the gradient for the cross term of Coulomb interactions between
+        quantum nuclei'''
         i = mol.atom_index
         jcross = numpy.zeros((3, mol.nao_nr(), mol.nao_nr()))
         for j in range(len(self.mol.nuc)):
             k = self.mol.nuc[j].atom_index
             if k != i:
-                # TODO: calculate j from stored _eri, not on-the-fly
-                jcross -= scf.jk.get_jk((mol, mol, self.mol.nuc[j], self.mol.nuc[j]), self.base.dm_nuc[j], scripts='ijkl,lk->ij',
-                                        intor='int2e_ip1', comp=3, aosym='s2kl')*self.mol.atom_charge(i)*self.mol.atom_charge(k)
+                jcross -= scf.jk.get_jk((mol, mol, self.mol.nuc[j], self.mol.nuc[j]),
+                                        self.base.dm_nuc[j], scripts='ijkl,lk->ij',
+                                        intor='int2e_ip1', comp=3, aosym='s2kl') \
+                          * self.mol.atom_charge(i) * self.mol.atom_charge(k)
         return jcross
 
     def kernel(self, atmlst=None):
