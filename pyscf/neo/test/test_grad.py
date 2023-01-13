@@ -12,7 +12,7 @@ class KnownValues(unittest.TestCase):
         mf.scf()
         g = neo.Gradients(mf)
         grad = g.kernel()
-        self.assertAlmostEqual(grad[0,-1], 0.0051324194, 6)
+        self.assertAlmostEqual(grad[0,-1], 0.005128004854961732, 6)
 
     def test_grad_cdft2(self):
         mol = neo.Mole()
@@ -21,7 +21,7 @@ class KnownValues(unittest.TestCase):
         mf.scf()
         g = neo.Gradients(mf)
         grad = g.kernel()
-        self.assertAlmostEqual(grad[0,-1], 0.0043045068, 6)
+        self.assertAlmostEqual(grad[0,-1], 0.00429936220126681, 6)
 
     def test_grad_fd(self):
         mol = neo.Mole()

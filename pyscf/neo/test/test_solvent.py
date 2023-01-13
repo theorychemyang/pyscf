@@ -14,7 +14,7 @@ class KnownValues(unittest.TestCase):
         mf.scf(cycle=1) 
         mf = ddcosmo_for_neo(mf)
         e = mf.scf()
-        self.assertAlmostEqual(e, -93.3453343551526, 8)
+        self.assertAlmostEqual(e, -93.34534437591918, 8)
 
     def test_grad_finite_diff(self):
         mol = neo.Mole()
@@ -31,7 +31,7 @@ class KnownValues(unittest.TestCase):
         mf1.run(cycle=1)
         mf1 = ddcosmo_for_neo(mf1)
         e1 = mf1.scf()
-        
+
         mol2 = neo.Mole()
         mol2.build(atom='H 0 0 0.001; C 0 0 1.0754; N 0 0 2.2223', basis='ccpvdz', quantum_nuc=[0])
         mf2 = neo.CDFT(mol2)

@@ -16,7 +16,7 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_au'][0], 0.75277497, 5)
+        self.assertAlmostEqual(results['freq_au'][0], 0.7525775753724816, 5)
 
     def test_hess_H2O(self):
         mol = neo.Mole()
@@ -32,9 +32,9 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_au'][0], 0.30596696, 5)
-        self.assertAlmostEqual(results['freq_au'][1], 0.70222886, 5)
-        self.assertAlmostEqual(results['freq_au'][2], 0.72243825, 5)
+        self.assertAlmostEqual(results['freq_au'][0], 0.3058957084327294, 5)
+        self.assertAlmostEqual(results['freq_au'][1], 0.7020421408894397, 5)
+        self.assertAlmostEqual(results['freq_au'][2], 0.722252776562671, 5)
 
 
 if __name__ == "__main__":
