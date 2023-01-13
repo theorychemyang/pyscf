@@ -78,8 +78,11 @@ def _build_eri_ne(mol_elec, mol_nuc):
         _is_mem_enough(mol_elec.nao_nr(), mol_nuc.nao_nr(), mol_elec.super_mol.max_memory):
         atm, bas, env = gto.conc_env(mol_nuc._atm, mol_nuc._bas, mol_nuc._env,
                                      mol_elec._atm, mol_elec._bas, mol_elec._env)
+        intor_name = 'int2e_sph'
+        if mol_elec.super_mol.cart is True:
+            intor_name = 'int2e_cart'
         eri_ne = \
-            gto.moleintor.getints('int2e_sph', atm, bas, env,
+            gto.moleintor.getints(intor_name, atm, bas, env,
                                   shls_slice=(0, mol_nuc._bas.shape[0], 0, mol_nuc._bas.shape[0],
                                               mol_nuc._bas.shape[0],
                                               mol_nuc._bas.shape[0] + mol_elec._bas.shape[0],
@@ -95,8 +98,11 @@ def _build_eri_nn(mol_nuc1, mol_nuc2):
         _is_mem_enough(mol_nuc1.nao_nr(), mol_nuc2.nao_nr(), mol_nuc1.super_mol.max_memory):
         atm, bas, env = gto.conc_env(mol_nuc1._atm, mol_nuc1._bas, mol_nuc1._env,
                                      mol_nuc2._atm, mol_nuc2._bas, mol_nuc2._env)
+        intor_name = 'int2e_sph'
+        if mol_nuc1.super_mol.cart is True:
+            intor_name = 'int2e_cart'
         eri_nn = \
-            gto.moleintor.getints('int2e_sph', atm, bas, env,
+            gto.moleintor.getints(intor_name, atm, bas, env,
                                   shls_slice=(0, mol_nuc1._bas.shape[0], 0, mol_nuc1._bas.shape[0],
                                               mol_nuc1._bas.shape[0],
                                               mol_nuc1._bas.shape[0] + mol_nuc2._bas.shape[0],
