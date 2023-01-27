@@ -60,5 +60,5 @@ class CDFT(KS):
                                  s1e, mf.int1e_r)
 
     def nuc_grad_method(self):
-        from pyscf.neo.grad import Gradients
-        return Gradients(self)
+        from pyscf.neo import grad
+        return grad.Gradients(self)
