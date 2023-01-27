@@ -8,14 +8,11 @@ import copy
 import ctypes
 import numpy
 import scipy
-from pyscf import gto
-from pyscf import lib
-from pyscf import neo
-from pyscf import scf
+import warnings
+from pyscf import gto, lib, neo, scf
 from pyscf.data import nist
 from pyscf.lib import logger
-from pyscf.scf import _vhf
-from pyscf.scf import chkfile
+from pyscf.scf import _vhf, chkfile
 from pyscf import __config__
 
 TIGHT_GRAD_CONV_TOL = getattr(__config__, 'scf_hf_kernel_tight_grad_conv_tol', True)
@@ -121,6 +118,7 @@ def get_j_e_dm_n(idx_nuc, dm_n, mol_elec=None, mol_nuc=None, eri_ne=None):
         if eri_ne[idx_nuc] is not None:
             return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_n, nao_v=mol_elec.nao_nr(),
                                         eri_dot_dm=False)
+    warnings.warn("Direct Vee is used, might be slow. Check PYSCF_MAX_MEMORY?")
     return -charge * scf.jk.get_jk((mol_elec, mol_elec, mol_nuc, mol_nuc),
                                    dm_n, scripts='ijkl,lk->ij',
                                    intor='int2e', aosym='s4')
@@ -135,6 +133,7 @@ def get_j_n_dm_e(idx_nuc, dm_e, mol_elec=None, mol_nuc=None, eri_ne=None):
         if eri_ne[idx_nuc] is not None:
             return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_e, nao_v=mol_nuc.nao_nr(),
                                         eri_dot_dm=True)
+    warnings.warn("Direct Vee is used, might be slow. Check PYSCF_MAX_MEMORY?")
     return -charge * scf.jk.get_jk((mol_nuc, mol_nuc, mol_elec, mol_elec),
                                    dm_e, scripts='ijkl,lk->ij',
                                    intor='int2e', aosym='s4')
@@ -161,6 +160,7 @@ def get_j_nn(idx1, idx2, dm_n2, mol_nuc1=None, mol_nuc2=None, eri_nn=None):
                                            eri_dot_dm=False)
         elif idx1 == idx2:
             return 0.0
+    warnings.warn("Direct Vee is used, might be slow. Check PYSCF_MAX_MEMORY?")
     return charge * scf.jk.get_jk((mol_nuc1, mol_nuc1, mol_nuc2, mol_nuc2),
                                   dm_n2, scripts='ijkl,lk->ij',
                                   intor='int2e', aosym='s4')
