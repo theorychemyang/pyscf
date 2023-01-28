@@ -23,8 +23,10 @@ def _gen_neo_response(mf, hermi=0, max_memory=None):
     def vind(dm1e_symm, dm1e_partial, dm1n_partial):
         '''
         Input:
-        dm1e_* can be of shape (...,nao,nao) for RHF/RKS or
+        dm1e_symm can be of shape (...,nao,nao) for RHF/RKS or
         (2,...,nao,nao) for UHF/UKS.
+        dm1e_partial is of shape (...,nao,nao) regardless of RKS/UKS, because
+        it is total density instead of spin densities.
         dm1n_partial must be a list, even if there is only one quantum nucleus.
         Each element is of shape (...,nao,nao)
 
@@ -44,21 +46,25 @@ def _gen_neo_response(mf, hermi=0, max_memory=None):
 
         # effect of nuclear density matrix change on electronic Fock
         # this effect is insensitive to electronic spin
-        for i in range(mol.nuc_num):
-            v1e += mf.get_j_e_dm_n(i, dm1n_partial[i]) * 2.0
+        if dm1e_symm.size > dm1e_partial.size:
+            # this means we have unrestricted dm1e_symm,
+            # and v1e has two components
+            for i in range(mol.nuc_num):
+                v1e[0] += mf.get_j_e_dm_n(i, dm1n_partial[i]) * 2.0
+                v1e[1] += mf.get_j_e_dm_n(i, dm1n_partial[i]) * 2.0
+        else:
+            for i in range(mol.nuc_num):
+                v1e += mf.get_j_e_dm_n(i, dm1n_partial[i]) * 2.0
 
         v1n = [None] * mol.nuc_num
         for i in range(mol.nuc_num):
             # effect of electronic density matrix change on nuclear Fock
-            # this effect is insensitive to electronic spin
-            if mf.unrestricted:
-                assert dm1e_partial.shape[0] == 2
-                v1n[i] = mf.get_j_n_dm_e(i, dm1e_partial[0]+dm1e_partial[1]) * 2.0
-            else:
-                # note that here 2.0 is still used instead of 4.0, it is
-                # because if RHF/RKS is used, dm1e_partial will be doubled before
-                # it is passed to this function
-                v1n[i] = mf.get_j_n_dm_e(i, dm1e_partial) * 2.0
+            # this effect is insensitive to electronic spin, because
+            # dm1e_partial is already summed over spin (total density)
+            # note that here 2.0 is still used instead of 4.0 even if it is RKS,
+            # because if RHF/RKS is used, dm1e_partial will be doubled before
+            # it is passed to this function
+            v1n[i] = mf.get_j_n_dm_e(i, dm1e_partial) * 2.0
             # effect of other nuclear density matrix change on nuclear Fock
             for j in range(mol.nuc_num):
                 if j != i:

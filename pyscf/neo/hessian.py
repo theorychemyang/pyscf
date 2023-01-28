@@ -12,12 +12,12 @@ from pyscf.hessian.thermo import harmonic_analysis, \
                                  rotation_const, \
                                  rotational_symmetry_number, \
                                  _get_rotor_type
-from pyscf.neo import cphf
+from pyscf.neo import cphf, ucphf
 from pyscf.scf.jk import get_jk
-
 
 # import _response_functions to load gen_response methods in CDFT class
 from pyscf.neo import _response_functions # noqa
+
 
 def hess_cneo(hessobj, mo1, h1ao,
               atmlst=None, max_memory=4000, verbose=None):
@@ -70,7 +70,10 @@ def _partial_hess_ej(hessobj, atmlst=None, max_memory=4000, verbose=None):
 
     mol = hessobj.mol
     mf = hessobj.base
-    nao_e = mf.mf_elec.mo_coeff.shape[0]
+    if hessobj.base.unrestricted:
+        nao_e = mf.mf_elec.mo_coeff[0].shape[0]
+    else:
+        nao_e = mf.mf_elec.mo_coeff.shape[0]
 
     # hcore contributions from quantum nuclei
     hcore_deriv = []
@@ -202,6 +205,8 @@ def make_h1(hessobj, mf_e=None, mf_n=None, chkfile=None, atmlst=None,
     if atmlst is None:
         atmlst = range(mol.natm)
 
+    unrestricted = hessobj.base.unrestricted
+
     # Note: h1ao_e includes v1_ee
     hobj = mf_e.Hessian()
     if hessobj.grid_response is not None:
@@ -210,7 +215,11 @@ def make_h1(hessobj, mf_e=None, mf_n=None, chkfile=None, atmlst=None,
             hobj.make_h1(mf_e.mo_coeff, mf_e.mo_occ, chkfile=chkfile,
                          atmlst=atmlst, verbose=verbose)
 
-    h1ao_e = [None] * mol.natm
+    if unrestricted:
+        h1ao_e_a = [None] * mol.natm
+        h1ao_e_b = [None] * mol.natm
+    else:
+        h1ao_e = [None] * mol.natm
     h1ao_n = [None] * mol.natm
 
     hcore_deriv = []
@@ -220,11 +229,19 @@ def make_h1(hessobj, mf_e=None, mf_n=None, chkfile=None, atmlst=None,
     aoslices = mol.aoslice_by_atom()
     for i0, ia in enumerate(atmlst):
         shl0, shl1, p0, p1 = aoslices[ia]
-        if isinstance(h1ao_e_or_chkfile, str):
-            key = 'scf_f1ao/%d' % ia
-            h1_e = lib.chkfile.load(h1ao_e_or_chkfile, key)
+        if unrestricted:
+            if isinstance(h1ao_e_or_chkfile, str):
+                h1_e_a = lib.chkfile.load(h1ao_e_or_chkfile, 'scf_f1ao/0/%d' % ia)
+                h1_e_b = lib.chkfile.load(h1ao_e_or_chkfile, 'scf_f1ao/1/%d' % ia)
+            else:
+                h1_e_a = h1ao_e_or_chkfile[0][ia]
+                h1_e_b = h1ao_e_or_chkfile[1][ia]
         else:
-            h1_e = h1ao_e_or_chkfile[ia]
+            if isinstance(h1ao_e_or_chkfile, str):
+                key = 'scf_f1ao/%d' % ia
+                h1_e = lib.chkfile.load(h1ao_e_or_chkfile, key)
+            else:
+                h1_e = h1ao_e_or_chkfile[ia]
         h1ao_n[ia] = [None] * mol.nuc_num
         for j in range(mol.nuc_num):
             ja = mol.nuc[j].atom_index
@@ -239,8 +256,14 @@ def make_h1(hessobj, mf_e=None, mf_n=None, chkfile=None, atmlst=None,
                               shls_slice=shls_slice)
             # elec e-n part
             v1e *= charge
-            h1_e[:,p0:p1] += v1e
-            h1_e[:,:,p0:p1] += v1e.transpose(0,2,1)
+            if unrestricted:
+                h1_e_a[:,p0:p1] += v1e
+                h1_e_a[:,:,p0:p1] += v1e.transpose(0,2,1)
+                h1_e_b[:,p0:p1] += v1e
+                h1_e_b[:,:,p0:p1] += v1e.transpose(0,2,1)
+            else:
+                h1_e[:,p0:p1] += v1e
+                h1_e[:,:,p0:p1] += v1e.transpose(0,2,1)
             # nuc e-n part
             h1_n = v1n * 2.0 * charge # 2.0 for symmetry in nuclear orbitals
             v1e = None
@@ -255,7 +278,11 @@ def make_h1(hessobj, mf_e=None, mf_n=None, chkfile=None, atmlst=None,
                                   scripts=('ijkl,ji->kl', 'ijkl,lk->ij'),
                                   intor='int2e_ip1', aosym='s2kl', comp=3)
                 # elec e-n part
-                h1_e += v1e * 2.0 * charge # 2.0 for symmetry in nuclear orbitals
+                if unrestricted:
+                    h1_e_a += v1e * 2.0 * charge
+                    h1_e_b += v1e * 2.0 * charge
+                else:
+                    h1_e += v1e * 2.0 * charge # 2.0 for symmetry in nuclear orbitals
                 # nuc e-n part
                 v1n *= charge
                 h1_n += v1n
@@ -285,13 +312,24 @@ def make_h1(hessobj, mf_e=None, mf_n=None, chkfile=None, atmlst=None,
                 key = 'scf_f1ao_n/%d/%d' % (ia, j)
                 lib.chkfile.save(chkfile, key, h1_n)
             v1e = v1n = None
-        if chkfile is None:
-            h1ao_e[ia] = h1_e
+        if unrestricted:
+            if chkfile is None:
+                h1ao_e_a[ia] = h1_e_a
+                h1ao_e_b[ia] = h1_e_b
+            else:
+                lib.chkfile.save(chkfile, 'scf_f1ao/0/%d' % ia, h1_e_a)
+                lib.chkfile.save(chkfile, 'scf_f1ao/1/%d' % ia, h1_e_b)
         else:
-            key = 'scf_f1ao/%d' % ia
-            lib.chkfile.save(chkfile, key, h1_e)
+            if chkfile is None:
+                h1ao_e[ia] = h1_e
+            else:
+                key = 'scf_f1ao/%d' % ia
+                lib.chkfile.save(chkfile, key, h1_e)
     if chkfile is None:
-        return h1ao_e, h1ao_n
+        if unrestricted:
+            return (h1ao_e_a,h1ao_e_b), h1ao_n
+        else:
+            return h1ao_e, h1ao_n
     else:
         return chkfile, chkfile
 
@@ -315,14 +353,14 @@ def get_hcore(mol_n):
     nao = h1aa.shape[-1]
     return h1aa.reshape(3,3,nao,nao)
 
-def solve_mo1(mf, h1ao_e_or_chkfile, h1ao_n_or_chkfile,
-              fx=None, atmlst=None, max_memory=4000, verbose=None):
+def solve_mo1_rks(mf, h1ao_e_or_chkfile, h1ao_n_or_chkfile,
+                  fx=None, atmlst=None, max_memory=4000, verbose=None):
     '''Solve the first order equation
 
     Kwargs:
         fx : function(dm_mo) => v1_mo
             A function to generate the induced potential.
-            See also the function gen_vind.
+            See also the function gen_vind_rks.
     '''
     # if using chkfile, then they both should be, and should be the same
     if isinstance(h1ao_e_or_chkfile, str) or \
@@ -355,7 +393,7 @@ def solve_mo1(mf, h1ao_e_or_chkfile, h1ao_n_or_chkfile,
         nocc_n.append(mocc_n[-1].shape[1])
 
     if fx is None:
-        fx = gen_vind(mf)
+        fx = gen_vind_rks(mf)
     s1a = -mf_e.mol.intor('int1e_ipovlp', comp=3)
 
     def _ao2mo(mat, mo_coeff, mocc):
@@ -407,6 +445,7 @@ def solve_mo1(mf, h1ao_e_or_chkfile, h1ao_n_or_chkfile,
                                           with_f1n=True, max_cycle=100, verbose=verbose)
         mo1e = numpy.einsum('pq,xqi->xpi', mo_coeff_e, mo1e).reshape(-1,3,nao_e,nocc_e)
         e1e = e1e.reshape(-1,3,nocc_e,nocc_e)
+
         for k in range(ia1-ia0):
             ia = atmlst[k+ia0]
             if isinstance(h1ao_e_or_chkfile, str):
@@ -444,7 +483,7 @@ def solve_mo1(mf, h1ao_e_or_chkfile, h1ao_n_or_chkfile,
         else:
             return mo1s_e, e1s_e, mo1s_n, f1s_n
 
-def gen_vind(mf):
+def gen_vind_rks(mf):
     mol = mf.mol
     mf_e = mf.mf_elec
     mf_n = mf.mf_nuc
@@ -494,6 +533,226 @@ def gen_vind(mf):
         v1vo_e = numpy.empty_like(mo1e)
         for i, x in enumerate(v1e):
             v1vo_e[i] = reduce(numpy.dot, (mo_coeff_e.T, x, mocc_e))
+        v1vo_n = []
+        rfn = None
+        if f1n is not None:
+            rfn = []
+        for i in range(mol.nuc_num):
+            v1vo_ni = numpy.empty_like(mo1n[i])
+            for j, x in enumerate(v1n[i]):
+                v1vo_ni[j] = reduce(numpy.dot, (mo_coeff_n[i].T, x, mocc_n[i]))
+            if f1n is not None:
+                rvo = reduce(numpy.dot, (mo_coeff_n[i].T, mf_n[i].int1e_r, mocc_n[i]))
+                # calculate r * f and add to nuclear fock
+                v1vo_ni += numpy.einsum('axi,cx->cai', rvo, f1n[i])
+                # store r * mo1, which will lead to equation r * mo1 = 0
+                rfn.append(numpy.einsum('axi,cai->cx', rvo, mo1n[i]))
+            v1vo_n.append(v1vo_ni)
+        return v1vo_e, v1vo_n, rfn
+    return fx
+
+def solve_mo1_uks(mf, h1ao_e_or_chkfile, h1ao_n_or_chkfile,
+                  fx=None, atmlst=None, max_memory=4000, verbose=None):
+    '''Solve the first order equation
+
+    Kwargs:
+        fx : function(dm_mo) => v1_mo
+            A function to generate the induced potential.
+            See also the function gen_vind_uks.
+    '''
+    # if using chkfile, then they both should be, and should be the same
+    if isinstance(h1ao_e_or_chkfile, str) or \
+        isinstance(h1ao_n_or_chkfile, str):
+        assert h1ao_e_or_chkfile == h1ao_n_or_chkfile
+    mol = mf.mol
+    if atmlst is None: atmlst = range(mol.natm)
+    mf_e = mf.mf_elec
+    mf_n = mf.mf_nuc
+
+    mo_coeff_e = mf_e.mo_coeff
+    mo_occ_e = mf_e.mo_occ
+    nao_e, nmo_e = mo_coeff_e[0].shape
+    mocc_e_a = mo_coeff_e[0][:,mo_occ_e[0]>0]
+    mocc_e_b = mo_coeff_e[1][:,mo_occ_e[1]>0]
+    nocc_e_a = mocc_e_a.shape[1]
+    nocc_e_b = mocc_e_b.shape[1]
+
+    mo_coeff_n = []
+    mo_occ_n = []
+    nao_n = []
+    nmo_n = []
+    mocc_n = []
+    nocc_n = []
+    for i in range(mol.nuc_num):
+        mo_coeff_n.append(mf_n[i].mo_coeff)
+        mo_occ_n.append(mf_n[i].mo_occ)
+        tmp1, tmp2 = mo_coeff_n[-1].shape
+        nao_n.append(tmp1)
+        nmo_n.append(tmp2)
+        mocc_n.append(mo_coeff_n[-1][:,mo_occ_n[-1]>0])
+        nocc_n.append(mocc_n[-1].shape[1])
+
+    if fx is None:
+        fx = gen_vind_uks(mf)
+    s1a = -mf_e.mol.intor('int1e_ipovlp', comp=3)
+
+    def _ao2mo(mat, mo_coeff, mocc):
+        return numpy.asarray([reduce(numpy.dot, (mo_coeff.T, x, mocc)) for x in mat])
+
+    mem_now = lib.current_memory()[0]
+    max_memory = max(2000, max_memory*.9-mem_now)
+    # TODO: blksize does not yet take into account nuclear part memory usage
+    blksize = max(2, int(max_memory*1e6/8 / (nao_e*(nocc_e_a+nocc_e_b)*3*6)))
+    mo1s_e_a = [None] * mol.natm
+    mo1s_e_b = [None] * mol.natm
+    e1s_e_a = [None] * mol.natm
+    e1s_e_b = [None] * mol.natm
+    mo1s_n = [None] * mol.natm
+    f1s_n = [None] * mol.natm
+    aoslices = mol.aoslice_by_atom()
+    for ia0, ia1 in lib.prange(0, len(atmlst), blksize):
+        s1vo_a = []
+        s1vo_b = []
+        h1vo_e_a = []
+        h1vo_e_b = []
+        for i0 in range(ia0, ia1):
+            ia = atmlst[i0]
+            shl0, shl1, p0, p1 = aoslices[ia]
+            s1ao = numpy.zeros((3,nao_e,nao_e))
+            s1ao[:,p0:p1] += s1a[:,p0:p1]
+            s1ao[:,:,p0:p1] += s1a[:,p0:p1].transpose(0,2,1)
+            s1vo_a.append(_ao2mo(s1ao, mo_coeff_e[0], mocc_e_a))
+            s1vo_b.append(_ao2mo(s1ao, mo_coeff_e[1], mocc_e_b))
+            if isinstance(h1ao_e_or_chkfile, str):
+                h1ao_e_a = lib.chkfile.load(h1ao_e_or_chkfile, 'scf_f1ao/0/%d'%ia)
+                h1ao_e_b = lib.chkfile.load(h1ao_e_or_chkfile, 'scf_f1ao/1/%d'%ia)
+            else:
+                h1ao_e_a = h1ao_e_or_chkfile[0][ia]
+                h1ao_e_b = h1ao_e_or_chkfile[1][ia]
+            h1vo_e_a.append(_ao2mo(h1ao_e_a, mo_coeff_e[0], mocc_e_a))
+            h1vo_e_b.append(_ao2mo(h1ao_e_b, mo_coeff_e[1], mocc_e_b))
+        h1vo_e = (numpy.vstack(h1vo_e_a), numpy.vstack(h1vo_e_b))
+        s1vo = (numpy.vstack(s1vo_a), numpy.vstack(s1vo_b))
+
+        h1vo_n = []
+        for j in range(mol.nuc_num):
+            h1vo_n_j = []
+            for i0 in range(ia0, ia1):
+                ia = atmlst[i0]
+                if isinstance(h1ao_n_or_chkfile, str):
+                    key = 'scf_f1ao_n/%d/%d' % (ia, j)
+                    h1ao_n = lib.chkfile.load(h1ao_n_or_chkfile, key)
+                else:
+                    h1ao_n = h1ao_n_or_chkfile[ia][j]
+                h1vo_n_j.append(_ao2mo(h1ao_n, mo_coeff_n[j], mocc_n[j]))
+            h1vo_n_j = numpy.vstack(h1vo_n_j)
+            h1vo_n.append(h1vo_n_j)
+
+        mo1e, e1e, mo1n, f1n = ucphf.solve(fx, mf_e, mf_n, h1vo_e, h1vo_n, s1vo,
+                                           with_f1n=True, max_cycle=100, verbose=verbose)
+        mo1e_a = numpy.einsum('pq,xqi->xpi', mo_coeff_e[0], mo1e[0]).reshape(-1,3,nao_e,nocc_e_a)
+        mo1e_b = numpy.einsum('pq,xqi->xpi', mo_coeff_e[1], mo1e[1]).reshape(-1,3,nao_e,nocc_e_b)
+        e1e_a = e1e[0].reshape(-1,3,nocc_e_a,nocc_e_a)
+        e1e_b = e1e[1].reshape(-1,3,nocc_e_b,nocc_e_b)
+
+        for k in range(ia1-ia0):
+            ia = atmlst[k+ia0]
+            if isinstance(h1ao_e_or_chkfile, str):
+                lib.chkfile.save(h1ao_e_or_chkfile, 'scf_mo1/0/%d'%ia, mo1e_a[k])
+                lib.chkfile.save(h1ao_e_or_chkfile, 'scf_mo1/1/%d'%ia, mo1e_b[k])
+            else:
+                mo1s_e_a[ia] = mo1e_a[k]
+                mo1s_e_b[ia] = mo1e_b[k]
+            e1s_e_a[ia] = e1e_a[k].reshape(3,nocc_e_a,nocc_e_a)
+            e1s_e_b[ia] = e1e_b[k].reshape(3,nocc_e_b,nocc_e_b)
+            mo1s_n[ia] = [None] * mol.nuc_num
+            f1s_n[ia] = [None] * mol.nuc_num
+        mo1e = e1e = None
+
+        for j in range(mol.nuc_num):
+            mo1n[j] = numpy.einsum('pq,xqi->xpi', mo_coeff_n[j],
+                                   mo1n[j]).reshape(-1,3,nao_n[j],nocc_n[j])
+            f1n[j] = f1n[j].reshape(-1,3,3)
+            for k in range(ia1-ia0):
+                ia = atmlst[k+ia0]
+                if isinstance(h1ao_n_or_chkfile, str):
+                    key = 'scf_mo1_n/%d/%d' % (ia, j)
+                    lib.chkfile.save(h1ao_n_or_chkfile, key, mo1n[j][k])
+                else:
+                    mo1s_n[ia][j] = mo1n[j][k]
+                f1s_n[ia][j] = f1n[j][k]
+        mo1n = f1n = None
+
+    if isinstance(h1ao_e_or_chkfile, str):
+        if isinstance(h1ao_n_or_chkfile, str):
+            return h1ao_e_or_chkfile, (e1s_e_a,e1s_e_b), h1ao_n_or_chkfile, f1s_n
+        else:
+            return h1ao_e_or_chkfile, (e1s_e_a,e1s_e_b), mo1s_n, f1s_n
+    else:
+        if isinstance(h1ao_n_or_chkfile, str):
+            return (mo1s_e_a,mo1s_e_b), (e1s_e_a,e1s_e_b), h1ao_n_or_chkfile, f1s_n
+        else:
+            return (mo1s_e_a,mo1s_e_b), (e1s_e_a,e1s_e_b), mo1s_n, f1s_n
+
+def gen_vind_uks(mf):
+    mol = mf.mol
+    mf_e = mf.mf_elec
+    mf_n = mf.mf_nuc
+
+    mo_coeff_e = mf_e.mo_coeff
+    mo_occ_e = mf_e.mo_occ
+
+    nao_e, nmo_e_a = mo_coeff_e[0].shape
+    nmo_e_b = mo_coeff_e[1].shape[1]
+    mocc_e_a = mo_coeff_e[0][:,mo_occ_e[0]>0]
+    mocc_e_b = mo_coeff_e[1][:,mo_occ_e[1]>0]
+    nocc_e_a = mocc_e_a.shape[1]
+    nocc_e_b = mocc_e_b.shape[1]
+
+    mo_coeff_n = []
+    mo_occ_n = []
+    nao_n = []
+    nmo_n = []
+    mocc_n = []
+    nocc_n = []
+    for i in range(mol.nuc_num):
+        mo_coeff_n.append(mf_n[i].mo_coeff)
+        mo_occ_n.append(mf_n[i].mo_occ)
+        tmp1, tmp2 = mo_coeff_n[-1].shape
+        nao_n.append(tmp1)
+        nmo_n.append(tmp2)
+        mocc_n.append(mo_coeff_n[-1][:,mo_occ_n[-1]>0])
+        nocc_n.append(mocc_n[-1].shape[1])
+
+    vresp = mf.gen_response(hermi=1)
+    def fx(mo1e, mo1n, f1n=None):
+        mo1e = mo1e.reshape(-1,nmo_e_a*nocc_e_a+nmo_e_b*nocc_e_b)
+        nset = len(mo1e)
+        dm1e_symm = numpy.empty((2,nset,nao_e,nao_e))
+        dm1e_partial = numpy.empty((nset,nao_e,nao_e))
+        for i, x in enumerate(mo1e):
+            xa = x[:nmo_e_a*nocc_e_a].reshape(nmo_e_a,nocc_e_a)
+            xb = x[nmo_e_a*nocc_e_a:].reshape(nmo_e_b,nocc_e_b)
+            dma = reduce(numpy.dot, (mo_coeff_e[0], xa, mocc_e_a.T))
+            dmb = reduce(numpy.dot, (mo_coeff_e[1], xb, mocc_e_b.T))
+            dm1e_symm[0,i] = dma + dma.T
+            dm1e_symm[1,i] = dmb + dmb.T
+            dm1e_partial[i] = dma + dmb # without c.c.
+        dm1n = [None] * mol.nuc_num
+        for i in range(mol.nuc_num):
+            mo1n[i] = mo1n[i].reshape(-1,nmo_n[i],nocc_n[i])
+            assert nset == len(mo1n[i])
+            dm1n[i] = numpy.empty((nset, nao_n[i], nao_n[i]))
+            for j, x in enumerate(mo1n[i]):
+                # without c.c.
+                dm1n[i][j] = reduce(numpy.dot, (mo_coeff_n[i], x, mocc_n[i].T))
+        v1e, v1n = vresp(dm1e_symm, dm1e_partial, dm1n)
+        v1vo_e = numpy.empty_like(mo1e)
+        for i in range(nset):
+            v1vo_e[i,:nmo_e_a*nocc_e_a] = \
+                reduce(numpy.dot, (mo_coeff_e[0].T, v1e[0,i], mocc_e_a)).ravel()
+            v1vo_e[i,nmo_e_a*nocc_e_a:] = \
+                reduce(numpy.dot, (mo_coeff_e[1].T, v1e[1,i], mocc_e_b)).ravel()
         v1vo_n = []
         rfn = None
         if f1n is not None:
@@ -607,8 +866,12 @@ class Hessian(lib.StreamObject):
 
     def solve_mo1(self, h1ao_e_or_chkfile, h1ao_n_or_chkfile,
                   fx=None, atmlst=None, max_memory=4000, verbose=None):
-        return solve_mo1(self.base, h1ao_e_or_chkfile, h1ao_n_or_chkfile,
-                         fx, atmlst, max_memory, verbose)
+        if self.base.unrestricted:
+            return solve_mo1_uks(self.base, h1ao_e_or_chkfile, h1ao_n_or_chkfile,
+                                 fx, atmlst, max_memory, verbose)
+        else:
+            return solve_mo1_rks(self.base, h1ao_e_or_chkfile, h1ao_n_or_chkfile,
+                                 fx, atmlst, max_memory, verbose)
 
     def hess_elec(self, mo1e, e1e, h1ao_e, max_memory=4000, verbose=None):
         '''Hessian of electrons and classic nuclei in CNEO'''
