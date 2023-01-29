@@ -50,8 +50,9 @@ def _gen_neo_response(mf, hermi=0, max_memory=None):
             # this means we have unrestricted dm1e_symm,
             # and v1e has two components
             for i in range(mol.nuc_num):
-                v1e[0] += mf.get_j_e_dm_n(i, dm1n_partial[i]) * 2.0
-                v1e[1] += mf.get_j_e_dm_n(i, dm1n_partial[i]) * 2.0
+                v1en = mf.get_j_e_dm_n(i, dm1n_partial[i]) * 2.0
+                v1e[0] += v1en
+                v1e[1] += v1en
         else:
             for i in range(mol.nuc_num):
                 v1e += mf.get_j_e_dm_n(i, dm1n_partial[i]) * 2.0
