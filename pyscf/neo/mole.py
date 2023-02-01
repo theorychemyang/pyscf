@@ -64,6 +64,13 @@ class Mole(gto.mole.Mole):
                 for x in basis:
                     x[1][0] *= numpy.sqrt(2.01410177811/1.007825)
                 nuc.basis_name = nuc_basis
+        elif 'H*' in self.atom_symbol(atom_index): # H* for muonium
+            with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
+                basis = gto.basis.parse(f.read())
+                # read in H basis, but scale the exponents by sqrt(mass_mu/mass_H)
+                for x in basis:
+                    x[1][0] *= numpy.sqrt(0.114/1.007825)
+                nuc.basis_name = nuc_basis
         elif self.atom_pure_symbol(atom_index) == 'H':
             with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
                 basis = gto.basis.parse(f.read())
@@ -118,7 +125,8 @@ class Mole(gto.mole.Mole):
             elif isinstance(i, str):
                 for j in range(self.natm):
                     if self.atom_pure_symbol(j) == i: 
-                        # NOTE: isotopes are labelled with '+', e.g., 'H+' stands for 'D', thus both 'H+' and 'H' are treated by q.m. even quantum_nuc=['H']
+                        # NOTE: isotopes are labelled with '+' or '*', e.g., 'H+' stands for 'D',
+                        # thus both 'H+' and 'H' are treated by q.m. even quantum_nuc=['H']
                         self.quantum_nuc[j] = True
                 logger.info(self, 'All %s atoms are treated quantum-mechanically.' %i)
 
@@ -128,7 +136,7 @@ class Mole(gto.mole.Mole):
         for i in range(self.natm):
             if 'H+' in self.atom_symbol(i): # Deuterium (from Wikipedia)
                 self.mass[i] = 2.01410177811
-            elif self.atom_symbol(i) == 'H@0': # Muonium (TODO: precise mass)
+            elif 'H*' in self.atom_symbol(i): # Muonium
                 self.mass[i] = 0.114
             elif self.atom_pure_symbol(i) == 'H': # Hydrogen (from Wikipedia)
                 self.mass[i] = 1.007825
