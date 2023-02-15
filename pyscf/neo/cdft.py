@@ -4,8 +4,6 @@
 Constrained nuclear-electronic orbital density functional theory
 '''
 import numpy
-from pyscf import lib
-from pyscf import scf
 from pyscf.neo.ks import KS
 
 def get_fock_add_cdft(f, int1e_r):
