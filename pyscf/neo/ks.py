@@ -87,9 +87,6 @@ class KS(HF):
         if mol.elec.nhomo is not None:
             self.mf_elec.get_occ = self.get_occ_elec(self.mf_elec)
 
-        # build grids (Note: high-density grids are needed since nuclei is more localized than electrons)
-        self.mf_elec.grids.build(with_non0tab=False)
-
         # set up Hamiltonian for each quantum nuclei
         for i in range(mol.nuc_num):
             ia = self.mol.nuc[i].atom_index
