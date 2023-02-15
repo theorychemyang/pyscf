@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from pyscf.neo.mole import Mole
+from pyscf.neo.mole import Mole, M
 from pyscf.neo.hf import HF
 from pyscf.neo.ks import KS
 from pyscf.neo.cdft import CDFT

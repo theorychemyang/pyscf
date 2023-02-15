@@ -6,13 +6,9 @@ Analytical nuclear gradient for constrained nuclear-electronic orbital
 import numpy
 from pyscf import gto, lib, neo
 from pyscf.data import nist
-from pyscf.grad.rhf import _write
+from pyscf.grad import rhf as rhf_grad
 from pyscf.lib import logger
 from pyscf.scf.jk import get_jk
-
-# TODO: create Gradients class from GradientsMixin
-#from pyscf.grad import rhf as rhf_grad
-#class Gradients(rhf_grad.GradientsMixin):
 
 
 def grad_cneo(mf_grad, atmlst=None):
@@ -67,7 +63,7 @@ def grad_cneo(mf_grad, atmlst=None):
 
     if log.verbose >= logger.DEBUG:
         log.debug('gradients of CNEO part')
-        _write(log, mol, de, atmlst)
+        rhf_grad._write(log, mol, de, atmlst)
     return de
 
 def get_hcore(mol_n):
@@ -120,7 +116,44 @@ def hcore_generator(mf_grad, mol_n):
             return 0.0
     return hcore_deriv
 
-class Gradients(lib.StreamObject):
+def as_scanner(mf_grad):
+    '''Generating a nuclear gradients scanner/solver (for geometry optimizer).
+
+    This is different from GradientsMixin.as_scanner because (C)NEO uses two
+    layers of mole objects.
+
+    Copied from grad.rhf.as_scanner
+    '''
+    if isinstance(mf_grad, lib.GradScanner):
+        return mf_grad
+
+    logger.info(mf_grad, 'Create scanner for %s', mf_grad.__class__)
+
+    class CNEO_GradScanner(mf_grad.__class__, lib.GradScanner):
+        def __init__(self, g):
+            lib.GradScanner.__init__(self, g)
+        def __call__(self, mol_or_geom, **kwargs):
+            if isinstance(mol_or_geom, neo.Mole):
+                mol = mol_or_geom
+            else:
+                mol = self.mol.set_geom_(mol_or_geom, inplace=False)
+
+            mf_scanner = self.base
+            e_tot = mf_scanner(mol)
+            self.mol = mol
+            self.g_elec.mol = mol.elec
+
+            # If second integration grids are created for RKS and UKS
+            # electronic part gradients
+            if getattr(self.g_elec, 'grids', None):
+                self.g_elec.grids.reset(mol.elec)
+
+            de = self.kernel(**kwargs)
+            return e_tot, de
+    return CNEO_GradScanner(mf_grad)
+
+
+class Gradients(rhf_grad.GradientsMixin):
     '''
     Examples::
 
@@ -135,49 +168,22 @@ class Gradients(lib.StreamObject):
     '''
 
     def __init__(self, scf_method):
-        self.base = scf_method
+        rhf_grad.GradientsMixin.__init__(self, scf_method)
         if self.base.epc is not None:
             raise NotImplementedError('Gradient with epc is not implemented')
-        self.verbose = scf_method.verbose
-        self.mol = scf_method.mol
-        self.max_memory = self.mol.max_memory
-        self.unit = 'au'
-
         self.grid_response = None
-
-        self.atmlst = None
-        self.de = None
-        self._keys = set(self.__dict__.keys())
+        self.g_elec = self.base.mf_elec.nuc_grad_method() # elec part obj
+        self.g_elec.verbose = self.verbose - 1
+        self._keys = self._keys.union(['grid_response', 'g_elec'])
 
     hcore_generator = hcore_generator
     grad_cneo = grad_cneo
 
     def grad_elec(self, atmlst=None):
         '''gradients of electrons and classic nuclei'''
-        g = self.base.mf_elec.nuc_grad_method()
         if self.grid_response is not None:
-            g.grid_response = self.grid_response
-        g.verbose = self.verbose - 1
-        return g.grad(atmlst=atmlst)
-
-    # TODO:
-    # This will not be necessary if Gradients class here inherits
-    # from GradientsMixin, but now, copy from pyscf/grad/rhf.py
-    def dump_flags(self, verbose=None):
-        log = logger.new_logger(self, verbose)
-        log.info('\n')
-        if hasattr(self.base, 'converged') and not self.base.converged:
-            log.warn('Ground state %s not converged',
-                     self.base.__class__.__name__)
-        log.info('******** %s for %s ********',
-                 self.__class__, self.base.__class__)
-        if 'ANG' in self.unit.upper():
-            raise NotImplementedError('unit Eh/Ang is not supported')
-        else:
-            log.info('unit = Eh/Bohr')
-        log.info('max_memory %d MB (current use %d MB)',
-                 self.max_memory, lib.current_memory()[0])
-        return self
+            self.g_elec.grid_response = self.grid_response
+        return self.g_elec.grad(atmlst=atmlst)
 
     def kernel(self, atmlst=None):
         cput0 = (logger.process_clock(), logger.perf_counter())
@@ -195,7 +201,7 @@ class Gradients(lib.StreamObject):
 
         de = self.grad_cneo(atmlst=atmlst)
         self.de = de + self.grad_elec(atmlst=atmlst)
-        if self.mol.symmetry:
+        if mol.symmetry:
             raise NotImplementedError('Symmetry is not supported')
         logger.timer(self, 'CNEO gradients', *cput0)
         self._finalize()
@@ -203,38 +209,7 @@ class Gradients(lib.StreamObject):
 
     grad = lib.alias(kernel, alias_name='grad')
 
-    # TODO:
-    # This will not be necessary if Gradients class here inherits
-    # from GradientsMixin, but now, copy from pyscf/grad/rhf.py
-    def _finalize(self):
-        if self.verbose >= logger.NOTE:
-            logger.note(self, '--------------- %s gradients ---------------',
-                        self.base.__class__.__name__)
-            _write(self, self.mol, self.de, self.atmlst)
-            logger.note(self, '----------------------------------------------')
-
-    # FIXME: scanner does not work, because CNEO needs two layers of mole's.
-    def as_scanner(self):
-        if isinstance(self, lib.GradScanner):
-            return self
-
-        logger.info(self, 'Create scanner for %s', self.__class__)
-
-        class SCF_GradScanner(self.__class__, lib.GradScanner):
-            def __init__(self, g):
-                lib.GradScanner.__init__(self, g)
-            def __call__(self, mol_or_geom, **kwargs):
-                if isinstance(mol_or_geom, neo.Mole):
-                    mol = mol_or_geom
-                else:
-                    mol = self.mol.set_geom_(mol_or_geom, inplace=True)
-
-                self.mol = self.base.mol = mol
-                mf_scanner = self.base
-                e_tot = mf_scanner(mol)
-                de = self.kernel(**kwargs)
-                return e_tot, de
-        return SCF_GradScanner(self)
+    as_scanner = as_scanner
 
 Grad = Gradients
 

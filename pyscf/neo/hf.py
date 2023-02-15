@@ -9,6 +9,7 @@ import ctypes
 import numpy
 import scipy
 import warnings
+import h5py
 from pyscf import gto, lib, neo, scf
 from pyscf.data import nist
 from pyscf.lib import logger
@@ -577,7 +578,7 @@ def init_guess_mixed(mol, mixing_parameter = numpy.pi/4):
     dm =scf.UHF(mol).make_rdm1( (Ca,Cb), (mo_occ,mo_occ) )
     return dm
 
-def init_guess_elec_by_calculation(mol, unrestricted, init_guess):
+def init_guess_elec(mol, unrestricted, init_guess):
     """Generate initial dm"""
     # get electronic initial guess, which uses default minao initial gues
     dm_elec = None
@@ -595,17 +596,14 @@ def init_guess_nuc_by_calculation(mf_nuc, mol):
     for i in range(mol.nuc_num):
         ia = mol.nuc[i].atom_index
         mol_tmp = neo.Mole()
-        mol_tmp.build(atom=mol.atom, charge=mol.charge, spin=mol.spin,
-                      quantum_nuc=[ia], nuc_basis=mol.nuc[i].basis_name)
+        mol_tmp.build(quantum_nuc=[ia], nuc_basis=mol.nuc[i].basis_name,
+                      dump_input=False, parse_arg=False, verbose=mol.verbose,
+                      output=mol.output, max_memory=mol.max_memory,
+                      atom=mol.atom, unit=mol.unit, nucmod=mol.nucmod,
+                      ecp=mol.ecp, charge=mol.charge, spin=mol.spin,
+                      symmetry=mol.symmetry, symmetry_subgroup=mol.symmetry_subgroup,
+                      cart=mol.cart, magmom=mol.magmom)
         dm_nuc[i] = get_init_guess_nuc(mf_nuc[i], mol_tmp.nuc[0])
-    return dm_nuc
-
-def init_guess_elec_by_chkfile(mol, chkfile_name):
-    dm_elec = None
-    return dm_elec
-
-def init_guess_nuc_by_chkfile(mol, chkfile_name):
-    dm_nuc = None
     return dm_nuc
 
 def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
@@ -616,18 +614,21 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         logger.info(mf, 'Set gradient conv threshold to %g', conv_tol_grad)
     mol = mf.mol
     if dm0 is None:
+        # note that mol is used instead of mol.elec, because mol.elec
+        # will have zero charges for quantum nuclei, but we want a
+        # classical HF initial guess here
         mf.dm_elec = mf.get_init_guess_elec(mol, mf.init_guess)
     elif isinstance(dm0, (tuple, list)):
         mf.dm_elec = dm0[0]
     elif isinstance(dm0, numpy.ndarray):
         mf.dm_elec = dm0
+    # mf.init_guess only affects the electronic part
     if dm0 is None:
-        mf.dm_nuc = mf.get_init_guess_nuc(mol, mf.init_guess)
-        # if mf.init_guess is not 'chkfile', then it only affects the electronic part
+        mf.dm_nuc = mf.get_init_guess_nuc(mol)
     elif isinstance(dm0, (tuple, list)) and len(dm0) >= mol.nuc_num + 1:
         mf.dm_nuc = dm0[1 : 1+mol.nuc_num]
     else:
-        mf.dm_nuc = mf.get_init_guess_nuc(mol, mf.init_guess)
+        mf.dm_nuc = mf.get_init_guess_nuc(mol)
 
     if mf.dm_elec.ndim > 2:
         dm = [mf.dm_elec[0], mf.dm_elec[1]]
@@ -696,9 +697,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mf_diis = None
 
     if dump_chk and mf.chkfile:
-        # Explicit overwrite the mol object in chkfile
-        # Note in pbc.scf, mf.mol == mf.cell, cell is saved under key "mol"
-        chkfile.save_mol(mol, mf.chkfile)
+        # dump electronic part mol
+        chkfile.save_mol(mol.elec, mf.chkfile)
 
     # A preprocessing hook before the SCF iteration
     mf.pre_kernel(locals())
@@ -870,6 +870,47 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     return scf_conv, e_tot, mo_energy_e, mo_coeff_e, mo_occ_e, \
            mo_energy_n, mo_coeff_n, mo_occ_n
 
+def as_scanner(mf):
+    '''Generating a scanner/solver for (C)NEO PES.
+    Copied from scf.hf.as_scanner
+    '''
+    if isinstance(mf, lib.SinglePointScanner):
+        return mf
+
+    logger.info(mf, 'Create scanner for %s', mf.__class__)
+
+    class CNEO_Scanner(mf.__class__, lib.SinglePointScanner):
+        def __init__(self, mf_obj):
+            self.__dict__.update(mf_obj.__dict__)
+
+        def __call__(self, mol_or_geom, **kwargs):
+            if isinstance(mol_or_geom, neo.Mole):
+                mol = mol_or_geom
+            else:
+                mol = self.mol.set_geom_(mol_or_geom, inplace=False)
+
+            # Cleanup intermediates associated to the pervious mol object
+            self.reset(mol)
+
+            # Only electronic dm0 is of interest
+            if 'dm0' in kwargs:
+                dm0 = kwargs.pop('dm0')
+            elif self.mf_elec.mo_coeff is None:
+                dm0 = None
+            elif self.chkfile and h5py.is_hdf5(self.chkfile):
+                dm0 = self.mf_elec.from_chk(self.chkfile)
+            else:
+                dm0 = self.mf_elec.make_rdm1()
+                if dm0.shape[-1] != mol.elec.nao:
+                    dm0 = None
+            self.mf_elec.mo_coeff = None
+            for i in range(mol.nuc_num):
+                self.mf_nuc[i].mo_coeff = None
+            e_tot = self.kernel(dm0=dm0, **kwargs)
+            return e_tot
+
+    return CNEO_Scanner(mf)
+
 
 class HF(scf.hf.SCF):
     '''Hartree Fock for NEO
@@ -878,7 +919,8 @@ class HF(scf.hf.SCF):
 
     >>> from pyscf import neo
     >>> mol = neo.Mole()
-    >>> mol.build(atom='H 0 0 0; F 0 0 0.917', quantum_nuc=[0], basis='ccpvdz', nuc_basis='pb4d')
+    >>> mol.build(atom='H 0 0 0; F 0 0 0.917', quantum_nuc=[0], basis='ccpvdz',
+    >>>           nuc_basis='pb4d')
     >>> mf = neo.HF(mol)
     >>> mf.scf()
     -99.98104139461894
@@ -915,7 +957,6 @@ class HF(scf.hf.SCF):
         else:
             self.mf_elec = scf.RHF(mol.elec)
         self.mf_elec.get_hcore = self.get_hcore_elec
-        self.mf_elec.super_mf = self
         if mol.elec.nhomo is not None:
             self.mf_elec.get_occ = self.get_occ_elec(self.mf_elec)
 
@@ -928,22 +969,21 @@ class HF(scf.hf.SCF):
             mf_nuc.get_hcore = self.get_hcore_nuc
             mf_nuc.get_veff = self.get_veff_nuc_bare
             mf_nuc.energy_qmnuc = self.energy_qmnuc
-            mf_nuc.super_mf = self
             self.dm_nuc.append(None)
 
-    #def dump_chk():
+    def dump_chk(self, envs):
+        if self.chkfile:
+            chkfile.dump_scf(self.mol.elec, self.chkfile,
+                             envs['e_tot'], envs['mo_energy_e'],
+                             envs['mo_coeff_e'], envs['mo_occ_e'],
+                             overwrite_mol=False)
+        return self
 
     def get_init_guess_elec(self, mol, init_guess):
-        if init_guess != 'chkfile':
-            return init_guess_elec_by_calculation(mol, self.unrestricted, init_guess)
-        else:
-            return init_guess_elec_by_chkfile(mol, self.chkfile)
+        return init_guess_elec(mol, self.unrestricted, init_guess)
 
-    def get_init_guess_nuc(self, mol, init_guess):
-        if init_guess != 'chkfile':
-            return init_guess_nuc_by_calculation(self.mf_nuc, mol)
-        else:
-            return init_guess_nuc_by_chkfile(mol, self.chkfile)
+    def get_init_guess_nuc(self, mol):
+        return init_guess_nuc_by_calculation(self.mf_nuc, mol)
 
     def get_j_e_dm_n(self, idx_nuc, dm_n, mol_elec=None, mol_nuc=None, eri_ne=None):
         if mol_elec is None:
@@ -952,7 +992,8 @@ class HF(scf.hf.SCF):
             mol_nuc = self.mol.nuc[idx_nuc]
         if eri_ne is None:
             eri_ne = self._eri_ne
-        return get_j_e_dm_n(idx_nuc, dm_n, mol_elec=mol_elec, mol_nuc=mol_nuc, eri_ne=eri_ne)
+        return get_j_e_dm_n(idx_nuc, dm_n, mol_elec=mol_elec,
+                            mol_nuc=mol_nuc, eri_ne=eri_ne)
 
     def get_j_n_dm_e(self, idx_nuc, dm_e, mol_elec=None, mol_nuc=None, eri_ne=None):
         if mol_elec is None:
@@ -961,7 +1002,8 @@ class HF(scf.hf.SCF):
             mol_nuc = self.mol.nuc[idx_nuc]
         if eri_ne is None:
             eri_ne = self._eri_ne
-        return get_j_n_dm_e(idx_nuc, dm_e, mol_elec=mol_elec, mol_nuc=mol_nuc, eri_ne=eri_ne)
+        return get_j_n_dm_e(idx_nuc, dm_e, mol_elec=mol_elec,
+                            mol_nuc=mol_nuc, eri_ne=eri_ne)
 
     def get_j_nn(self, idx1, idx2, dm_n2, mol_nuc1=None, mol_nuc2=None, eri_nn=None):
         if mol_nuc1 is None:
@@ -970,7 +1012,8 @@ class HF(scf.hf.SCF):
             mol_nuc2 = self.mol.nuc[idx2]
         if eri_nn is None:
             eri_nn = self._eri_nn
-        return get_j_nn(idx1, idx2, dm_n2, mol_nuc1=mol_nuc1, mol_nuc2=mol_nuc2, eri_nn=eri_nn)
+        return get_j_nn(idx1, idx2, dm_n2, mol_nuc1=mol_nuc1,
+                        mol_nuc2=mol_nuc2, eri_nn=eri_nn)
 
     def get_hcore_elec(self, mol=None):
         if mol is None: mol = self.mol.elec
@@ -997,7 +1040,8 @@ class HF(scf.hf.SCF):
         return energy_qmnuc(mf, h1n, dm_nuc, veff_n=veff_n)
 
     def energy_tot(self, dm_elec, dm_nuc, h1e, vhf_e, h1n, veff_n=None):
-        return energy_tot(self.mf_elec, self.mf_nuc, dm_elec, dm_nuc, h1e, vhf_e, h1n, veff_n=veff_n)
+        return energy_tot(self.mf_elec, self.mf_nuc, dm_elec, dm_nuc, h1e,
+                          vhf_e, h1n, veff_n=veff_n)
 
     def scf(self, dm0=None, **kwargs):
         cput0 = (logger.process_clock(), logger.perf_counter())
@@ -1009,13 +1053,39 @@ class HF(scf.hf.SCF):
                 self.mf_elec.mo_coeff, self.mf_elec.mo_occ = \
                     kernel(self, self.conv_tol, self.conv_tol_grad,
                            dm0=dm0, callback=self.callback,
-                           conv_check=self.conv_check, **kwargs)[0 : 5]
+                           conv_check=self.conv_check, **kwargs)[0:5]
+            self.mf_elec.converged = self.converged
         else:
             self.e_tot = kernel(self, self.conv_tol, self.conv_tol_grad,
                                 dm0=dm0, callback=self.callback,
                                 conv_check=self.conv_check, **kwargs)[1]
 
-        logger.timer(self, 'SCF', *cput0)
+        logger.timer(self, '(C)NEO-SCF', *cput0)
         self._finalize()
         return self.e_tot
     kernel = lib.alias(scf, alias_name='kernel')
+
+    def reset(self, mol=None):
+        '''Reset mol and relevant attributes associated to the old mol object'''
+        super().reset(mol=mol)
+        self.mf_elec.reset(self.mol.elec)
+        self.dm_elec = None
+        for i in range(self.mol.nuc_num):
+            self.mf_nuc[i].reset(self.mol.nuc[i])
+            self.dm_nuc[i] = None
+            self._eri_ne[i] = None
+            self._eri_nn[i] = [None] * self.mol.nuc_num
+
+        # point to correct ``self'' for overriden functions
+        self.mf_elec.get_hcore = self.get_hcore_elec
+        if mol.elec.nhomo is not None:
+            self.mf_elec.get_occ = self.get_occ_elec(self.mf_elec)
+        for i in range(mol.nuc_num):
+            mf_nuc = self.mf_nuc[i]
+            mf_nuc.get_occ = self.get_occ_nuc(mf_nuc)
+            mf_nuc.get_hcore = self.get_hcore_nuc
+            mf_nuc.get_veff = self.get_veff_nuc_bare
+            mf_nuc.energy_qmnuc = self.energy_qmnuc
+        return self
+
+    as_scanner = as_scanner

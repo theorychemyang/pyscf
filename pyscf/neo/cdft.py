@@ -29,8 +29,8 @@ class CDFT(KS):
     '''
 
     def __init__(self, mol, **kwargs):
-        self.f = numpy.zeros((mol.natm, 3))
         KS.__init__(self, mol, **kwargs)
+        self.f = numpy.zeros((mol.natm, 3))
 
         # set up the Hamiltonian for each quantum nuclei in cNEO
         for i in range(len(self.mol.nuc)):
@@ -56,6 +56,20 @@ class CDFT(KS):
             s1e = mf.get_ovlp(mf.mol)
         return position_analysis(mf, fock0 + get_fock_add_cdft(self.f[ia], mf.int1e_r),
                                  s1e, mf.int1e_r)
+
+    def reset(self, mol=None):
+        '''Reset mol and relevant attributes associated to the old mol object'''
+        super().reset(mol=mol)
+        self.f = numpy.zeros((mol.natm, 3))
+        # reset int1e_r matrix
+        for i in range(len(self.mol.nuc)):
+            mf = self.mf_nuc[i]
+            mf.nuclei_expect_position = mf.mol.atom_coord(mf.mol.atom_index)
+            # the position matrix with its origin shifted to nuclear expectation position
+            s1e = mf.get_ovlp(mf.mol)
+            mf.int1e_r = mf.mol.intor_symmetric('int1e_r', comp=3) \
+                         - numpy.array([mf.nuclei_expect_position[i] * s1e for i in range(3)])
+        return self
 
     def nuc_grad_method(self):
         from pyscf.neo import grad

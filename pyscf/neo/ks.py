@@ -65,12 +65,8 @@ class KS(HF):
     -100.38833734158459
     '''
 
-    def __init__(self, mol, unrestricted=False, epc=None):
-        HF.__init__(self, mol)
-
-        if mol.elec.nhomo is not None:
-            unrestricted = True
-        self.unrestricted = unrestricted
+    def __init__(self, mol, epc=None, **kwargs):
+        HF.__init__(self, mol, **kwargs)
         self.epc = epc # electron-proton correlation: '17-1' or '17-2' can be used
 
         # set up Hamiltonian for electrons
@@ -83,7 +79,6 @@ class KS(HF):
         self.mf_elec.get_hcore = self.get_hcore_elec
         if self.epc is not None:
             self.mf_elec.get_veff = self.get_veff_elec_epc
-        self.mf_elec.super_mf = self
         if mol.elec.nhomo is not None:
             self.mf_elec.get_occ = self.get_occ_elec(self.mf_elec)
 
@@ -100,7 +95,6 @@ class KS(HF):
                 mf_nuc.get_hcore = self.get_hcore_nuc
                 mf_nuc.get_veff = self.get_veff_nuc_epc
                 mf_nuc.energy_qmnuc = self.energy_qmnuc
-                mf_nuc.super_mf = self
 
     def get_veff_nuc_epc(self, mol, dm, dm_last=None, vhf_last=None, hermi=1):
         '''Add EPC contribution to nuclear veff'''
@@ -182,3 +176,17 @@ class KS(HF):
             n1 += veff_n.exc
         logger.debug(self, 'Energy of %s (%3d): %s', self.mol.atom_symbol(ia), ia, n1)
         return n1
+
+    def reset(self, mol=None):
+        '''Reset mol and relevant attributes associated to the old mol object'''
+        super().reset(mol=mol)
+        # point to correct ``self'' for overriden functions
+        if self.epc is not None:
+            self.mf_elec.get_veff = self.get_veff_elec_epc
+            for i in range(mol.nuc_num):
+                ia = self.mol.nuc[i].atom_index
+                # only support electron-proton correlation
+                if self.mol.atom_pure_symbol(ia) == 'H':
+                    mf_nuc = self.mf_nuc[i]
+                    mf_nuc.get_veff = self.get_veff_nuc_epc
+        return self
