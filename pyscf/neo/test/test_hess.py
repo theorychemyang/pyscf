@@ -131,12 +131,12 @@ class KnownValues(unittest.TestCase):
 
     def test_hess_CH3_full_q_uks(self):
         mol = neo.Mole()
-        mol.build(atom='''C  0.0   0.00000   0.000000
-                          H  0.0   0.00000   1.076238
-                          H  0.0   0.93205  -0.538119
-                          H  0.0  -0.93205  -0.538119''',
+        mol.build(atom='''C   0.0   0.00000   0.000000
+                          H1  0.0   0.00000   1.076238
+                          H2  0.0   0.93205  -0.538119
+                          H3  0.0  -0.93205  -0.538119''',
                   spin=1, basis='ccpvdz', quantum_nuc=[0,1,2,3])
-        mf = neo.CDFT(mol, unrestricted=True)
+        mf = neo.CDFT(mol) # spin != 0 will be unrestricted anyway
         mf.mf_elec.xc = 'b3lyp'
         mf.scf()
 
