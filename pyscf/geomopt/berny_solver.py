@@ -50,14 +50,14 @@ def to_berny_geom(mol, include_ghost=INCLUDE_GHOST):
     atom_charges = mol.atom_charges()
     if include_ghost:
         # Symbol Ghost is not supported in current version of pyberny
-        #species = [mol.atom_symbol(i) if z != 0 else 'Ghost'
+        #species = [mol.atom_pure_symbol(i) if z != 0 else 'Ghost'
         #           for i,z in enumerate(atom_charges)]
-        species = [mol.atom_symbol(i) if z != 0 else 'H'
+        species = [mol.atom_pure_symbol(i) if z != 0 else 'H'
                    for i,z in enumerate(atom_charges)]
         coords = mol.atom_coords() * lib.param.BOHR
     else:
         atmlst = numpy.where(atom_charges != 0)[0]  # Exclude ghost atoms
-        species = [mol.atom_symbol(i) for i in atmlst]
+        species = [mol.atom_pure_symbol(i) for i in atmlst]
         coords = mol.atom_coords()[atmlst] * lib.param.BOHR
 
     # geomlib.Geometry is available in the new version of pyberny solver. (issue #212)
