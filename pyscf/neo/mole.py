@@ -307,8 +307,9 @@ class Mole(gto.mole.Mole):
             # In that case, nuc mole will again lose basis information.
             # Therefore, here we choose a way to ensure nuclear basis is
             # correctly assigned. (and no duplication)
-            mol.nuc[i] = self.nuc[i].set_geom_(modified_atom, unit='bohr',
-                                               symmetry=symmetry, inplace=inplace)
+            with contextlib.redirect_stderr(open(os.devnull, 'w')):
+                mol.nuc[i] = self.nuc[i].set_geom_(modified_atom, unit='bohr',
+                                                   symmetry=symmetry, inplace=inplace)
             mol.nuc[i].charge = self.nuc[i].charge = charge
 
             # must relink back to mol in case inplace=False, otherwise
