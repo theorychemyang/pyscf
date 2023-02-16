@@ -5,13 +5,12 @@ import numpy
 import contextlib
 from pyscf import gto
 from pyscf.lib import logger, param
+from pyscf.gto.mole import PTR_COORD
 
 # For code compatibility in python-2 and python-3
 if sys.version_info >= (3,):
     unicode = str
 
-
-PTR_COORD  = 1
 
 def M(**kwargs):
     r'''This is a shortcut to build up Mole object.
@@ -40,6 +39,83 @@ def copy(mol):
         newmol.nuc[i].super_mol = newmol
 
     return newmol
+
+def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
+    '''
+    Return a Mole object for specified quantum nuclei.
+
+    Nuclear basis:
+
+    H: PB4-D  J. Chem. Phys. 152, 244123 (2020)
+    D: scaled PB4-D
+    other atoms: 12s12p12d, alpha=2*sqrt(2)*mass, beta=sqrt(3)
+    '''
+
+    nuc = gto.Mole() # a Mole object for quantum nuclei
+    nuc.super_mol = mol
+    nuc.atom_index = atom_index
+
+    dirnow = os.path.realpath(os.path.join(__file__, '..'))
+    if 'H+' in mol.atom_symbol(atom_index): # H+ for deuterium
+        with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
+            basis = gto.basis.parse(f.read())
+            # read in H basis, but scale the exponents by sqrt(mass_D/mass_H)
+            for x in basis:
+                x[1][0] *= numpy.sqrt(2.01410177811/1.007825)
+    elif 'H*' in mol.atom_symbol(atom_index): # H* for muonium
+        with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
+            basis = gto.basis.parse(f.read())
+            # read in H basis, but scale the exponents by sqrt(mass_mu/mass_H)
+            for x in basis:
+                x[1][0] *= numpy.sqrt(0.114/1.007825)
+    elif mol.atom_pure_symbol(atom_index) == 'H':
+        with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
+            basis = gto.basis.parse(f.read())
+        # old even-tempered basis for H
+        #alpha = 2 * numpy.sqrt(2) * mol.mass[atom_index]
+        #beta = numpy.sqrt(2)
+        #n = 8
+        #basis = gto.expand_etbs([(0, n, alpha, beta), (1, n, alpha, beta),
+        #                         (2, n, alpha, beta)])
+    else:
+        # even-tempered basis
+        alpha = 2 * numpy.sqrt(2) * mol.mass[atom_index]
+        beta = numpy.sqrt(3)
+        n = 12
+        basis = gto.expand_etbs([(0, n, alpha, beta), (1, n, alpha, beta),
+                                 (2, n, alpha, beta)])
+        #logger.info(mol, 'Nuclear basis for %s: n %s alpha %s beta %s'
+        #            %(mol.atom_symbol(atom_index), n, alpha, beta))
+    # suppress "Warning: Basis not found for atom" in line 921 of gto/mole.py
+    with contextlib.redirect_stderr(open(os.devnull, 'w')):
+        nuc.build(basis={mol.atom_symbol(atom_index): basis},
+                  dump_input=False, parse_arg=False, verbose=mol.verbose,
+                  output=mol.output, max_memory=mol.max_memory,
+                  atom=mol.atom, unit=mol.unit, nucmod=mol.nucmod,
+                  ecp=mol.ecp, charge=mol.charge, spin=mol.spin,
+                  symmetry=mol.symmetry, symmetry_subgroup=mol.symmetry_subgroup,
+                  cart=mol.cart, magmom=mol.magmom)
+
+    # set all quantum nuclei to have zero charges
+    quantum_nuclear_charge = 0
+    for i in range(mol.natm):
+        if mol.quantum_nuc[i]:
+            quantum_nuclear_charge -= nuc._atm[i, 0]
+            nuc._atm[i, 0] = 0 # set nuclear charges of quantum nuclei to 0
+    nuc.charge += quantum_nuclear_charge
+
+    # avoid UHF
+    nuc.nelec = (1,1) # this calls nelec.setter, which modifies _nelectron and spin
+
+    # fractional
+    if frac is not None:
+        nuc.nnuc = frac
+    else:
+        nuc.nnuc = 1
+
+    nuc._keys.update(['super_mol', 'atom_index', 'nnuc'])
+
+    return nuc
 
 
 class Mole(gto.mole.Mole):
@@ -75,168 +151,119 @@ class Mole(gto.mole.Mole):
     def __init__(self, **kwargs):
         gto.mole.Mole.__init__(self, **kwargs)
 
-        self.quantum_nuc = [] # a list to assign which nuclei are treated quantum mechanically
+        self.quantum_nuc = None # a list to assign which nuclei are treated quantum mechanically
         self.nuc_num = 0 # the number of quantum nuclei
-        self.mass = [] # masses of nuclei
+        self.mass = None # masses of nuclei
         self.elec = None # a Mole object for NEO-electron and classical nuclei
-        self.nuc = [] # a list of Mole objects for quantum nuclei
-        self._keys.update(['quantum_nuc', 'nuc_num', 'mass', 'elec', 'nuc'])
+        self.nuc = None # a list of Mole objects for quantum nuclei
+        self.nuc_basis = None # name of nuclear basis
+        self._keys.update(['quantum_nuc', 'nuc_num', 'mass', 'elec', 'nuc', 'nuc_basis'])
 
-    def build_nuc_mole(self, atom_index, nuc_basis='pb4d', frac=None):
-        '''
-        Return a Mole object for specified quantum nuclei.
-
-        Nuclear basis:
-
-        H: PB4-D  J. Chem. Phys. 152, 244123 (2020)
-        D: scaled PB4-D
-        other atoms: 12s12p12d, alpha=2*sqrt(2)*mass, beta=sqrt(3)
-        '''
-
-        nuc = gto.Mole() # a Mole object for quantum nuclei
-        nuc.atom_index = atom_index
-        nuc.super_mol = self
-        nuc.basis_name = None
-
-        dirnow = os.path.realpath(os.path.join(__file__, '..'))
-        if 'H+' in self.atom_symbol(atom_index): # H+ for deuterium
-            with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
-                basis = gto.basis.parse(f.read())
-                # read in H basis, but scale the exponents by sqrt(mass_D/mass_H)
-                for x in basis:
-                    x[1][0] *= numpy.sqrt(2.01410177811/1.007825)
-                nuc.basis_name = nuc_basis
-        elif 'H*' in self.atom_symbol(atom_index): # H* for muonium
-            with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
-                basis = gto.basis.parse(f.read())
-                # read in H basis, but scale the exponents by sqrt(mass_mu/mass_H)
-                for x in basis:
-                    x[1][0] *= numpy.sqrt(0.114/1.007825)
-                nuc.basis_name = nuc_basis
-        elif self.atom_pure_symbol(atom_index) == 'H':
-            with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
-                basis = gto.basis.parse(f.read())
-                nuc.basis_name = nuc_basis
-            # old even-tempered basis for H
-            #alpha = 2 * numpy.sqrt(2) * self.mass[atom_index]
-            #beta = numpy.sqrt(2)
-            #n = 8
-            #basis = gto.expand_etbs([(0, n, alpha, beta), (1, n, alpha, beta),
-            #                         (2, n, alpha, beta)])
-        else:
-            # even-tempered basis
-            alpha = 2 * numpy.sqrt(2) * self.mass[atom_index]
-            beta = numpy.sqrt(3)
-            n = 12
-            basis = gto.expand_etbs([(0, n, alpha, beta), (1, n, alpha, beta),
-                                     (2, n, alpha, beta)])
-            #logger.info(self, 'Nuclear basis for %s: n %s alpha %s beta %s'
-            #            %(self.atom_symbol(atom_index), n, alpha, beta))
-        # suppress "Warning: Basis not found for atom" in line 921 of gto/mole.py
-        with contextlib.redirect_stderr(open(os.devnull, 'w')):
-            nuc.build(basis={self.atom_symbol(atom_index): basis},
-                      dump_input=False, parse_arg=False, verbose=self.verbose,
-                      output=self.output, max_memory=self.max_memory,
-                      atom=self.atom, unit=self.unit, nucmod=self.nucmod,
-                      ecp=self.ecp, charge=self.charge, spin=self.spin,
-                      symmetry=self.symmetry, symmetry_subgroup=self.symmetry_subgroup,
-                      cart=self.cart, magmom=self.magmom)
-
-        # set all quantum nuclei to have zero charges
-        quantum_nuclear_charge = 0
-        for i in range(self.natm):
-            if self.quantum_nuc[i] is True:
-                quantum_nuclear_charge -= nuc._atm[i, 0]
-                nuc._atm[i, 0] = 0 # set nuclear charges of quantum nuclei to 0
-        nuc.charge += quantum_nuclear_charge
-
-        # avoid UHF
-        nuc.spin = 0
-        nuc.nelectron = 2
-
-        # fractional
-        if frac is not None:
-            nuc.nnuc = frac
-        else:
-            nuc.nnuc = 1
-
-        return nuc
-
-    def build(self, quantum_nuc=['H'], nuc_basis='pb4d', q_nuc_occ=None, **kwargs):
+    def build(self, quantum_nuc=None, nuc_basis=None, q_nuc_occ=None, **kwargs):
         '''assign which nuclei are treated quantum mechanically by quantum_nuc (list)'''
         super().build(**kwargs)
 
-        self.quantum_nuc = [False] * self.natm
+        # By default, all H (including isotopes) are quantum
+        if self.quantum_nuc is None and quantum_nuc is None:
+            quantum_nuc = ['H']
 
-        for i in quantum_nuc:
-            if isinstance(i, int):
-                self.quantum_nuc[i] = True
-                logger.info(self, 'The %s(%i) atom is treated quantum-mechanically'
-                            %(self.atom_symbol(i), i))
-            elif isinstance(i, str):
-                for j in range(self.natm):
-                    if self.atom_pure_symbol(j) == i:
-                        # NOTE: isotopes are labelled with '+' or '*', e.g.,
-                        # 'H+' stands for 'D', thus both 'H+' and 'H' are
-                        # treated by q.m. even quantum_nuc=['H']
-                        self.quantum_nuc[j] = True
-                logger.info(self, 'All %s atoms are treated quantum-mechanically.' %i)
+        # By default, use pb4d basis
+        if self.nuc_basis is None and nuc_basis is None:
+            nuc_basis = 'pb4d'
 
-        self.nuc_num = len([i for i in self.quantum_nuc if i == True])
+        if nuc_basis is not None: self.nuc_basis = nuc_basis
 
-        self.mass = self.atom_mass_list(isotope_avg=True)
-        for i in range(self.natm):
-            if 'H+' in self.atom_symbol(i): # Deuterium (from Wikipedia)
-                self.mass[i] = 2.01410177811
-            elif 'H*' in self.atom_symbol(i): # Muonium
-                self.mass[i] = 0.114
-            elif self.atom_pure_symbol(i) == 'H': # Hydrogen (from Wikipedia)
-                self.mass[i] = 1.007825
+        if quantum_nuc is not None:
+            self.quantum_nuc = [False] * self.natm
+            for i in quantum_nuc:
+                if isinstance(i, int):
+                    self.quantum_nuc[i] = True
+                    logger.info(self, 'The %s(%i) atom is treated quantum-mechanically'
+                                %(self.atom_symbol(i), i))
+                elif isinstance(i, str):
+                    for j in range(self.natm):
+                        if self.atom_pure_symbol(j) == i:
+                            # NOTE: isotopes are labelled with '+' or '*', e.g.,
+                            # 'H+' stands for 'D', thus both 'H+' and 'H' are
+                            # treated by q.m. even quantum_nuc=['H']
+                            self.quantum_nuc[j] = True
+                    logger.info(self, 'All %s atoms are treated quantum-mechanically.' %i)
+            self.nuc_num = len([i for i in self.quantum_nuc if i])
+
+        if self.mass is None:
+            self.mass = self.atom_mass_list(isotope_avg=True)
+            for i in range(self.natm):
+                if 'H+' in self.atom_symbol(i): # Deuterium (from Wikipedia)
+                    self.mass[i] = 2.01410177811
+                elif 'H*' in self.atom_symbol(i): # Muonium
+                    self.mass[i] = 0.114
+                elif self.atom_pure_symbol(i) == 'H': # Hydrogen (from Wikipedia)
+                    self.mass[i] = 1.007825
 
         # build the Mole object for electrons and classical nuclei
-        self.elec = gto.Mole()
-        self.elec.super_mol = self
-        self.elec._keys.update(['super_mol'])
-        self.elec.build(**kwargs)
+        if self.elec is None:
+            self.elec = gto.Mole()
+            self.elec.build(**kwargs)
 
-        # deal with fractional number of nuclei
-        if q_nuc_occ is not None:
-            q_nuc_occ = numpy.array(q_nuc_occ)
-            if q_nuc_occ.size != self.nuc_num:
-                raise ValueError('q_nuc_occ must match the dimension of quantum_nuc')
-            unocc = numpy.ones_like(q_nuc_occ) - q_nuc_occ
-            unocc_Z = 0
-            idx = 0
-        # set all quantum nuclei to have zero charges
-        quantum_nuclear_charge = 0
-        for i in range(self.natm):
-            if self.quantum_nuc[i] is True:
-                quantum_nuclear_charge -= self.elec._atm[i, 0]
-                if q_nuc_occ is not None:
-                    unocc_Z += unocc[idx] * self.elec._atm[i, 0]
-                    idx += 1
-                # set nuclear charges of quantum nuclei to 0
-                self.elec._atm[i, 0] = 0
-        # charge determines the number of electrons
-        self.elec.charge += quantum_nuclear_charge
-        if q_nuc_occ is not None:
-            # remove excessive electrons to make the system neutral
-            self.elec.charge += numpy.floor(unocc_Z)
-            self.elec.nhomo = 1.0 - (unocc_Z - numpy.floor(unocc_Z))
+            # deal with fractional number of nuclei
+            if q_nuc_occ is not None:
+                q_nuc_occ = numpy.array(q_nuc_occ)
+                if q_nuc_occ.size != self.nuc_num:
+                    raise ValueError('q_nuc_occ must match the dimension of quantum_nuc')
+                unocc = numpy.ones_like(q_nuc_occ) - q_nuc_occ
+                unocc_Z = 0
+                idx = 0
+            # set all quantum nuclei to have zero charges
+            quantum_nuclear_charge = 0
+            for i in range(self.natm):
+                if self.quantum_nuc[i]:
+                    quantum_nuclear_charge -= self.elec._atm[i, 0]
+                    if q_nuc_occ is not None:
+                        unocc_Z += unocc[idx] * self.elec._atm[i, 0]
+                        idx += 1
+                    # set nuclear charges of quantum nuclei to 0
+                    self.elec._atm[i, 0] = 0
+            # charge determines the number of electrons
+            self.elec.charge += quantum_nuclear_charge
+            if q_nuc_occ is not None:
+                # remove excessive electrons to make the system neutral
+                self.elec.charge += numpy.floor(unocc_Z)
+                self.elec.nhomo = 1.0 - (unocc_Z - numpy.floor(unocc_Z))
+            else:
+                self.elec.nhomo = None
+            self.elec.super_mol = self # proper super_mol linking
+            self.elec._keys.update(['super_mol', 'nhomo'])
         else:
-            self.elec.nhomo = None
+            self.elec.super_mol = self
+            # for rebuilding, we still need to modify _atm
+            for i in range(self.natm):
+                if self.quantum_nuc[i]:
+                    self.elec._atm[i, 0] = 0
+
 
         # build a list of Mole objects for quantum nuclei
-        if q_nuc_occ is None:
-            q_nuc_occ = [None] * self.nuc_num
-        idx = 0
-        for i in range(self.natm):
-            if self.quantum_nuc[i] == True:
-                self.nuc.append(self.build_nuc_mole(i, nuc_basis=nuc_basis,
-                                                    frac=q_nuc_occ[idx]))
-                idx += 1
+        if self.nuc is None:
+            if q_nuc_occ is None:
+                q_nuc_occ = [None] * self.nuc_num
+            idx = 0
+            self.nuc = []
+            for i in range(self.natm):
+                if self.quantum_nuc[i]:
+                    self.nuc.append(build_nuc_mole(self, i,
+                                                   nuc_basis=self.nuc_basis,
+                                                   frac=q_nuc_occ[idx]))
+                    idx += 1
+        else:
+            if len(self.nuc) != self.nuc_num:
+                raise ValueError('Number of quantum nuc changed from '+
+                                 f'{len(self.nuc)} to {self.nuc_num}')
+            for i in range(self.nuc_num):
+                self.nuc[i].super_mol = self # proper super_mol linking
+                for j in range(self.natm):
+                    if self.quantum_nuc[j]:
+                        self.nuc[i]._atm[j, 0] = 0
+                self.nuc[i].nelec = (1,1)
 
-        self._built = True
         return self
 
     copy = copy
@@ -254,11 +281,18 @@ class Mole(gto.mole.Mole):
             mol.nuc = [None] * mol.nuc_num
 
         # first set_geom_ for inner mole's
+        # use default charge, as gto.mole.Mole.build may complain about spin
+        charge = self.elec.charge
+        self.elec.charge = mol.charge
         mol.elec = self.elec.set_geom_(atoms_or_coords, unit=unit,
                                        symmetry=symmetry, inplace=inplace)
+        mol.elec.charge = self.elec.charge = charge
         for i in range(mol.nuc_num):
+            charge = self.nuc[i].charge
+            self.nuc[i].charge = mol.charge
             mol.nuc[i] = self.nuc[i].set_geom_(atoms_or_coords, unit=unit,
                                                symmetry=symmetry, inplace=inplace)
+            mol.nuc[i].charge = self.nuc[i].charge = charge
 
         # then set_geom_ for the base mole
         # copied from gto.mole.Mole.set_geom_

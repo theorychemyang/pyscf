@@ -582,7 +582,7 @@ def init_guess_elec(mol, unrestricted, init_guess):
     """Generate initial dm"""
     # get electronic initial guess, which uses default minao initial gues
     dm_elec = None
-    if unrestricted == True:
+    if unrestricted:
         dm_elec = scf.UHF(mol).get_init_guess(key=init_guess)
         # alternatively, try the mixed initial guess
         #dm_elec = init_guess_mixed(mol)
@@ -596,7 +596,7 @@ def init_guess_nuc_by_calculation(mf_nuc, mol):
     for i in range(mol.nuc_num):
         ia = mol.nuc[i].atom_index
         mol_tmp = neo.Mole()
-        mol_tmp.build(quantum_nuc=[ia], nuc_basis=mol.nuc[i].basis_name,
+        mol_tmp.build(quantum_nuc=[ia], nuc_basis=mol.nuc_basis,
                       dump_input=False, parse_arg=False, verbose=mol.verbose,
                       output=mol.output, max_memory=mol.max_memory,
                       atom=mol.atom, unit=mol.unit, nucmod=mol.nucmod,
@@ -928,7 +928,7 @@ class HF(scf.hf.SCF):
 
     def __init__(self, mol, unrestricted=False):
         scf.hf.SCF.__init__(self, mol)
-        if mol.elec.nhomo is not None:
+        if mol.elec.nhomo is not None or mol.spin != 0:
             unrestricted = True
         self.unrestricted = unrestricted
         self.mf_elec = None

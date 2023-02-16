@@ -70,7 +70,7 @@ class KS(HF):
         self.epc = epc # electron-proton correlation: '17-1' or '17-2' can be used
 
         # set up Hamiltonian for electrons
-        if self.unrestricted == True:
+        if self.unrestricted:
             self.mf_elec = dft.UKS(mol.elec)
         else:
             self.mf_elec = dft.RKS(mol.elec)
