@@ -367,13 +367,9 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
                 logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
                              (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
                 logger.debug(mf, 'Position deviation: %s', opt.fun)
-            fock_add = mf.get_fock_add_cdft()
-            for i in range(mol.nuc_num):
-                f[start + i] = f0[start + i] + fock_add[i]
-        else: # diis_pos == 'post' and using DIIS
-            fock_add = mf.get_fock_add_cdft()
-            for i in range(mol.nuc_num):
-                f[start + i] = f0[start + i] + fock_add[i]
+        fock_add = mf.get_fock_add_cdft()
+        for i in range(mol.nuc_num):
+            f[start + i] = f0[start + i] + fock_add[i]
 
     if cycle < 0 and diis is None:  # Not inside the SCF iteration
         return f
