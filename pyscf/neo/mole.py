@@ -86,6 +86,7 @@ def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
                                  (2, n, alpha, beta)])
         #logger.info(mol, 'Nuclear basis for %s: n %s alpha %s beta %s'
         #            %(mol.atom_symbol(atom_index), n, alpha, beta))
+
     # Automatically label quantum nuclei to prevent spawning multiple basis functions
     # at different positions
     modified_symbol = mol.atom_symbol(atom_index) + str(atom_index)
@@ -240,13 +241,6 @@ class Mole(gto.mole.Mole):
                 self.elec.nhomo = None
             self.elec.super_mol = self # proper super_mol linking
             self.elec._keys.update(['super_mol', 'nhomo'])
-        else:
-            self.elec.super_mol = self
-            # for rebuilding, we still need to modify _atm
-            for i in range(self.natm):
-                if self.quantum_nuc[i]:
-                    self.elec._atm[i, 0] = 0
-
 
         # build a list of Mole objects for quantum nuclei
         if self.nuc is None:
@@ -264,12 +258,6 @@ class Mole(gto.mole.Mole):
             if len(self.nuc) != self.nuc_num:
                 raise ValueError('Number of quantum nuc changed from '+
                                  f'{len(self.nuc)} to {self.nuc_num}')
-            for i in range(self.nuc_num):
-                self.nuc[i].super_mol = self # proper super_mol linking
-                for j in range(self.natm):
-                    if self.quantum_nuc[j]:
-                        self.nuc[i]._atm[j, 0] = 0
-                self.nuc[i].nelec = (1,1)
 
         return self
 
@@ -294,10 +282,15 @@ class Mole(gto.mole.Mole):
         mol.elec = self.elec.set_geom_(atoms_or_coords, unit=unit,
                                        symmetry=symmetry, inplace=inplace)
         mol.elec.charge = self.elec.charge = charge
+
+        # must relink back to mol in case inplace=False, otherwise
+        # it will point back to ``self'' here
         mol.elec.super_mol = mol
+        # ensure correct core charge in case got elec mole rebuild
         for i in range(mol.natm):
             if mol.quantum_nuc[i]:
                 mol.elec._atm[i, 0] = 0
+
         for i in range(mol.nuc_num):
             atom_index = self.nuc[i].atom_index
             charge = self.nuc[i].charge
@@ -307,11 +300,22 @@ class Mole(gto.mole.Mole):
             modified_atom[atom_index] = list(modified_atom[atom_index])
             modified_atom[atom_index][0] = modified_symbol
             modified_atom[atom_index] = tuple(modified_atom[atom_index])
+            # in this way, nuc mole must get rebuilt
+            # It is possible to pass a numpy.ndarray such that only _env
+            # needs to be modified, but in rare cases even numpy.ndarray
+            # can trigger a rebuild. (because of symmetry flag)
+            # In that case, nuc mole will again lose basis information.
+            # Therefore, here we choose a way to ensure nuclear basis is
+            # correctly assigned. (and no duplication)
             mol.nuc[i] = self.nuc[i].set_geom_(modified_atom, unit='bohr',
                                                symmetry=symmetry, inplace=inplace)
             mol.nuc[i].charge = self.nuc[i].charge = charge
+
+            # must relink back to mol in case inplace=False, otherwise
+            # it will point back to ``self'' here
             mol.nuc[i].super_mol = mol
-            for j in range(self.natm):
+            for j in range(mol.natm):
+                # ensure correct core charge, because got rebuilt
                 if mol.quantum_nuc[j]:
                     mol.nuc[i]._atm[j, 0] = 0
             mol.nuc[i].nelec = (1,1)
