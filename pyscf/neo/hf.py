@@ -907,6 +907,15 @@ def as_scanner(mf):
                 if dm0.shape[-1] != mol.elec.nao:
                     dm0 = None
             self.mf_elec.mo_coeff = None
+            if dm0 is not None:
+                dm0n = []
+                for i in range(mol.nuc_num):
+                    dm0n.append(self.mf_nuc[i].make_rdm1())
+                    if dm0n[-1].shape[-1] != mol.nuc[i].nao:
+                        dm0n = None
+                        break
+                if dm0n is not None and len(dm0n) == mol.nuc_num:
+                    dm0 = [dm0] + dm0n
             for i in range(mol.nuc_num):
                 self.mf_nuc[i].mo_coeff = None
             e_tot = self.kernel(dm0=dm0, **kwargs)
@@ -1052,6 +1061,9 @@ class HF(scf.hf.SCF):
         self.dump_flags()
 
         if self.max_cycle > 0 or self.mo_coeff is None:
+            # Note that all mo_*_[e,n] have already been passed to
+            # mf_elec and mf_nuc inside kernel. Here pass them again
+            # just to make it look like scf function in scf.hf
             self.converged, self.e_tot, self.mf_elec.mo_energy, \
                 self.mf_elec.mo_coeff, self.mf_elec.mo_occ = \
                     kernel(self, self.conv_tol, self.conv_tol_grad,
