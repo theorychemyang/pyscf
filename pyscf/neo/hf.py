@@ -354,9 +354,26 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
     fock_add = None
     if isinstance(mf, neo.CDFT):
         f0 = copy.deepcopy(f) # Fock without constraint term
-        fock_add = mf.get_fock_add_cdft()
-        for i in range(mol.nuc_num):
-            f[start + i] = f0[start + i] + fock_add[i]
+        # NOTE: an important change is that even if not using DIIS,
+        # we still optimize f. This helps with final extra cycle convergence
+        if diis_pos == 'pre' or diis_pos == 'both' or \
+                (cycle < 0 and diis is None):
+            # optimize f in cNEO
+            for i in range(mol.nuc_num):
+                ia = mf.mf_nuc[i].mol.atom_index
+                opt = scipy.optimize.root(mf.position_analysis, mf.f[ia],
+                                          args=(mf.mf_nuc[i], f0[start + i],
+                                                s1e[start + i]), method='hybr')
+                logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                             (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
+                logger.debug(mf, 'Position deviation: %s', opt.fun)
+            fock_add = mf.get_fock_add_cdft()
+            for i in range(mol.nuc_num):
+                f[start + i] = f0[start + i] + fock_add[i]
+        else: # diis_pos == 'post' and using DIIS
+            fock_add = mf.get_fock_add_cdft()
+            for i in range(mol.nuc_num):
+                f[start + i] = f0[start + i] + fock_add[i]
 
     if cycle < 0 and diis is None:  # Not inside the SCF iteration
         return f
@@ -384,20 +401,6 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
             dampa, dampp = damp_factor
     else:
         dampa = dampb = dampp = damp_factor
-
-    if isinstance(mf, neo.CDFT) and (diis_pos == 'pre' or diis_pos == 'both'):
-        # optimize f in cNEO
-        for i in range(mol.nuc_num):
-            ia = mf.mf_nuc[i].mol.atom_index
-            opt = scipy.optimize.root(mf.position_analysis, mf.f[ia],
-                                      args=(mf.mf_nuc[i], f0[start + i],
-                                            s1e[start + i]), method='hybr')
-            logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
-                         (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
-            logger.debug(mf, 'Position deviation: %s', opt.fun)
-        fock_add = mf.get_fock_add_cdft()
-        for i in range(mol.nuc_num):
-            f[start + i] = f0[start + i] + fock_add[i]
 
     # damping only when not CNEO
     if not isinstance(mf, neo.CDFT):
