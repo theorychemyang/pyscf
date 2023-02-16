@@ -95,14 +95,16 @@ def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
     modified_atom[atom_index][0] = modified_symbol
     modified_atom[atom_index] = tuple(modified_atom[atom_index])
     # suppress "Warning: Basis not found for atom" in line 921 of gto/mole.py
-    with contextlib.redirect_stderr(open(os.devnull, 'w')):
-        nuc.build(basis={modified_symbol: basis},
-                  dump_input=False, parse_arg=False, verbose=mol.verbose,
-                  output=mol.output, max_memory=mol.max_memory,
-                  atom=modified_atom, unit='bohr', nucmod=mol.nucmod,
-                  ecp=mol.ecp, charge=mol.charge, spin=mol.spin,
-                  symmetry=mol.symmetry, symmetry_subgroup=mol.symmetry_subgroup,
-                  cart=mol.cart, magmom=mol.magmom)
+    with open(os.devnull, 'w') as devnull:
+        with contextlib.redirect_stderr(devnull):
+            nuc.build(basis={modified_symbol: basis},
+                      dump_input=False, parse_arg=False, verbose=mol.verbose,
+                      output=mol.output, max_memory=mol.max_memory,
+                      atom=modified_atom, unit='bohr', nucmod=mol.nucmod,
+                      ecp=mol.ecp, charge=mol.charge, spin=mol.spin,
+                      symmetry=mol.symmetry,
+                      symmetry_subgroup=mol.symmetry_subgroup,
+                      cart=mol.cart, magmom=mol.magmom)
 
     # set all quantum nuclei to have zero charges
     quantum_nuclear_charge = 0
@@ -300,16 +302,18 @@ class Mole(gto.mole.Mole):
             modified_atom[atom_index] = list(modified_atom[atom_index])
             modified_atom[atom_index][0] = modified_symbol
             modified_atom[atom_index] = tuple(modified_atom[atom_index])
-            # in this way, nuc mole must get rebuilt
-            # It is possible to pass a numpy.ndarray such that only _env
-            # needs to be modified, but in rare cases even numpy.ndarray
-            # can trigger a rebuild. (because of symmetry flag)
+            # In this way, nuc mole must get rebuilt.
+            # It is possible to pass a numpy.ndarray such that no rebuild
+            # is needed, but in rare cases even numpy.ndarray can trigger
+            # a rebuild. (because of symmetry flag)
             # In that case, nuc mole will again lose basis information.
             # Therefore, here we choose a way to ensure nuclear basis is
             # correctly assigned. (and no duplication)
-            with contextlib.redirect_stderr(open(os.devnull, 'w')):
-                mol.nuc[i] = self.nuc[i].set_geom_(modified_atom, unit='bohr',
-                                                   symmetry=symmetry, inplace=inplace)
+            with open(os.devnull, 'w') as devnull:
+                with contextlib.redirect_stderr(devnull):
+                    mol.nuc[i] = self.nuc[i].set_geom_(modified_atom, unit='bohr',
+                                                       symmetry=symmetry,
+                                                       inplace=inplace)
             mol.nuc[i].charge = self.nuc[i].charge = charge
 
             # must relink back to mol in case inplace=False, otherwise
