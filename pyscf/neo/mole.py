@@ -294,12 +294,27 @@ class Mole(gto.mole.Mole):
         mol.elec = self.elec.set_geom_(atoms_or_coords, unit=unit,
                                        symmetry=symmetry, inplace=inplace)
         mol.elec.charge = self.elec.charge = charge
+        mol.elec.super_mol = mol
+        for i in range(mol.natm):
+            if mol.quantum_nuc[i]:
+                mol.elec._atm[i, 0] = 0
         for i in range(mol.nuc_num):
+            atom_index = self.nuc[i].atom_index
             charge = self.nuc[i].charge
             self.nuc[i].charge = mol.charge
-            mol.nuc[i] = self.nuc[i].set_geom_(atoms_or_coords, unit=unit,
+            modified_symbol = mol.elec.atom_symbol(atom_index) + str(atom_index)
+            modified_atom = mol.elec._atom.copy()
+            modified_atom[atom_index] = list(modified_atom[atom_index])
+            modified_atom[atom_index][0] = modified_symbol
+            modified_atom[atom_index] = tuple(modified_atom[atom_index])
+            mol.nuc[i] = self.nuc[i].set_geom_(modified_atom, unit='bohr',
                                                symmetry=symmetry, inplace=inplace)
             mol.nuc[i].charge = self.nuc[i].charge = charge
+            mol.nuc[i].super_mol = mol
+            for j in range(self.natm):
+                if mol.quantum_nuc[j]:
+                    mol.nuc[i]._atm[j, 0] = 0
+            mol.nuc[i].nelec = (1,1)
 
         # then set_geom_ for the base mole
         # copied from gto.mole.Mole.set_geom_
