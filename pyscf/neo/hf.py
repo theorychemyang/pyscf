@@ -393,7 +393,7 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
                                       args=(mf.mf_nuc[i], f0[start + i],
                                             s1e[start + i]), method='hybr')
             logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
-                         (mf.mf_nuc[i].mol.atom_symbol(ia), ia, mf.f[ia]))
+                         (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
             logger.debug(mf, 'Position deviation: %s', opt.fun)
         fock_add = mf.get_fock_add_cdft()
         for i in range(mol.nuc_num):
@@ -457,7 +457,7 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
                                       args=(mf.mf_nuc[i], f0[start + i],
                                             s1e[start + i]), method='hybr')
             logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
-                         (mf.mf_nuc[i].mol.atom_symbol(ia), ia, mf.f[ia]))
+                         (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
             logger.debug(mf, 'Position deviation: %s', opt.fun)
         fock_add = mf.get_fock_add_cdft()
         for i in range(mol.nuc_num):
@@ -484,7 +484,7 @@ def energy_qmnuc(mf, h1n, dm_nuc, veff_n=None):
     '''Energy of the quantum nucleus'''
     ia = mf.mol.atom_index
     n1 = numpy.einsum('ij,ji', h1n, dm_nuc)
-    logger.debug(mf, 'Energy of %s (%3d): %s', mf.mol.atom_symbol(ia), ia, n1)
+    logger.debug(mf, 'Energy of %s (%3d): %s', mf.mol.super_mol.atom_symbol(ia), ia, n1)
     return n1
 
 def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,

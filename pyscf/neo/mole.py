@@ -86,12 +86,19 @@ def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
                                  (2, n, alpha, beta)])
         #logger.info(mol, 'Nuclear basis for %s: n %s alpha %s beta %s'
         #            %(mol.atom_symbol(atom_index), n, alpha, beta))
+    # Automatically label quantum nuclei to prevent spawning multiple basis functions
+    # at different positions
+    modified_symbol = mol.atom_symbol(atom_index) + str(atom_index)
+    modified_atom = mol._atom.copy()
+    modified_atom[atom_index] = list(modified_atom[atom_index])
+    modified_atom[atom_index][0] = modified_symbol
+    modified_atom[atom_index] = tuple(modified_atom[atom_index])
     # suppress "Warning: Basis not found for atom" in line 921 of gto/mole.py
     with contextlib.redirect_stderr(open(os.devnull, 'w')):
-        nuc.build(basis={mol.atom_symbol(atom_index): basis},
+        nuc.build(basis={modified_symbol: basis},
                   dump_input=False, parse_arg=False, verbose=mol.verbose,
                   output=mol.output, max_memory=mol.max_memory,
-                  atom=mol.atom, unit=mol.unit, nucmod=mol.nucmod,
+                  atom=modified_atom, unit='bohr', nucmod=mol.nucmod,
                   ecp=mol.ecp, charge=mol.charge, spin=mol.spin,
                   symmetry=mol.symmetry, symmetry_subgroup=mol.symmetry_subgroup,
                   cart=mol.cart, magmom=mol.magmom)
