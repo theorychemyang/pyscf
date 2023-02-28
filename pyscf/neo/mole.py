@@ -67,7 +67,13 @@ def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
             basis = gto.basis.parse(f.read())
             # read in H basis, but scale the exponents by sqrt(mass_mu/mass_H)
             for x in basis:
-                x[1][0] *= numpy.sqrt(0.114/1.007825)
+                x[1][0] *= numpy.sqrt(0.113/1.007825)
+    elif 'H#' in mol.atom_symbol(atom_index): # H# for HeMu
+        with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
+            basis = gto.basis.parse(f.read())
+            # read in H basis, but scale the exponents by sqrt(mass_HeMu/mass_H)
+            for x in basis:
+                x[1][0] *= numpy.sqrt(4.116/1.007825)
     elif mol.atom_pure_symbol(atom_index) == 'H':
         with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
             basis = gto.basis.parse(f.read())
@@ -205,8 +211,12 @@ class Mole(gto.mole.Mole):
             for i in range(self.natm):
                 if 'H+' in self.atom_symbol(i): # Deuterium (from Wikipedia)
                     self.mass[i] = 2.01410177811
+                # Mu and Muonic Helium from
+                # https://www.science.org/doi/full/10.1126/science.1199421
                 elif 'H*' in self.atom_symbol(i): # Muonium
-                    self.mass[i] = 0.114
+                    self.mass[i] = 0.113
+                elif 'H#' in self.atom_symbol(i): # Muonic Helium
+                    self.mass[i] = 4.116
                 elif self.atom_pure_symbol(i) == 'H': # Hydrogen (from Wikipedia)
                     self.mass[i] = 1.007825
 
