@@ -10,7 +10,7 @@ from pyscf import gto
 from pyscf import df
 from pyscf.lib import logger
 from pyscf.dft import numint
-from pyscf.solvent.ddcosmo import make_phi, _vstack_factor_fak_pol, make_grids_one_sphere, DDCOSMO
+from pyscf.solvent import ddcosmo
 from pyscf.neo.hf import HF
 from pyscf.solvent._attach_solvent import _Solvation
 
@@ -53,8 +53,8 @@ def make_psi(pcmobj, dm, r_vdw, cached_pol, with_nuc=True):
     psi = numpy.zeros((n_dm, natm, nlm))
     i1 = 0
     for ia in range(natm):
-        fak_pol, leak_idx = cached_pol[mol.atom_symbol(ia)]
-        fac_pol = _vstack_factor_fak_pol(fak_pol, lmax)
+        fak_pol, leak_idx = cached_pol[mol.atom_pure_symbol(ia)]
+        fac_pol = ddcosmo._vstack_factor_fak_pol(fak_pol, lmax)
         i0, i1 = i1, i1 + fac_pol.shape[1]
         nelec_leak += den[:,i0:i1][:,leak_idx].sum(axis=1)
         psi[:,ia] = -numpy.einsum('in,mn->im', den[:,i0:i1], fac_pol)
@@ -95,8 +95,8 @@ def make_vmat(pcmobj, dm, r_vdw, ui, ylm_1sph, cached_pol, Xvec, L, psi):
     i1 = 0
     scaled_weights = numpy.empty((n_dm, grids.weights.size))
     for ia in range(natm):
-        fak_pol, _ = cached_pol[mol.atom_symbol(ia)]
-        fac_pol = _vstack_factor_fak_pol(fak_pol, lmax)
+        fak_pol, _ = cached_pol[mol.atom_pure_symbol(ia)]
+        fac_pol = ddcosmo._vstack_factor_fak_pol(fak_pol, lmax)
         i0, i1 = i1, i1 + fac_pol.shape[1]
         scaled_weights[:,i0:i1] = numpy.einsum('mn,im->in', fac_pol, Xvec[:,ia])
     scaled_weights *= grids.weights
@@ -117,7 +117,7 @@ def make_vmat(pcmobj, dm, r_vdw, ui, ylm_1sph, cached_pol, Xvec, L, psi):
     # <Psi, L^{-1}g> -> Psi = SL the adjoint equation to LX = g
     L_S = numpy.linalg.solve(L.reshape(natm*nlm,-1).T, psi.reshape(n_dm,-1).T)
     L_S = L_S.reshape(natm,nlm,n_dm).transpose(2,0,1)
-    coords_1sph, weights_1sph = make_grids_one_sphere(pcmobj.lebedev_order)
+    coords_1sph, weights_1sph = ddcosmo.make_grids_one_sphere(pcmobj.lebedev_order)
     # JCP, 141, 184108, Eq (39)
     xi_jn = numpy.einsum('n,jn,xn,ijx->ijn', weights_1sph, ui, ylm_1sph, L_S)
     extern_point_idx = ui > 0
@@ -158,7 +158,7 @@ def _for_scf_neo(mf, solvent_obj, dm=None):
         solvent_obj.e, solvent_obj.v = solvent_obj.kernel(dm)
         solvent_obj.frozen = True
 
-    class SCFWithSolvent(oldMF, _Solvation):
+    class NEOWithSolvent(oldMF, _Solvation):
         def __init__(self, mf, solvent):
             self.__dict__.update(mf.__dict__)
             self.with_solvent = solvent
@@ -224,15 +224,15 @@ def _for_scf_neo(mf, solvent_obj, dm=None):
                 return v
             return vind_with_solvent
         '''
-    mf1 = SCFWithSolvent(mf, solvent_obj)
+    mf1 = NEOWithSolvent(mf, solvent_obj)
     return mf1
 
 def ddcosmo_for_neo(mf, solvent_obj=None, dm=None):
     if solvent_obj is None:
-        solvent_obj = Solvent(mf.mol)
+        solvent_obj = DDCOSMO(mf.mol)
     return _for_scf_neo(mf, solvent_obj, dm)
 
-class Solvent(DDCOSMO):
+class DDCOSMO(ddcosmo.DDCOSMO):
     'Attach ddCOSMO model for NEO'
     def __init__(self, mol):
         super().__init__(mol)
@@ -240,11 +240,11 @@ class Solvent(DDCOSMO):
     def build(self):
         'build solvent model for electrons and quantum nuclei'
         super().build()
-        self.pcm_elec = DDCOSMO(self.mol.elec)
+        self.pcm_elec = ddcosmo.DDCOSMO(self.mol.elec)
         self.pcm_elec.build()
         self.pcm_nuc = []
         for i in range(self.mol.nuc_num):
-            pcmobj = DDCOSMO(self.mol.nuc[i])
+            pcmobj = ddcosmo.DDCOSMO(self.mol.nuc[i])
             pcmobj.build()
             self.pcm_nuc.append(pcmobj)
 
@@ -266,11 +266,11 @@ class Solvent(DDCOSMO):
             # spin-traced DM for UHF or ROHF
             dm_elec = dm_elec[0] + dm_elec[1]
 
-        phi = make_phi(self.pcm_elec, dm_elec, r_vdw, ui, ylm_1sph)
+        phi = ddcosmo.make_phi(self.pcm_elec, dm_elec, r_vdw, ui, ylm_1sph)
         for i in range(self.mol.nuc_num):
             ia = self.mol.nuc[i].atom_index
             charge = self.mol.atom_charge(ia)
-            phi -= charge * make_phi(self.pcm_nuc[i], dm_nuc[i], r_vdw, ui, ylm_1sph, with_nuc=False)
+            phi -= charge * ddcosmo.make_phi(self.pcm_nuc[i], dm_nuc[i], r_vdw, ui, ylm_1sph, with_nuc=False)
         # minus sign for induced potential by quantum nuclei and the contributions from class nuclei are muted to avoid double counting
 
         Xvec = numpy.linalg.solve(Lmat, phi.ravel()).reshape(self.mol.natm,-1)

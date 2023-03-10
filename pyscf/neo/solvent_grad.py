@@ -83,7 +83,7 @@ def make_e_psi1_nuc(pcmobj, dm, cached_pol, Xvec):
         mask = gen_grid.make_mask(mol, coords)
         den[:,i0:i1] = make_rho(0, ao, mask, 'GGA')
 
-        fak_pol, leak_idx = cached_pol[mol.atom_symbol(ia)]
+        fak_pol, leak_idx = cached_pol[mol.atom_pure_symbol(ia)]
         eta_nj = 0
         p1 = 0
         for l in range(lmax+1):
