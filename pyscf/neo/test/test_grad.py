@@ -11,7 +11,7 @@ class KnownValues(unittest.TestCase):
         mf = neo.CDFT(mol)
         mf.scf()
         grad = mf.Gradients().kernel()
-        self.assertAlmostEqual(grad[0,-1], 0.005128004854961732, 6)
+        self.assertAlmostEqual(grad[0,-1], 0.0051328678351677814, 6)
 
     def test_grad_cdft2(self):
         mol = neo.M(atom='''H 0 0 0; F 0 0 0.94''', basis='ccpvdz',
@@ -19,7 +19,7 @@ class KnownValues(unittest.TestCase):
         mf = neo.CDFT(mol)
         mf.scf()
         grad = mf.Gradients().kernel()
-        self.assertAlmostEqual(grad[0,-1], 0.00429936220126681, 6)
+        self.assertAlmostEqual(grad[0,-1], 0.004304132955144091, 6)
 
     def test_grad_fd(self):
         mol = neo.M(atom='H 0 0 0; C 0 0 1.0754; N 0 0 2.2223',

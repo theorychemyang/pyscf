@@ -4,6 +4,7 @@ import os, sys
 import numpy
 import contextlib
 from pyscf import gto
+from pyscf.data import nist
 from pyscf.lib import logger, param
 from pyscf.gto.mole import PTR_COORD
 
@@ -61,19 +62,21 @@ def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
             basis = gto.basis.parse(f.read())
             # read in H basis, but scale the exponents by sqrt(mass_D/mass_H)
             for x in basis:
-                x[1][0] *= numpy.sqrt(2.01410177811/1.007825)
+                x[1][0] *= numpy.sqrt((2.01410177811 - nist.E_MASS / nist.ATOMIC_MASS)
+                                      / (1.007825  - nist.E_MASS / nist.ATOMIC_MASS))
     elif 'H*' in mol.atom_symbol(atom_index): # H* for muonium
         with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
             basis = gto.basis.parse(f.read())
             # read in H basis, but scale the exponents by sqrt(mass_mu/mass_H)
             for x in basis:
-                x[1][0] *= numpy.sqrt(0.113/1.007825)
+                x[1][0] *= numpy.sqrt(0.1134289259 / (1.007825  - nist.E_MASS / nist.ATOMIC_MASS))
     elif 'H#' in mol.atom_symbol(atom_index): # H# for HeMu
         with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
             basis = gto.basis.parse(f.read())
             # read in H basis, but scale the exponents by sqrt(mass_HeMu/mass_H)
             for x in basis:
-                x[1][0] *= numpy.sqrt(4.116/1.007825)
+                x[1][0] *= numpy.sqrt((4.002603254 - 2 * nist.E_MASS / nist.ATOMIC_MASS + 0.1134289259)
+                                      / (1.007825  - nist.E_MASS / nist.ATOMIC_MASS))
     elif mol.atom_pure_symbol(atom_index) == 'H':
         with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
             basis = gto.basis.parse(f.read())
@@ -211,14 +214,21 @@ class Mole(gto.mole.Mole):
             for i in range(self.natm):
                 if 'H+' in self.atom_symbol(i): # Deuterium (from Wikipedia)
                     self.mass[i] = 2.01410177811
-                # Mu and Muonic Helium from
-                # https://www.science.org/doi/full/10.1126/science.1199421
-                elif 'H*' in self.atom_symbol(i): # Muonium
-                    self.mass[i] = 0.113
-                elif 'H#' in self.atom_symbol(i): # Muonic Helium
-                    self.mass[i] = 4.116
-                elif self.atom_pure_symbol(i) == 'H': # Hydrogen (from Wikipedia)
-                    self.mass[i] = 1.007825
+                elif 'H*' in self.atom_symbol(i): # antimuon (Muonium without electron) (from Wikipedia)
+                    self.mass[i] = 0.1134289259 + nist.E_MASS / nist.ATOMIC_MASS
+                elif 'H#' in self.atom_symbol(i): # Muonic Helium without electron = He4 nucleus + Muon
+                    # He4 atom mass from Wikipedia
+                    self.mass[i] = 4.002603254 - nist.E_MASS / nist.ATOMIC_MASS + 0.1134289259
+                if self.quantum_nuc[i]:
+                    # Use pure H1 isotope mass only when it is quantum, otherwise isotope average
+                    if 'H+' not in self.atom_symbol(i) and \
+                       'H*' not in self.atom_symbol(i) and \
+                       'H#' not in self.atom_symbol(i) and \
+                        self.atom_pure_symbol(i) == 'H': # Hydrogen (from Wikipedia)
+                        self.mass[i] = 1.007825
+                    # subtract electron mass to get nuclear mass
+                    # the biggest error is from isotope_avg, though
+                    self.mass[i] -= self.atom_charge(i) * nist.E_MASS / nist.ATOMIC_MASS
 
         # build the Mole object for electrons and classical nuclei
         if self.elec is None:

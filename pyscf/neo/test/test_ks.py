@@ -15,16 +15,16 @@ def tearDownModule():
 class KnownValues(unittest.TestCase):
     def test_scf_noepc(self):
         mf = neo.KS(mol, epc=None)
-        self.assertAlmostEqual(mf.scf(), -93.3393661813264, 8)
+        self.assertAlmostEqual(mf.scf(), -93.3393561862047, 8)
 
     def test_scf_epc17_1(self):
         mf = neo.KS(mol, epc='17-1')
         mf.max_cycle = 300
-        self.assertAlmostEqual(mf.scf(), -93.3963892815795, 6)
+        self.assertAlmostEqual(mf.scf(), -93.3963855884953, 6)
 
     def test_scf_epc17_2(self):
         mf = neo.KS(mol, epc='17-2')
-        self.assertAlmostEqual(mf.scf(), -93.3670545797579, 6)
+        self.assertAlmostEqual(mf.scf(), -93.3670499232414, 6)
 
 
 if __name__ == "__main__":

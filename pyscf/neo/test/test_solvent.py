@@ -14,7 +14,7 @@ class KnownValues(unittest.TestCase):
         mf.scf(cycle=1) 
         mf = ddcosmo_for_neo(mf)
         e = mf.scf()
-        self.assertAlmostEqual(e, -93.34534437591918, 8)
+        self.assertAlmostEqual(e, -93.34533436170345, 8)
 
     def test_grad_finite_diff(self):
         mol = neo.Mole()

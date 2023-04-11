@@ -16,7 +16,7 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_au'][0], 0.7525775753724816, 5)
+        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3869.636, 2)
 
     def test_hess_H2O(self):
         mol = neo.Mole()
@@ -32,9 +32,9 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_au'][0], 0.3058957084327294, 5)
-        self.assertAlmostEqual(results['freq_au'][1], 0.7020421408894397, 5)
-        self.assertAlmostEqual(results['freq_au'][2], 0.722252776562671, 5)
+        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3713.686, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-2], 3609.801, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-3], 1572.818, 2)
 
     def test_hess_HF_full_q(self):
         mol = neo.Mole()
@@ -47,7 +47,7 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_au'][0], 0.7532278378619939, 5)
+        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3873.004, 2)
 
     def test_hess_H2O_full_q(self):
         mol = neo.Mole()
@@ -63,9 +63,9 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_au'][0], 0.3058413821370073, 5)
-        self.assertAlmostEqual(results['freq_au'][1], 0.7039435940342046, 5)
-        self.assertAlmostEqual(results['freq_au'][2], 0.7236193177369298, 5)
+        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3720.750, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-2], 3619.598, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-3], 1572.554, 2)
 
     def test_hess_HF_uks(self):
         mol = neo.Mole()
@@ -78,7 +78,7 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_au'][0], 0.7525775753724816, 5)
+        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3869.636, 2)
 
     def test_hess_H2O_uks(self):
         mol = neo.Mole()
@@ -94,9 +94,9 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_au'][0], 0.3058957084327294, 5)
-        self.assertAlmostEqual(results['freq_au'][1], 0.7020421408894397, 5)
-        self.assertAlmostEqual(results['freq_au'][2], 0.722252776562671, 5)
+        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3713.686, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-2], 3609.801, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-3], 1572.818, 2)
 
     def test_hess_HF_full_q_uks(self):
         mol = neo.Mole()
@@ -109,7 +109,7 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_au'][0], 0.7532278378619939, 5)
+        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3873.004, 2)
 
     def test_hess_H2O_full_q_uks(self):
         mol = neo.Mole()
@@ -125,9 +125,9 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_au'][0], 0.3058413821370073, 5)
-        self.assertAlmostEqual(results['freq_au'][1], 0.7039435940342046, 5)
-        self.assertAlmostEqual(results['freq_au'][2], 0.7236193177369298, 5)
+        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3720.750, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-2], 3619.598, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-3], 1572.554, 2)
 
     def test_hess_CH3_full_q_uks(self):
         mol = neo.Mole()
@@ -144,9 +144,9 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_au'][-1], 0.68084772, 5)
-        self.assertAlmostEqual(results['freq_au'][-3], 0.64094077, 5)
-        self.assertAlmostEqual(results['freq_au'][-4], 0.2417382, 5)
+        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3500.798, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-3], 3295.651, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-4], 1242.949, 2)
 
 if __name__ == "__main__":
     print("Full Tests for neo.hess")
