@@ -56,6 +56,8 @@ def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
     nuc.super_mol = mol
     nuc.atom_index = atom_index
 
+    # e.g., PB4-D, PB4D and PB4_D will all be converted to pb4d
+    nuc_basis = nuc_basis.replace('-', '').replace('_', '').lower()
     dirnow = os.path.realpath(os.path.join(__file__, '..'))
     if 'H+' in mol.atom_symbol(atom_index): # H+ for deuterium
         with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
