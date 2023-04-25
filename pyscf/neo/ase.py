@@ -6,9 +6,11 @@ from ase.calculators.calculator import Calculator
 from ase.units import Bohr, Hartree
 from pyscf.data import nist
 from pyscf import neo
-from pyscf import gto, dft
+from pyscf import gto, dft, tddft
 from pyscf.scf.hf import dip_moment
 from pyscf.lib import logger
+from pyscf.tdscf.rhf import oscillator_strength
+
 try:
     from pyscf import dftd3
     DFTD3_AVAILABLE = True
@@ -36,7 +38,7 @@ def stable_opt_internal(mf):
 
 class Pyscf_NEO(Calculator):
 
-    implemented_properties = ['energy', 'forces', 'dipole']
+    implemented_properties = ['energy', 'forces', 'dipole', 'excited_energies', 'oscillator_strength']
     default_parameters = {'basis': 'ccpvdz',
                           'nuc_basis' : 'pb4d',
                           'charge': 0,
@@ -50,7 +52,8 @@ class Pyscf_NEO(Calculator):
                           'grid_response' : None, # for meta-GGA, must be True!!!
                           'init_guess' : None, # 'huckel' for unrestricted might be good
                           'conv_tol' : None, # 1e-12 for tight convergence
-                          'conv_tol_grad' : None # 1e-8 for tight convergence
+                          'conv_tol_grad' : None, # 1e-8 for tight convergence
+                          'run_tda': False # run TDA calculations
                          }
 
 
@@ -67,7 +70,7 @@ class Pyscf_NEO(Calculator):
         atom_pyscf = []
         for i in range(len(atoms)):
             if atoms[i] == 'Mu':
-                atom_pyscf.append(['H*', tuple(positions[i])])
+                atom_pyscf.append(['H@0', tuple(positions[i])])
             elif atoms[i] == 'D':
                 atom_pyscf.append(['H+%i' %i, tuple(positions[i])])
             elif atoms[i] == 'H' and abs(ase_masses[i]-2.014) < 0.01:
@@ -124,11 +127,21 @@ class Pyscf_NEO(Calculator):
             dip_nuc += mol.atom_charge(ia) * mf.mf_nuc[i].nuclei_expect_position * nist.AU2DEBYE
 
         self.results['dipole'] = dip_elec + dip_nuc
+        
+        if self.parameters.run_tda:
+            # calculate excited energies and oscillator strength by TDDFT/TDA
+            td = tddft.TDA(mf.mf_elec)
+            e, xy = td.kernel()
+            os = oscillator_strength(td, e = e, xy = xy)
+                                
+            self.results['excited_energies'] = e * nist.HARTREE2EV
+            self.results['oscillator_strength'] = os
+        
 
 
 class Pyscf_DFT(Calculator):
 
-    implemented_properties = ['energy', 'forces', 'dipole']
+    implemented_properties = ['energy', 'forces', 'dipole', 'excited_energies', 'oscillator_strength']
     default_parameters = {'basis': 'ccpvdz',
                           'charge': 0,
                           'spin': 0,
@@ -140,7 +153,8 @@ class Pyscf_DFT(Calculator):
                           'grid_response' : None, # for meta-GGA, must be True!!!
                           'init_guess' : None, # 'huckel' for unrestricted might be good
                           'conv_tol' : None, # 1e-12 for tight convergence
-                          'conv_tol_grad' : None # 1e-8 for tight convergence
+                          'conv_tol_grad' : None, # 1e-8 for tight convergence
+                          'run_tda': False # run TDA calculations
                          }
 
 
@@ -196,3 +210,11 @@ class Pyscf_DFT(Calculator):
             g.grid_response = self.parameters.grid_response
         self.results['forces'] = -g.grad()*Hartree/Bohr
         self.results['dipole'] = dip_moment(mol, mf.make_rdm1())
+        
+        if self.parameters.run_tda:
+            td = tddft.TDA(mf)
+            e, xy = td.kernel()
+            os = oscillator_strength(td, e = e, xy = xy)
+                                
+            self.results['excited_energies'] = e * nist.HARTREE2EV
+            self.results['oscillator_strength'] = os
