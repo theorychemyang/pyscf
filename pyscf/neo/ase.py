@@ -75,7 +75,7 @@ class Pyscf_NEO(Calculator):
                 # by changing the mass array, pyscf still accepts H as D
                 atom_pyscf.append(['H+%i' %i, tuple(positions[i])])
             else:
-                atom_pyscf.append(['%s%i' %(atoms[i],i), tuple(positions[i])])
+                atom_pyscf.append(['%s' %(atoms[i]), tuple(positions[i])])
         mol.build(quantum_nuc=self.parameters.quantum_nuc,
                   atom=atom_pyscf,
                   basis=self.parameters.basis,
@@ -105,9 +105,8 @@ class Pyscf_NEO(Calculator):
                 raise RuntimeError('DFTD3 PySCF extension not available')
             mf.mf_elec = dftd3.dftd3(mf.mf_elec)
         if self.parameters.add_solvent:
-            from pyscf.neo.solvent import ddcosmo_for_neo
-            mf.scf(cycle=1) # TODO: remove this
-            mf = ddcosmo_for_neo(mf)
+            mf.scf(cycle=0) # TODO: remove this
+            mf = mf.ddCOSMO()
         # check stability for UKS
         mf.scf()
         if self.parameters.spin !=0:

@@ -11,7 +11,7 @@ from pyscf import df
 from pyscf.lib import logger
 from pyscf.dft import numint
 from pyscf.solvent import ddcosmo
-from pyscf.neo.hf import HF
+from pyscf.neo.cdft import CDFT
 from pyscf.solvent._attach_solvent import _Solvation
 
 
@@ -315,4 +315,4 @@ class DDCOSMO(ddcosmo.DDCOSMO):
             return make_grad_object(grad_method)
 
 # inject ddcosmo
-HF.ddCOSMO = HF.DDCOSMO = ddcosmo_for_neo
+CDFT.ddCOSMO = CDFT.DDCOSMO = ddcosmo_for_neo
