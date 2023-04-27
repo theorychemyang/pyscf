@@ -70,7 +70,7 @@ class Pyscf_NEO(Calculator):
         atom_pyscf = []
         for i in range(len(atoms)):
             if atoms[i] == 'Mu':
-                atom_pyscf.append(['H@0', tuple(positions[i])])
+                atom_pyscf.append(['H*', tuple(positions[i])])
             elif atoms[i] == 'D':
                 atom_pyscf.append(['H+%i' %i, tuple(positions[i])])
             elif atoms[i] == 'H' and abs(ase_masses[i]-2.014) < 0.01:
