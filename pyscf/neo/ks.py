@@ -18,6 +18,10 @@ def eval_xc_nuc(epc, rho_e, rho_n):
         c = 3.2
     elif epc == '17-2':
         c = 6.6
+    elif isinstance(epc, dict):
+        a = epc["a"]
+        b = epc["b"]
+        c = epc["c"]
     else:
         raise ValueError('Unsupported type of epc %s', epc)
 
@@ -40,6 +44,10 @@ def eval_xc_elec(epc, rho_e, rho_n):
         c = 3.2
     elif epc == '17-2':
         c = 6.6
+    elif isinstance(epc, dict):
+        a = epc["a"]
+        b = epc["b"]
+        c = epc["c"]
     else:
         raise ValueError('Unsupported type of epc %s', epc)
 
@@ -86,7 +94,8 @@ class KS(HF):
         for i in range(mol.nuc_num):
             ia = self.mol.nuc[i].atom_index
             # only support electron-proton correlation
-            if self.epc is not None and self.mol.atom_pure_symbol(ia) == 'H':
+            if self.epc is not None and self.mol.atom_pure_symbol(ia) == 'H' \
+                and (isinstance(self.epc, str) or ia in self.epc['epc_nuc']):
                 self.mf_nuc[i] = dft.RKS(self.mol.nuc[i])
                 mf_nuc = self.mf_nuc[i]
                 # need to repeat these lines because self.mf_nuc got overwritten
@@ -118,8 +127,7 @@ class KS(HF):
                 rho_elec = eval_rho(self.mol.elec, ao_elec, self.dm_elec)
             ao_nuc = eval_ao(mol, coords)
             rho_nuc = eval_rho(mol, ao_nuc, dm)
-            # set negative rho_nuc values to 0
-            rho_nuc[rho_nuc<0] = 0
+            rho_nuc[rho_nuc<0.] = 0.
             exc, vxc = eval_xc_nuc(self.epc, rho_elec, rho_nuc)
             den = rho_nuc * weight
             nnuc += den.sum()
@@ -146,7 +154,8 @@ class KS(HF):
         aow = None
         for i in range(self.mol.nuc_num):
             ia = self.mol.nuc[i].atom_index
-            if self.mol.atom_pure_symbol(ia) == 'H':
+            if self.mol.atom_pure_symbol(ia) == 'H' \
+                and (isinstance(self.epc, str) or ia in self.epc['epc_nuc']):
                 for ao, mask, weight, coords in ni.block_loop(mol, grids, nao):
                     aow = numpy.ndarray(ao.shape, order='F')
                     ao_elec = eval_ao(mol, coords)
@@ -156,8 +165,7 @@ class KS(HF):
                         rho_elec = eval_rho(mol, ao_elec, dm)
                     ao_nuc = eval_ao(self.mol.nuc[i], coords)
                     rho_nuc = eval_rho(self.mol.nuc[i], ao_nuc, self.dm_nuc[i])
-                    # set negative rho_nuc values to 0
-                    rho_nuc[rho_nuc<0] = 0
+                    rho_nuc[rho_nuc<0.] = 0.
                     vxc_i = eval_xc_elec(self.epc, rho_elec, rho_nuc)
                     # times 0.5 because vmat + vmat.T
                     aow = _scale_ao(ao_elec, 0.5 * weight * vxc_i, out=aow)
@@ -174,7 +182,8 @@ class KS(HF):
         '''energy of quantum nuclei by NEO-DFT'''
         n1 = numpy.einsum('ij,ji', h1n, dm_nuc)
         ia = mf_nuc.mol.atom_index
-        if self.mol.atom_pure_symbol(ia) == 'H' and self.epc is not None:
+        if self.mol.atom_pure_symbol(ia) == 'H' and self.epc is not None \
+            and isinstance(self.epc, str) or ia in self.epc['epc_nuc']:
             if veff_n is None:
                 veff_n = mf_nuc.get_veff(mf_nuc.mol, dm_nuc)
             n1 += veff_n.exc
@@ -190,7 +199,8 @@ class KS(HF):
             for i in range(mol.nuc_num):
                 ia = self.mol.nuc[i].atom_index
                 # only support electron-proton correlation
-                if self.mol.atom_pure_symbol(ia) == 'H':
+                if self.mol.atom_pure_symbol(ia) == 'H' \
+                    and (isinstance(self.epc, str) or ia in self.epc['epc_nuc']):
                     mf_nuc = self.mf_nuc[i]
                     mf_nuc.get_veff = self.get_veff_nuc_epc
         return self
