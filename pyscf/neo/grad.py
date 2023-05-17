@@ -9,7 +9,75 @@ from pyscf.data import nist
 from pyscf.grad import rhf as rhf_grad
 from pyscf.lib import logger
 from pyscf.scf.jk import get_jk
+from pyscf.dft.numint import eval_ao, eval_rho, _scale_ao
+from pyscf.neo.ks import eval_xc_nuc, eval_xc_elec
+from pyscf.grad.rks import _d1_dot_
 
+
+def get_vepc_elec(mf_grad):
+    mf = mf_grad.base
+    mol = mf_grad.mol
+    ni = mf.mf_elec._numint
+    grids = mf.mf_elec.grids
+    nao = mol.elec.nao_nr()
+    ao_loc = mol.elec.ao_loc_nr()
+    ao_deriv = 1
+    vmat_elec = numpy.zeros((3,nao,nao))
+    for i in range(mol.nuc_num):
+        ia = mol.nuc[i].atom_index
+        if mol.atom_pure_symbol(ia) == 'H' and \
+            (isinstance(mf.epc, str) or ia in mf.epc['epc_nuc']):
+            for ao, mask, weight, coords \
+                in ni.block_loop(mol.elec, grids, nao, ao_deriv):
+                ao_nuc = eval_ao(mol.nuc[i], coords)
+                rho_nuc = eval_rho(mol.nuc[i], ao_nuc, mf.dm_nuc[i])
+                rho_nuc[rho_nuc<0.] = 0.
+                rho_elec = eval_rho(mol.elec, ao[0], mf.dm_elec)
+                vxc_elec_i = eval_xc_elec(mf.epc, rho_elec, rho_nuc)
+                aow_elec = _scale_ao(ao[0], weight * vxc_elec_i)
+                _d1_dot_(vmat_elec, mol.elec, ao[1:4], aow_elec, mask, ao_loc, True)
+    return -vmat_elec
+
+def get_vepc_nuc(mf_grad, mol, dm):
+    mf = mf_grad.base
+    ni = mf.mf_elec._numint
+    grids = mf.mf_elec.grids
+    nao = mol.nao_nr()
+    ao_loc = mol.ao_loc_nr()
+    # add electron epc grad
+    ao_deriv = 1
+    vmat_nuc = numpy.zeros((3,nao,nao))
+    for ao, mask, weight, coords \
+        in ni.block_loop(mol, grids, nao, ao_deriv):
+        rho_nuc = eval_rho(mol, ao[0], dm)
+        rho_nuc[rho_nuc<0.] = 0.
+        ao_elec = eval_ao(mf.mol.elec, coords)
+        rho_elec = eval_rho(mf.mol.elec, ao_elec, mf.dm_elec)
+        _, vxc_nuc = eval_xc_nuc(mf.epc, rho_elec, rho_nuc)
+        aow_nuc = _scale_ao(ao[0], weight * vxc_nuc)
+        _d1_dot_(vmat_nuc, mol, ao[1:4], aow_nuc, mask, ao_loc, True)
+
+    return -vmat_nuc
+
+def grad_epc(mf_grad):
+    mol = mf_grad.mol
+    mf = mf_grad.base
+    atmlst = range(mol.natm)
+    aoslices = mol.aoslice_by_atom()
+    de = numpy.zeros((len(atmlst),3))
+    for j in atmlst:
+        p0, p1 = aoslices[j,2:]
+        vepc_elec = get_vepc_elec(mf_grad)
+        de[j] += numpy.einsum('xij,ij->x', vepc_elec[:,p0:p1], mf.dm_elec[p0:p1]) * 2
+
+    for i in range(mol.nuc_num):
+        ia = mol.nuc[i].atom_index
+        if mol.atom_pure_symbol(ia) == 'H' and \
+            (isinstance(mf.epc, str) or ia in mf.epc['epc_nuc']):
+            vepc_nuc = get_vepc_nuc(mf_grad, mol.nuc[i], mf.dm_nuc[i])
+            de[ia] += numpy.einsum('xij,ij->x', vepc_nuc, mf.dm_nuc[i]) * 2
+
+    return de
 
 def grad_cneo(mf_grad, atmlst=None):
     mf = mf_grad.base
@@ -169,8 +237,6 @@ class Gradients(rhf_grad.GradientsMixin):
 
     def __init__(self, scf_method):
         rhf_grad.GradientsMixin.__init__(self, scf_method)
-        if self.base.epc is not None:
-            raise NotImplementedError('Gradient with epc is not implemented')
         self.grid_response = None
         self.g_elec = self.base.mf_elec.nuc_grad_method() # elec part obj
         self.g_elec.verbose = self.verbose - 1
@@ -178,6 +244,7 @@ class Gradients(rhf_grad.GradientsMixin):
 
     hcore_generator = hcore_generator
     grad_cneo = grad_cneo
+    grad_epc = grad_epc
 
     def grad_elec(self, atmlst=None):
         '''gradients of electrons and classic nuclei'''
@@ -200,6 +267,8 @@ class Gradients(rhf_grad.GradientsMixin):
             self.dump_flags()
 
         de = self.grad_cneo(atmlst=atmlst)
+        if self.base.epc is not None:
+            de += self.grad_epc()
         self.de = de + self.grad_elec(atmlst=atmlst)
         if mol.symmetry:
             raise NotImplementedError('Symmetry is not supported')
