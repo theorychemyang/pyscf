@@ -48,6 +48,7 @@ class Pyscf_NEO(Calculator):
                           'add_solvent': False, # add implict solvent model ddCOSMO
                           'add_d3' : False, # add dispersion correction D3
                           'add_vv10' : False, # add dispersion correction VV10
+                          'epc' : None, # add eletron proton correlation
                           'atom_grid' : None, # recommend (99,590) or even (99,974)
                           'grid_response' : None, # for meta-GGA, must be True!!!
                           'init_guess' : None, # 'huckel' for unrestricted might be good
@@ -86,7 +87,7 @@ class Pyscf_NEO(Calculator):
                   charge=self.parameters.charge,
                   spin=self.parameters.spin)
         if self.parameters.spin == 0:
-            mf = neo.CDFT(mol)
+            mf = neo.CDFT(mol, epc=self.parameters.epc)
         else:
             mf = neo.CDFT(mol, unrestricted = True)
         mf.mf_elec.xc = self.parameters.xc
@@ -127,16 +128,16 @@ class Pyscf_NEO(Calculator):
             dip_nuc += mol.atom_charge(ia) * mf.mf_nuc[i].nuclei_expect_position * nist.AU2DEBYE
 
         self.results['dipole'] = dip_elec + dip_nuc
-        
+
         if self.parameters.run_tda:
             # calculate excited energies and oscillator strength by TDDFT/TDA
             td = tddft.TDA(mf.mf_elec)
             e, xy = td.kernel()
             os = oscillator_strength(td, e = e, xy = xy)
-                                
+
             self.results['excited_energies'] = e * nist.HARTREE2EV
             self.results['oscillator_strength'] = os
-        
+
 
 
 class Pyscf_DFT(Calculator):
@@ -210,11 +211,11 @@ class Pyscf_DFT(Calculator):
             g.grid_response = self.parameters.grid_response
         self.results['forces'] = -g.grad()*Hartree/Bohr
         self.results['dipole'] = dip_moment(mol, mf.make_rdm1())
-        
+
         if self.parameters.run_tda:
             td = tddft.TDA(mf)
             e, xy = td.kernel()
             os = oscillator_strength(td, e = e, xy = xy)
-                                
+
             self.results['excited_energies'] = e * nist.HARTREE2EV
             self.results['oscillator_strength'] = os
