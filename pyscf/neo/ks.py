@@ -6,8 +6,9 @@ Non-relativistic Kohn-Sham for NEO-DFT
 import numpy
 from pyscf import scf, dft, lib
 from pyscf.lib import logger
-from pyscf.dft.numint import eval_ao, eval_rho, _scale_ao, _dot_ao_ao
+from pyscf.dft.numint import eval_ao, eval_rho, _scale_ao, _dot_ao_ao, _dot_ao_ao_sparse
 from pyscf.neo.hf import HF
+from pyscf.dft.gen_grid import NBINS
 
 def eval_xc_nuc(epc, rho_e, rho_n):
     '''evaluate e_xc and v_xc of proton on a grid (epc17)'''
@@ -108,7 +109,6 @@ class KS(HF):
     def get_veff_nuc_epc(self, mol, dm, dm_last=None, vhf_last=None, hermi=1):
         '''Add EPC contribution to nuclear veff'''
         nao = mol.nao_nr()
-        shls_slice = (0, mol.nbas)
         ao_loc = mol.ao_loc_nr()
         nnuc = 0
         excsum = 0
@@ -134,7 +134,7 @@ class KS(HF):
             excsum += numpy.dot(den, exc)
             # times 0.5 because vmat + vmat.T
             aow = _scale_ao(ao_nuc, 0.5 * weight * vxc, out=aow)
-            vmat += _dot_ao_ao(mol, ao_nuc, aow, mask, shls_slice, ao_loc)
+            vmat += _dot_ao_ao(mol, ao_nuc, aow, mask, (0, mol.nbas), ao_loc)
         logger.debug(self, 'The number of nuclei: %.5f', nnuc)
         vmat += vmat.conj().T
         # attach E_ep to vmat to retrieve later
@@ -144,32 +144,29 @@ class KS(HF):
     def get_veff_elec_epc(self, mol, dm, dm_last=None, vhf_last=None, hermi=1):
         '''Add EPC contribution to electronic veff'''
         nao = mol.nao_nr()
-        shls_slice = (0, mol.nbas)
         ao_loc = mol.ao_loc_nr()
         vmat = numpy.zeros((nao, nao))
-
         grids = self.mf_elec.grids
         ni = self.mf_elec._numint
-
-        aow = None
+        cutoff = grids.cutoff * 1e2
+        nbins = NBINS * 2 - int(NBINS * numpy.log(cutoff) / numpy.log(grids.cutoff))
+        pair_mask = mol.get_overlap_cond() < -numpy.log(ni.cutoff)
         for i in range(self.mol.nuc_num):
             ia = self.mol.nuc[i].atom_index
             if self.mol.atom_pure_symbol(ia) == 'H' \
                 and (isinstance(self.epc, str) or ia in self.epc['epc_nuc']):
                 for ao, mask, weight, coords in ni.block_loop(mol, grids, nao):
-                    aow = numpy.ndarray(ao.shape, order='F')
-                    ao_elec = eval_ao(mol, coords)
                     if dm.ndim > 2:
-                        rho_elec = eval_rho(mol, ao_elec, dm[0] + dm[1])
+                        rho_elec = eval_rho(mol, ao, dm[0] + dm[1])
                     else:
-                        rho_elec = eval_rho(mol, ao_elec, dm)
+                        rho_elec = eval_rho(mol, ao, dm)
                     ao_nuc = eval_ao(self.mol.nuc[i], coords)
                     rho_nuc = eval_rho(self.mol.nuc[i], ao_nuc, self.dm_nuc[i])
                     rho_nuc[rho_nuc<0.] = 0.
                     vxc_i = eval_xc_elec(self.epc, rho_elec, rho_nuc)
+                    wv = weight * vxc_i
                     # times 0.5 because vmat + vmat.T
-                    aow = _scale_ao(ao_elec, 0.5 * weight * vxc_i, out=aow)
-                    vmat += _dot_ao_ao(mol, ao_elec, aow, mask, shls_slice, ao_loc)
+                    _dot_ao_ao_sparse(ao, ao, 0.5*wv, nbins, mask, pair_mask, ao_loc, 1, vmat)
         vmat += vmat.conj().T
         if dm.ndim > 2:
             veff = dft.uks.get_veff(self.mf_elec, mol, dm, dm_last, vhf_last, hermi)
@@ -183,7 +180,7 @@ class KS(HF):
         n1 = numpy.einsum('ij,ji', h1n, dm_nuc)
         ia = mf_nuc.mol.atom_index
         if self.mol.atom_pure_symbol(ia) == 'H' and self.epc is not None \
-            and isinstance(self.epc, str) or ia in self.epc['epc_nuc']:
+            and (isinstance(self.epc, str) or ia in self.epc['epc_nuc']):
             if veff_n is None:
                 veff_n = mf_nuc.get_veff(mf_nuc.mol, dm_nuc)
             n1 += veff_n.exc
