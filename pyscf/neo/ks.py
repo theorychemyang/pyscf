@@ -12,51 +12,119 @@ from pyscf.dft.gen_grid import NBINS
 
 def eval_xc_nuc(epc, rho_e, rho_n):
     '''evaluate e_xc and v_xc of proton on a grid (epc17)'''
-    a = 2.35
-    b = 2.4
 
-    if epc == '17-1':
-        c = 3.2
-    elif epc == '17-2':
-        c = 6.6
+    epc_type = None
+    if isinstance(epc, str):
+        epc_type = epc
     elif isinstance(epc, dict):
+        if "epc_type" not in epc:
+            epc_type = '17-2'
+        else:
+            epc_type = epc["epc_type"]
+    else:
+        raise TypeError('Only string or dictionary is allowed for epc')
+
+    if epc_type == '17-1':
+        a = 2.35
+        b = 2.4
+        c = 3.2
+    elif epc_type == '17-2':
+        a = 2.35
+        b = 2.4
+        c = 6.6
+    elif epc_type == '18-1':
+        a = 1.8
+        b = 0.1
+        c = 0.03
+    elif epc_type == '18-2':
+        a = 3.9
+        b = 0.5
+        c = 0.06
+    elif epc_type == '17' or epc_type == '18':
         a = epc["a"]
         b = epc["b"]
         c = epc["c"]
     else:
-        raise ValueError('Unsupported type of epc %s', epc)
+        raise ValueError('Unsupported type of epc %s', epc_type)
 
-    rho_product = numpy.multiply(rho_e, rho_n)
-    denominator = a - b * numpy.sqrt(rho_product) + c * rho_product
-    exc = - numpy.multiply(rho_e, 1 / denominator)
+    if epc_type.startswith('17'):
+        rho_product = numpy.multiply(rho_e, rho_n)
+        denominator = a - b * numpy.sqrt(rho_product) + c * rho_product
+        exc = - numpy.multiply(rho_e, 1 / denominator)
 
-    denominator = numpy.square(denominator)
-    numerator = -a * rho_e + numpy.multiply(numpy.sqrt(rho_product), rho_e) * b * 0.5
-    vxc = numpy.multiply(numerator, 1 / denominator)
+        denominator = numpy.square(denominator)
+        numerator = -a * rho_e + numpy.multiply(numpy.sqrt(rho_product), rho_e) * b * 0.5
+        vxc = numpy.multiply(numerator, 1 / denominator)
+    elif epc_type.startswith('18'):
+        rho_e_cr = numpy.cbrt(rho_e)
+        rho_n_cr = numpy.cbrt(rho_n)
+        beta = rho_e_cr + rho_n_cr
+        denominator = a - b * beta**3 + c * beta**6
+        exc = - numpy.multiply(rho_e, 1 / denominator)
+
+        denominator = numpy.square(denominator)
+        numerator = a * rho_e - b * numpy.multiply(rho_e_cr**4, numpy.square(beta))\
+                    + c * numpy.multiply(numpy.multiply(rho_e, beta**5), rho_e_cr - rho_n_cr)
+        vxc = - numpy.multiply(numerator, 1 / denominator)
+    else:
+        raise ValueError('Unsupported type of epc %s', epc_type)
 
     return exc, vxc
 
 def eval_xc_elec(epc, rho_e, rho_n):
-    '''evaluate e_xc and v_xc of electrons on a grid (only the epc part)'''
-    a = 2.35
-    b = 2.4
+    '''evaluate v_xc of electrons on a grid (only the epc part)'''
 
-    if epc == '17-1':
-        c = 3.2
-    elif epc == '17-2':
-        c = 6.6
+    epc_type = None
+    if isinstance(epc, str):
+        epc_type = epc
     elif isinstance(epc, dict):
+        if "epc_type" not in epc:
+            epc_type = '17-2'
+        else:
+            epc_type = epc["epc_type"]
+    else:
+        raise TypeError('Only string or dictionary is allowed for epc')
+
+    if epc_type == '17-1':
+        a = 2.35
+        b = 2.4
+        c = 3.2
+    elif epc_type == '17-2':
+        a = 2.35
+        b = 2.4
+        c = 6.6
+    elif epc_type == '18-1':
+        a = 1.8
+        b = 0.1
+        c = 0.03
+    elif epc_type == '18-2':
+        a = 3.9
+        b = 0.5
+        c = 0.06
+    elif epc_type == '17' or epc_type == '18':
         a = epc["a"]
         b = epc["b"]
         c = epc["c"]
     else:
-        raise ValueError('Unsupported type of epc %s', epc)
+        raise ValueError('Unsupported type of epc %s', epc_type)
 
-    rho_product = numpy.multiply(rho_e, rho_n)
-    denominator = a - b * numpy.sqrt(rho_product) + c * rho_product
-    denominator = numpy.square(denominator)
-    numerator = -a * rho_n + numpy.multiply(numpy.sqrt(rho_product), rho_n) * b * 0.5
-    vxc = numpy.multiply(numerator, 1 / denominator)
+    if epc_type.startswith('17'):
+        rho_product = numpy.multiply(rho_e, rho_n)
+        denominator = a - b * numpy.sqrt(rho_product) + c * rho_product
+        denominator = numpy.square(denominator)
+        numerator = -a * rho_n + numpy.multiply(numpy.sqrt(rho_product), rho_n) * b * 0.5
+        vxc = numpy.multiply(numerator, 1 / denominator)
+    elif epc_type.startswith('18'):
+        rho_e_cr = numpy.cbrt(rho_e)
+        rho_n_cr = numpy.cbrt(rho_n)
+        beta = rho_e_cr + rho_n_cr
+        denominator = a - b * beta**3 + c * beta**6
+        denominator = numpy.square(denominator)
+        numerator = a * rho_n - b * numpy.multiply(rho_n_cr**4, numpy.square(beta))\
+                    + c * numpy.multiply(numpy.multiply(rho_n, beta**5), rho_n_cr - rho_e_cr)
+        vxc = - numpy.multiply(numerator, 1 / denominator)
+    else:
+        raise ValueError('Unsupported type of epc %s', epc_type)
 
     return vxc
 
