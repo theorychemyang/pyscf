@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import os, sys
+import os, sys, re
 import numpy
 import contextlib
 from pyscf import gto
@@ -60,12 +60,27 @@ def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
     nuc_basis = nuc_basis.replace('-', '').replace('_', '').lower()
     dirnow = os.path.realpath(os.path.join(__file__, '..'))
     if 'H+' in mol.atom_symbol(atom_index): # H+ for deuterium
-        with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
-            basis = gto.basis.parse(f.read())
-            # read in H basis, but scale the exponents by sqrt(mass_D/mass_H)
-            for x in basis:
-                x[1][0] *= numpy.sqrt((2.01410177811 - nist.E_MASS / nist.ATOMIC_MASS)
-                                      / (1.007825  - nist.E_MASS / nist.ATOMIC_MASS))
+        try:
+            with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
+                basis = gto.basis.parse(f.read())
+                # read in H basis, but scale the exponents by sqrt(mass_D/mass_H)
+                for x in basis:
+                    x[1][0] *= numpy.sqrt((2.01410177811 - nist.E_MASS / nist.ATOMIC_MASS)
+                                        / (1.007825  - nist.E_MASS / nist.ATOMIC_MASS))
+        except FileNotFoundError:
+            m = re.search("(\d+)s(\d+)p(\d+)d(\d+)?f?", nuc_basis)
+            if m:
+            # even-tempered basis for D
+                alpha = 4 * numpy.sqrt(2)
+                beta = numpy.sqrt(2)
+                if m.group(4) is None:
+                    basis = gto.expand_etbs([(0, int(m.group(1)), alpha, beta), (1, int(m.group(2)), alpha, beta),
+                                             (2, int(m.group(3)), alpha, beta)])
+                else:
+                    basis = gto.expand_etbs([(0, int(m.group(1)), alpha, beta), (1, int(m.group(2)), alpha, beta),
+                                             (2, int(m.group(3)), alpha, beta), (3, int(m.group(4)), alpha, beta)])
+            else:
+                raise ValueError('Unsupported nuclear basis %s', nuc_basis)
     elif 'H*' in mol.atom_symbol(atom_index): # H* for muonium
         with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
             basis = gto.basis.parse(f.read())
@@ -80,14 +95,24 @@ def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
                 x[1][0] *= numpy.sqrt((4.002603254 - 2 * nist.E_MASS / nist.ATOMIC_MASS + 0.1134289259)
                                       / (1.007825  - nist.E_MASS / nist.ATOMIC_MASS))
     elif mol.atom_pure_symbol(atom_index) == 'H':
-        with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
-            basis = gto.basis.parse(f.read())
-        # old even-tempered basis for H
-        #alpha = 2 * numpy.sqrt(2) * mol.mass[atom_index]
-        #beta = numpy.sqrt(2)
-        #n = 8
-        #basis = gto.expand_etbs([(0, n, alpha, beta), (1, n, alpha, beta),
-        #                         (2, n, alpha, beta)])
+        try:
+            with open(os.path.join(dirnow, 'basis/'+nuc_basis+'.dat'), 'r') as f:
+                basis = gto.basis.parse(f.read())
+        except FileNotFoundError:
+            m = re.search("(\d+)s(\d+)p(\d+)d(\d+)?f?", nuc_basis)
+            if m:
+            # even-tempered basis for H
+                alpha = 2 * numpy.sqrt(2)
+                beta = numpy.sqrt(2)
+                if m.group(4) is None:
+                    basis = gto.expand_etbs([(0, int(m.group(1)), alpha, beta), (1, int(m.group(2)), alpha, beta),
+                                             (2, int(m.group(3)), alpha, beta)])
+                else:
+                    basis = gto.expand_etbs([(0, int(m.group(1)), alpha, beta), (1, int(m.group(2)), alpha, beta),
+                                             (2, int(m.group(3)), alpha, beta), (3, int(m.group(4)), alpha, beta)])
+            else:
+                raise ValueError('Unsupported nuclear basis %s', nuc_basis)
+
     else:
         # even-tempered basis
         alpha = 2 * numpy.sqrt(2) * mol.mass[atom_index]
