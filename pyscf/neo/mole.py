@@ -71,7 +71,7 @@ def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
             m = re.search("(\d+)s(\d+)p(\d+)d(\d+)?f?", nuc_basis)
             if m:
             # even-tempered basis for D
-                alpha = 4 * numpy.sqrt(2)
+                alpha = 4
                 beta = numpy.sqrt(2)
                 if m.group(4) is None:
                     basis = gto.expand_etbs([(0, int(m.group(1)), alpha, beta), (1, int(m.group(2)), alpha, beta),
