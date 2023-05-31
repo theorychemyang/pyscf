@@ -405,6 +405,35 @@ def dump_jmol(mol, results, filename='vib.xyz'):
             dump(f'     {coords[j,0]:8.5f}     {coords[j,1]:8.5f}     {coords[j,2]:8.5f}')
             dump(f'     {mode[i,j,0]:8.5f}     {mode[i,j,1]:8.5f}     {mode[i,j,2]:8.5f}\n')
 
+def dump_molden(mol, results, filename='vib.molden'):
+    try:
+        f = open(filename, 'w')
+        dump = f.write
+    except (OSError, IOError) as e:
+        dump = mol.stdout.write
+    
+    freq_wn = results['freq_wavenumber']
+    nfreq = freq_wn.size
+
+    mode = results['norm_mode'].real
+    symbols = [mol.atom_symbol(i) for i in range(mol.natm)]
+
+    coords = mol.atom_coords(unit='Bohr')
+    dump('[Molden Format]\n[FREQ]\n')
+    for i in range(nfreq):
+        if abs(freq_wn[i].imag) < abs(freq_wn[i].real):
+            dump(f'{freq_wn[i].real}\n')
+        else:
+            dump(f'{abs(freq_wn[i].imag)}\n')
+    dump('[FR-COORD]\n')
+    for j, at in enumerate(symbols):
+        dump(f'{at:2s}     {coords[j,0]:8.5f}     {coords[j,1]:8.5f}     {coords[j,2]:8.5f}\n')
+    dump('[FR-NORM-COORD]\n')
+    for i in range(nfreq):
+        dump(f'vibration {i+1}\n')
+        for j in range(mol.natm):
+            dump(f'     {mode[i,j,0]:8.5f}     {mode[i,j,1]:8.5f}     {mode[i,j,2]:8.5f}\n')
+
 if __name__ == '__main__':
     from pyscf import gto
     from pyscf import hessian
