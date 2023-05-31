@@ -374,6 +374,36 @@ def dump_normal_mode(mol, results):
         for j, at in enumerate(symbols):
             dump('    %4d%4s               %s\n' % (j, at, mode_inline(j, col0, col1)))
 
+def dump_jmol(mol, results, filename='vib.xyz'):
+    try:
+        f = open(filename, 'w')
+        dump = f.write
+    except (OSError, IOError) as e:
+        dump = mol.stdout.write
+
+    freq_wn = results['freq_wavenumber']
+    nfreq = freq_wn.size
+
+    r_mass = results['reduced_mass'].real
+    force = results['force_const_dyne'].real
+    vib_t = results['vib_temperature'].real
+    mode = results['norm_mode'].real
+    symbols = [mol.atom_symbol(i) for i in range(mol.natm)]
+
+    coords = mol.atom_coords(unit='Angstrom')
+    for i in range(nfreq):
+        dump(f'{mol.natm}\n')
+        if abs(freq_wn[i].imag) < abs(freq_wn[i].real):
+            dump(f'Mode #{i}, f = {freq_wn[i].real} cm^-1. ')
+        else:
+            dump(f'Mode #{i}, f = {abs(freq_wn[i].imag)}i cm^-1. ')
+        dump(f'Reduced mass = {r_mass[i]} amu. ')
+        dump(f'Force const = {force[i]} Dyne/A. ')
+        dump(f'Char temp = {vib_t[i]} K.\n')
+        for j, at in enumerate(symbols):
+            dump(f'{at:2s}')
+            dump(f'     {coords[j,0]:8.5f}     {coords[j,1]:8.5f}     {coords[j,2]:8.5f}')
+            dump(f'     {mode[i,j,0]:8.5f}     {mode[i,j,1]:8.5f}     {mode[i,j,2]:8.5f}\n')
 
 if __name__ == '__main__':
     from pyscf import gto
