@@ -1931,7 +1931,9 @@ def atom_mass_list(mol, isotope_avg=False):
     if isotope_avg:
         mass_table = elements.MASSES
     else:
-        mass_table = elements.ISOTOPE_MAIN
+        # changed this to make full quantum CNEO work better
+        #mass_table = elements.ISOTOPE_MAIN
+        mass_table = elements.COMMON_ISOTOPE_MASSES
 
     nucprop = mol.nucprop
     if nucprop:

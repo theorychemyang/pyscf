@@ -237,6 +237,7 @@ class Mole(gto.mole.Mole):
             self.nuc_num = len([i for i in self.quantum_nuc if i])
 
         if self.mass is None:
+            mass_list_not_avg = self.atom_mass_list(isotope_avg=False)
             self.mass = self.atom_mass_list(isotope_avg=True)
             for i in range(self.natm):
                 if 'H+' in self.atom_symbol(i): # Deuterium (from Wikipedia)
@@ -253,6 +254,9 @@ class Mole(gto.mole.Mole):
                        'H#' not in self.atom_symbol(i) and \
                         self.atom_pure_symbol(i) == 'H': # Hydrogen (from Wikipedia)
                         self.mass[i] = 1.007825
+                    else:
+                        # if quantum, use the most common isotope mass
+                        self.mass[i] = mass_list_not_avg[i]
                     # subtract electron mass to get nuclear mass
                     # the biggest error is from isotope_avg, though
                     self.mass[i] -= self.atom_charge(i) * nist.E_MASS / nist.ATOMIC_MASS

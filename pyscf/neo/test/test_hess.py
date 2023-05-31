@@ -63,9 +63,9 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3720.750, 2)
-        self.assertAlmostEqual(results['freq_wavenumber'][-2], 3619.598, 2)
-        self.assertAlmostEqual(results['freq_wavenumber'][-3], 1572.554, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3720.785, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-2], 3619.616, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-3], 1572.570, 2)
 
     def test_hess_HF_uks(self):
         mol = neo.Mole()
@@ -125,9 +125,9 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3720.750, 2)
-        self.assertAlmostEqual(results['freq_wavenumber'][-2], 3619.598, 2)
-        self.assertAlmostEqual(results['freq_wavenumber'][-3], 1572.554, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3720.785, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-2], 3619.616, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-3], 1572.570, 2)
 
     def test_hess_CH3_full_q_uks(self):
         mol = neo.Mole()
@@ -144,9 +144,9 @@ class KnownValues(unittest.TestCase):
         h = hess.kernel()
         results = hess.harmonic_analysis(mol, h)
 
-        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3500.798, 2)
-        self.assertAlmostEqual(results['freq_wavenumber'][-3], 3295.651, 2)
-        self.assertAlmostEqual(results['freq_wavenumber'][-4], 1242.949, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-1], 3500.978, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-3], 3295.659, 2)
+        self.assertAlmostEqual(results['freq_wavenumber'][-4], 1242.998, 2)
 
 if __name__ == "__main__":
     print("Full Tests for neo.hess")
