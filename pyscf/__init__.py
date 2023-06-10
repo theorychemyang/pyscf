@@ -27,24 +27,18 @@ We recommend the enhanced Python interpreter `IPython <http://ipython.org>`_
 and the web-based Python IDE `Ipython notebook <http://ipython.org/notebook.html>`_
 to try out the package::
 
-    >>> from pyscf import gto, scf
-    >>> mol = gto.M(atom='H 0 0 0; H 0 0 1.2', basis='cc-pvdz')
-    >>> mol.apply(scf.RHF).run()
+    >>> import pyscf
+    >>> mol = pyscf.M(atom='H 0 0 0; H 0 0 1.2', basis='cc-pvdz')
+    >>> mol.RHF().run()
     converged SCF energy = -1.06111199785749
     -1.06111199786
 
 '''
 
-__version__ = '2.2.0'
+__version__ = '2.2.1'
 
 import os
 import sys
-# Avoid too many threads being created in OMP loops.
-# See issue https://github.com/pyscf/pyscf/issues/317
-if 'OPENBLAS_NUM_THREADS' not in os.environ:
-    os.environ['OPENBLAS_NUM_THREADS'] = '1'
-if 'MKL_NUM_THREADS' not in os.environ:
-    os.environ['MKL_NUM_THREADS'] = '1'
 
 # Load modules which are developed as plugins of the namespace package
 PYSCF_EXT_PATH = os.getenv('PYSCF_EXT_PATH')

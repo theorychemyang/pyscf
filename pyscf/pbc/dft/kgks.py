@@ -55,6 +55,12 @@ def get_veff(ks, cell=None, dm_kpts=None, dm_last=0, vhf_last=0, hermi=1,
     if kpts is None: kpts = ks.kpts
     t0 = (logger.process_clock(), logger.perf_counter())
 
+    ni = ks._numint
+    if ks.nlc or ni.libxc.is_nlc(ks.xc):
+        raise NotImplementedError(f'NLC functional {ks.xc} + {ks.nlc}')
+
+    hybrid = ni.libxc.is_hybrid_xc(ks.xc)
+
     # TODO GKS with hybrid functional
     hybrid = ks._numint.libxc.is_hybrid_xc(ks.xc)
     if hybrid:
@@ -96,16 +102,19 @@ def get_veff(ks, cell=None, dm_kpts=None, dm_last=0, vhf_last=0, hermi=1,
         vxc.append(vxc_k)
     vxc = lib.asarray(vxc)
 
-    weight = 1./len(kpts)
+    nkpts = len(kpts)
+    weight = 1. / nkpts
     if not hybrid:
-        ks.with_df._j_only = False
         vj = ks.get_j(cell, dm_kpts, hermi, kpts, kpts_band)
         vxc += vj
     else:
         omega, alpha, hyb = ks._numint.rsh_and_hybrid_coeff(ks.xc, spin=cell.spin)
-        if getattr(ks.with_df, '_j_only', False):  # for GDF and MDF
-            logger.warn(ks, 'df.j_only cannot be used with hybrid functional')
+        if getattr(ks.with_df, '_j_only', False) and nkpts > 1: # for GDF and MDF:
             ks.with_df._j_only = False
+            if ks.with_df._cderi is not None:
+                logger.warn(ks, 'df.j_only cannot be used with hybrid '
+                            'functional. Rebuild cderi')
+                ks.with_df.build()
         vj, vk = ks.get_jk(cell, dm_kpts, hermi, kpts, kpts_band)
         vk *= hyb
         if omega != 0:
