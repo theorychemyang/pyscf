@@ -241,10 +241,16 @@ class DDCOSMO(ddcosmo.DDCOSMO):
         'build solvent model for electrons and quantum nuclei'
         super().build()
         self.pcm_elec = ddcosmo.DDCOSMO(self.mol.elec)
+        self.pcm_elec.eta = self.eta
+        self.pcm_elec.lmax = self.lmax
+        self.pcm_elec.lebedev_order = self.lebedev_order
         self.pcm_elec.build()
         self.pcm_nuc = []
         for i in range(self.mol.nuc_num):
             pcmobj = ddcosmo.DDCOSMO(self.mol.nuc[i])
+            pcmobj.eta = self.eta
+            pcmobj.lmax = self.lmax
+            pcmobj.lebedev_order = self.lebedev_order
             pcmobj.build()
             self.pcm_nuc.append(pcmobj)
 
