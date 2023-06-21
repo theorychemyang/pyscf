@@ -237,6 +237,10 @@ class Mole(gto.mole.Mole):
             self.nuc_num = len([i for i in self.quantum_nuc if i])
 
         if self.mass is None:
+            # Use the most common isotope mass, not isotope_avg mass
+            # NOTE: the definition of gto.mole.atom_mass_list is modified.
+            # originally it returns elements.ISOTOPE_MAIN, now I change it
+            # to elements.COMMON_ISOTOPE_MASSES, which I think makes more sense
             mass_list_not_avg = self.atom_mass_list(isotope_avg=False)
             self.mass = self.atom_mass_list(isotope_avg=True)
             for i in range(self.natm):
@@ -247,16 +251,10 @@ class Mole(gto.mole.Mole):
                 elif 'H#' in self.atom_symbol(i): # Muonic Helium without electron = He4 nucleus + Muon
                     # He4 atom mass from Wikipedia
                     self.mass[i] = 4.002603254 - nist.E_MASS / nist.ATOMIC_MASS + 0.1134289259
+                else:
+                    # use the most common isotope mass. For H, it is 1.007825
+                    self.mass[i] = mass_list_not_avg[i]
                 if self.quantum_nuc[i]:
-                    # Use pure H1 isotope mass only when it is quantum, otherwise isotope average
-                    if 'H+' not in self.atom_symbol(i) and \
-                       'H*' not in self.atom_symbol(i) and \
-                       'H#' not in self.atom_symbol(i) and \
-                        self.atom_pure_symbol(i) == 'H': # Hydrogen (from Wikipedia)
-                        self.mass[i] = 1.007825
-                    else:
-                        # if quantum, use the most common isotope mass
-                        self.mass[i] = mass_list_not_avg[i]
                     # subtract electron mass to get nuclear mass
                     # the biggest error is from isotope_avg, though
                     self.mass[i] -= self.atom_charge(i) * nist.E_MASS / nist.ATOMIC_MASS

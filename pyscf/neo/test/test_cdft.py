@@ -35,6 +35,11 @@ class KnownValues(unittest.TestCase):
         mf = neo.CDFT(mol, epc='18-2')
         self.assertAlmostEqual(mf.scf(), -93.36401432623929, 6)
 
+    def test_isotope(self):
+        mol_D_atom = neo.M(atom='H+ 0 0 0', spin=1)
+        mf = neo.CDFT(mol_D_atom)
+        self.assertAlmostEqual(mf.scf(), -0.432707430519338, 6)
+
 
 if __name__ == "__main__":
     print("Full Tests for neo.cdft")
