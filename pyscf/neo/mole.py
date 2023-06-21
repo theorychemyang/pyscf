@@ -237,7 +237,7 @@ class Mole(gto.mole.Mole):
             self.nuc_num = len([i for i in self.quantum_nuc if i])
 
         if self.mass is None:
-            # Use the most common isotope mass, not isotope_avg mass
+            # Use the most common isotope mass, not isotope_avg mass for quantum nuclei
             # NOTE: the definition of gto.mole.atom_mass_list is modified.
             # originally it returns elements.ISOTOPE_MAIN, now I change it
             # to elements.COMMON_ISOTOPE_MASSES, which I think makes more sense
@@ -251,9 +251,11 @@ class Mole(gto.mole.Mole):
                 elif 'H#' in self.atom_symbol(i): # Muonic Helium without electron = He4 nucleus + Muon
                     # He4 atom mass from Wikipedia
                     self.mass[i] = 4.002603254 - nist.E_MASS / nist.ATOMIC_MASS + 0.1134289259
-                else:
+                elif self.quantum_nuc[i]:
                     # use the most common isotope mass. For H, it is 1.007825
                     self.mass[i] = mass_list_not_avg[i]
+                # else: use originally provided isotope_avg mass for classical nuclei
+                # this is mainly for harmonic normal mode analysis
                 if self.quantum_nuc[i]:
                     # subtract electron mass to get nuclear mass
                     # the biggest error is from isotope_avg, though
