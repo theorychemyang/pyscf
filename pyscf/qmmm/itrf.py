@@ -251,6 +251,39 @@ def qmmm_grad_for_scf(scf_grad):
                 g_qm += numpy.einsum('ikpq,k->ipq', j3c, charges[i0:i1])
             return g_qm
 
+        def grad_hcore_mm(self, dm, mol=None):
+            r'''Nuclear gradients of the electronic energy
+            with respect to MM atoms:
+
+            ... math::
+                g = \sum_{ij} \frac{\partial hcore_{ij}}{\partial R_{I}} P_{ji},
+
+            where I represents MM atoms.
+
+            Args:
+                dm : array
+                    The QM density matrix.
+            '''
+            if mol is None:
+                mol = self.mol
+            mm_mol = self.base.mm_mol
+
+            coords = mm_mol.atom_coords()
+            charges = mm_mol.atom_charges()
+
+            g = numpy.empty_like(coords)
+            # From examples/qmmm/30-force_on_mm_particles.py
+            # The interaction between electron density and MM particles
+            # d/dR <i| (1/|r-R|) |j> = <i| d/dR (1/|r-R|) |j> = <i| -d/dr (1/|r-R|) |j>
+            #   = <d/dr i| (1/|r-R|) |j> + <i| (1/|r-R|) |d/dr j>
+
+            for i, q in enumerate(charges):
+                with mol.with_rinv_origin(coords[i]):
+                    v = mol.intor('int1e_iprinv')
+                g[i] = (numpy.einsum('ij,xji->x', dm, v) +
+                        numpy.einsum('ij,xij->x', dm, v.conj())) * -q
+            return g
+
         def grad_nuc(self, mol=None, atmlst=None):
             if mol is None: mol = self.mol
             coords = self.base.mm_mol.atom_coords()
@@ -267,6 +300,24 @@ def qmmm_grad_for_scf(scf_grad):
             if atmlst is not None:
                 g_mm = g_mm[atmlst]
             return g_qm + g_mm
+
+        def grad_nuc_mm(self, mol=None):
+            '''Nuclear gradients of the QM-MM nuclear energy
+            (in the form of point charge Coulomb interactions)
+            with respect to MM atoms.
+            '''
+            if mol is None:
+                mol = self.mol
+            mm_mol = self.base.mm_mol
+            coords = mm_mol.atom_coords()
+            charges = mm_mol.atom_charges()
+            g_mm = numpy.zeros_like(coords)
+            for i in range(mol.natm):
+                q1 = mol.atom_charge(i)
+                r1 = mol.atom_coord(i)
+                r = lib.norm(r1-coords, axis=1)
+                g_mm += q1 * numpy.einsum('i,ix,i->ix', charges, r1-coords, 1/r**3)
+            return g_mm
     return QMMM(scf_grad)
 
 # A tag to label the derived class
