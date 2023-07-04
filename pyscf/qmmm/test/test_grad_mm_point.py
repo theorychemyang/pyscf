@@ -24,7 +24,7 @@ from pyscf.qmmm import itrf
 
 #Copied from the Gaussian MM test
 def setUpModule():
-    global mol, mm_coords, mm_charges#, mm_radii
+    global mol, mm_coords, mm_charges, mm_radii
     mol = gto.M(
         verbose = 5,
         output = '/dev/null',
@@ -37,20 +37,20 @@ def setUpModule():
                  (1.894, 0.486, 0.335),
                  (0.451, 0.165,-0.083)]
     mm_charges = [-1.040, 0.520, 0.520]
-    #mm_radii = [0.63, 0.32, 0.32]
+    mm_radii = [1e-8, 1e-8, 1e-8]
 
 def tearDownModule():
-    global mol, mm_coords, mm_charges#, mm_radii
+    global mol, mm_coords, mm_charges, mm_radii
 
 
 class KnowValues(unittest.TestCase):
-    def test_grad_mm(self):
-        mf = itrf.mm_charge(scf.RHF(mol), mm_coords, mm_charges)#, mm_radii)
+    def test_grad_mm_point(self):
+        mf = itrf.mm_charge(scf.RHF(mol), mm_coords, mm_charges)
         e_hf = mf.kernel()
         self.assertAlmostEqual(e_hf, -76.00057498193162, 8)
 
         # qm grad
-        g_hf = itrf.mm_charge_grad(grad.RHF(mf), mm_coords, mm_charges)#, mm_radii)
+        g_hf = itrf.mm_charge_grad(grad.RHF(mf), mm_coords, mm_charges)
         g_hf_qm = g_hf.kernel()
         self.assertAlmostEqual(numpy.linalg.norm(g_hf_qm), 0.03090393412761588, 6)
 
@@ -64,13 +64,44 @@ class KnowValues(unittest.TestCase):
         mm_coords1 = [(1.369, 0.147,-0.395),
                       (1.894, 0.486, 0.335),
                       (0.451, 0.165,-0.083)]
-        mf1 = itrf.mm_charge(scf.RHF(mol), mm_coords1, mm_charges)#, mm_radii)
+        mf1 = itrf.mm_charge(scf.RHF(mol), mm_coords1, mm_charges)
         e1 = mf1.kernel()
 
         mm_coords2 = [(1.369, 0.145,-0.395),
                       (1.894, 0.486, 0.335),
                       (0.451, 0.165,-0.083)]
-        mf2 = itrf.mm_charge(scf.RHF(mol), mm_coords2, mm_charges)#, mm_radii)
+        mf2 = itrf.mm_charge(scf.RHF(mol), mm_coords2, mm_charges)
+        e2 = mf2.kernel()
+        self.assertAlmostEqual((e1 - e2) / 0.002*lib.param.BOHR,
+                               (g_hf_mm_h1+g_hf_mm_nuc)[0,1], 6)
+
+    def test_grad_mm_tiny_radii(self):
+        mf = itrf.mm_charge(scf.RHF(mol), mm_coords, mm_charges, mm_radii)
+        e_hf = mf.kernel()
+        self.assertAlmostEqual(e_hf, -76.00057498193162, 8)
+
+        # qm grad
+        g_hf = itrf.mm_charge_grad(grad.RHF(mf), mm_coords, mm_charges, mm_radii)
+        g_hf_qm = g_hf.kernel()
+        self.assertAlmostEqual(numpy.linalg.norm(g_hf_qm), 0.03090393412761588, 6)
+
+        # mm grad
+        g_hf_mm_h1 = g_hf.grad_hcore_mm(mf.make_rdm1())
+        g_hf_mm_nuc = g_hf.grad_nuc_mm()
+        self.assertAlmostEqual(numpy.linalg.norm(g_hf_mm_h1), 0.5116636897582566, 6)
+        self.assertAlmostEqual(numpy.linalg.norm(g_hf_mm_nuc), 0.4915404602273757, 6)
+
+        # finite difference for MM atoms
+        mm_coords1 = [(1.369, 0.147,-0.395),
+                      (1.894, 0.486, 0.335),
+                      (0.451, 0.165,-0.083)]
+        mf1 = itrf.mm_charge(scf.RHF(mol), mm_coords1, mm_charges, mm_radii)
+        e1 = mf1.kernel()
+
+        mm_coords2 = [(1.369, 0.145,-0.395),
+                      (1.894, 0.486, 0.335),
+                      (0.451, 0.165,-0.083)]
+        mf2 = itrf.mm_charge(scf.RHF(mol), mm_coords2, mm_charges, mm_radii)
         e2 = mf2.kernel()
         self.assertAlmostEqual((e1 - e2) / 0.002*lib.param.BOHR,
                                (g_hf_mm_h1+g_hf_mm_nuc)[0,1], 6)
