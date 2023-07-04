@@ -9,7 +9,8 @@ class KnownValues(unittest.TestCase):
         mol = neo.Mole()
         mol.build(atom='H 0 0 0; C 0 0 1.0754; N 0 0 2.2223', basis='ccpvdz', quantum_nuc=[0])
         mf = neo.CDFT(mol)
-        mf.scf(cycle=0) 
+        mf.mf_elec.xc = 'b3lyp5'
+        mf.scf(cycle=0)
         mf = mf.ddCOSMO()
         e = mf.scf()
         self.assertAlmostEqual(e, -93.3452296885384, 8)

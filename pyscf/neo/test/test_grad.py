@@ -9,6 +9,7 @@ class KnownValues(unittest.TestCase):
         mol = neo.M(atom='''H 0 0 0; F 0 0 0.94''', basis='ccpvdz',
                     quantum_nuc=[0])
         mf = neo.CDFT(mol)
+        mf.mf_elec.xc = 'b3lyp5'
         mf.scf()
         grad = mf.Gradients().kernel()
         self.assertAlmostEqual(grad[0,-1], 0.0051328678351677814, 6)
@@ -17,6 +18,7 @@ class KnownValues(unittest.TestCase):
         mol = neo.M(atom='''H 0 0 0; F 0 0 0.94''', basis='ccpvdz',
                     quantum_nuc=[0,1])
         mf = neo.CDFT(mol)
+        mf.mf_elec.xc = 'b3lyp5'
         mf.scf()
         grad = mf.Gradients().kernel()
         self.assertAlmostEqual(grad[0,-1], 0.004304132955144091, 6)
@@ -25,6 +27,7 @@ class KnownValues(unittest.TestCase):
         mol = neo.M(atom='H 0 0 0; C 0 0 1.0754; N 0 0 2.2223',
                     basis='ccpvdz', quantum_nuc=[0])
         mf = neo.CDFT(mol)
+        mf.mf_elec.xc = 'b3lyp5'
         mf.run()
         de = mf.nuc_grad_method().kernel()
 
@@ -38,6 +41,7 @@ class KnownValues(unittest.TestCase):
         mol = neo.M(atom='''H 0 0 0; F 0 0 0.94''', basis='def2-tzvppd',
                     quantum_nuc=[0])
         mf = neo.CDFT(mol, epc='17-2')
+        mf.mf_elec.xc = 'b3lyp5'
         mf.mf_elec.grids.atom_grid = (99,590)
         mf.run()
         de = mf.nuc_grad_method().kernel()

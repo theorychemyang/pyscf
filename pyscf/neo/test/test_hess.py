@@ -9,7 +9,7 @@ class KnownValues(unittest.TestCase):
         mol = neo.Mole()
         mol.build(atom='H 0 0 0; F 0 0 0.945', basis='ccpvdz', quantum_nuc=[0])
         mf = neo.CDFT(mol)
-        mf.mf_elec.xc = 'b3lyp'
+        mf.mf_elec.xc = 'b3lyp5'
         mf.scf()
 
         hess = neo.Hessian(mf)
@@ -25,7 +25,7 @@ class KnownValues(unittest.TestCase):
                           O  6.51955650e-04  4.57954140e-03 -1.81537015e-15''',
                   basis='ccpvdz', quantum_nuc=[0,1])
         mf = neo.CDFT(mol)
-        mf.mf_elec.xc = 'b3lyp'
+        mf.mf_elec.xc = 'b3lyp5'
         mf.scf()
 
         hess = neo.Hessian(mf)
@@ -40,7 +40,7 @@ class KnownValues(unittest.TestCase):
         mol = neo.Mole()
         mol.build(atom='H 0 0 0; F 0 0 0.945', basis='ccpvdz', quantum_nuc=[0,1])
         mf = neo.CDFT(mol)
-        mf.mf_elec.xc = 'b3lyp'
+        mf.mf_elec.xc = 'b3lyp5'
         mf.scf()
 
         hess = neo.Hessian(mf)
@@ -56,7 +56,7 @@ class KnownValues(unittest.TestCase):
                           O  6.51955650e-04  4.57954140e-03 -1.81537015e-15''',
                   basis='ccpvdz', quantum_nuc=[0,1,2])
         mf = neo.CDFT(mol)
-        mf.mf_elec.xc = 'b3lyp'
+        mf.mf_elec.xc = 'b3lyp5'
         mf.scf()
 
         hess = neo.Hessian(mf)
@@ -71,7 +71,7 @@ class KnownValues(unittest.TestCase):
         mol = neo.Mole()
         mol.build(atom='H 0 0 0; F 0 0 0.945', basis='ccpvdz', quantum_nuc=[0])
         mf = neo.CDFT(mol, unrestricted=True)
-        mf.mf_elec.xc = 'b3lyp'
+        mf.mf_elec.xc = 'b3lyp5'
         mf.scf()
 
         hess = neo.Hessian(mf)
@@ -87,7 +87,7 @@ class KnownValues(unittest.TestCase):
                           O  6.51955650e-04  4.57954140e-03 -1.81537015e-15''',
                   basis='ccpvdz', quantum_nuc=[0,1])
         mf = neo.CDFT(mol, unrestricted=True)
-        mf.mf_elec.xc = 'b3lyp'
+        mf.mf_elec.xc = 'b3lyp5'
         mf.scf()
 
         hess = neo.Hessian(mf)
@@ -102,7 +102,7 @@ class KnownValues(unittest.TestCase):
         mol = neo.Mole()
         mol.build(atom='H 0 0 0; F 0 0 0.945', basis='ccpvdz', quantum_nuc=[0,1])
         mf = neo.CDFT(mol, unrestricted=True)
-        mf.mf_elec.xc = 'b3lyp'
+        mf.mf_elec.xc = 'b3lyp5'
         mf.scf()
 
         hess = neo.Hessian(mf)
@@ -118,7 +118,7 @@ class KnownValues(unittest.TestCase):
                           O  6.51955650e-04  4.57954140e-03 -1.81537015e-15''',
                   basis='ccpvdz', quantum_nuc=[0,1,2])
         mf = neo.CDFT(mol, unrestricted=True)
-        mf.mf_elec.xc = 'b3lyp'
+        mf.mf_elec.xc = 'b3lyp5'
         mf.scf()
 
         hess = neo.Hessian(mf)
@@ -137,7 +137,7 @@ class KnownValues(unittest.TestCase):
                           H  0.0  -0.93205  -0.538119''',
                   spin=1, basis='ccpvdz', quantum_nuc=[0,1,2,3])
         mf = neo.CDFT(mol) # spin != 0 will be unrestricted anyway
-        mf.mf_elec.xc = 'b3lyp'
+        mf.mf_elec.xc = 'b3lyp5'
         mf.scf()
 
         hess = neo.Hessian(mf)
