@@ -170,7 +170,7 @@ class KS(HF):
                 # need to repeat these lines because self.mf_nuc got overwritten
                 mf_nuc.occ_state = 0 # for Delta-SCF
                 mf_nuc.get_occ = self.get_occ_nuc(mf_nuc)
-                mf_nuc.get_hcore = self.get_hcore_nuc
+                mf_nuc.get_hcore = self.get_hcore_nuc(mf_nuc)
                 mf_nuc.get_veff = self.get_veff_nuc_epc
                 mf_nuc.energy_qmnuc = self.energy_qmnuc
 

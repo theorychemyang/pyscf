@@ -206,12 +206,12 @@ def get_hcore_nuc(mol, dm_elec, dm_nuc, mol_elec=None, mol_nuc=None,
     nn_U = 0.0
     if super_mol.nuc_num > 1: # n-n exists only when there are 2 or more
         jcross = 0.0
-        if len(dm_nuc) == len(mol_nuc) == super_mol.nuc_num:
-            for j in range(super_mol.nuc_num):
-                ja = mol_nuc[j].atom_index
-                if ja != ia and isinstance(dm_nuc[j], numpy.ndarray):
-                    jcross += get_j_nn(i, j, dm_nuc[j], mol_nuc1=mol,
-                                       mol_nuc2=mol_nuc[j], eri_nn=eri_nn)
+        assert len(dm_nuc) == len(mol_nuc) == super_mol.nuc_num
+        for j in range(super_mol.nuc_num):
+            ja = mol_nuc[j].atom_index
+            if ja != ia and isinstance(dm_nuc[j], numpy.ndarray):
+                jcross += get_j_nn(i, j, dm_nuc[j], mol_nuc1=mol,
+                                   mol_nuc2=mol_nuc[j], eri_nn=eri_nn)
         h += jcross
         if isinstance(dm_nuc[i], numpy.ndarray):
             nn_U = numpy.einsum('ij,ji', jcross, dm_nuc[i]) # n-n Coulomb energy
@@ -325,16 +325,16 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
             dm = [mf.dm_elec]
         dm += mf.dm_nuc
     if s1e is None:
-        s1e_e = mf.mf_elec.get_ovlp(mol.elec)
+        s1e_e = mf.mf_elec.get_ovlp()
         if mf.dm_elec.ndim > 2: # UHF/UKS
             s1e = [s1e_e, s1e_e]
         else:
             s1e = [s1e_e]
         for i in range(mol.nuc_num):
-            s1e.append(mf.mf_nuc[i].get_ovlp(mol.nuc[i]))
+            s1e.append(mf.mf_nuc[i].get_ovlp())
     if h1e is None:
-        h1e = [mf.mf_elec.get_hcore(mol.elec)] \
-              + [mf.mf_nuc[i].get_hcore(mol.nuc[i]) for i in range(mol.nuc_num)]
+        h1e = [mf.mf_elec.get_hcore()] \
+              + [mf.mf_nuc[i].get_hcore() for i in range(mol.nuc_num)]
     if vhf is None:
         vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec)] \
               + [mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i])
@@ -498,7 +498,7 @@ def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,
         for i in range(len(mf_nuc)):
             dm_nuc.append(mf_nuc[i].make_rdm1())
     if h1e is None:
-        h1e = mf_elec.get_hcore(mf_elec.mol)
+        h1e = mf_elec.get_hcore()
     if vhf_e is None:
         vhf_e = mf_elec.get_veff(mf_elec.mol, dm_elec)
     E_tot += mf_elec.energy_elec(dm=dm_elec, h1e=h1e, vhf=vhf_e)[0]
@@ -506,7 +506,7 @@ def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,
     if h1n is None:
         h1n = []
         for i in range(len(mf_nuc)):
-            h1n.append(mf_nuc[i].get_hcore(mf_nuc[i].mol))
+            h1n.append(mf_nuc[i].get_hcore())
     for i in range(len(mf_nuc)):
         E_tot += mf_nuc[i].energy_qmnuc(mf_nuc[i], h1n[i], dm_nuc[i], veff_n=veff_n[i])
     # substract double-counted terms and add classical nuclear repulsion
@@ -634,10 +634,10 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     else:
         dm = [mf.dm_elec]
     dm += mf.dm_nuc
-    h1e = [mf.mf_elec.get_hcore(mol.elec)]
+    h1e = [mf.mf_elec.get_hcore()]
     vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec)]
     for i in range(mol.nuc_num):
-        h1e.append(mf.mf_nuc[i].get_hcore(mol.nuc[i]))
+        h1e.append(mf.mf_nuc[i].get_hcore())
         vhf.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i]))
     e_tot = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e[0], vhf[0], h1e[1:], vhf[1:])
     logger.info(mf, 'init E= %.15g', e_tot)
@@ -648,7 +648,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     mo_coeff_n = [None] * mol.nuc_num
     mo_occ_n = [None] * mol.nuc_num
 
-    s1e_e = mf.mf_elec.get_ovlp(mol.elec)
+    s1e_e = mf.mf_elec.get_ovlp()
     if mf.dm_elec.ndim > 2:
         s1e = [s1e_e, s1e_e]
     else:
@@ -659,7 +659,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         logger.warn(mf, 'Singularity detected in overlap matrix (condition number = %4.3g). '
                     'SCF may be inaccurate and hard to converge.', numpy.max(cond))
     for i in range(mol.nuc_num):
-        s1e.append(mf.mf_nuc[i].get_ovlp(mol.nuc[i]))
+        s1e.append(mf.mf_nuc[i].get_ovlp())
 
     # Skip SCF iterations. Compute only the total energy of the initial density
     if mf.max_cycle <= 0:
@@ -743,11 +743,11 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         dm += mf.dm_nuc
 
         # update the so-called "core" Hamiltonian and veff after the density is updated
-        h1e = [mf.mf_elec.get_hcore(mol.elec)]
+        h1e = [mf.mf_elec.get_hcore()]
         vhf_last = vhf
         vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec, dm_elec_last, vhf_last[0])]
         for i in range(mol.nuc_num):
-            h1e.append(mf.mf_nuc[i].get_hcore(mol.nuc[i]))
+            h1e.append(mf.mf_nuc[i].get_hcore())
             vhf.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i], dm_nuc_last[i], vhf_last[1 + i]))
         vhf_last = None
 
@@ -819,11 +819,11 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         dm += mf.dm_nuc
 
         # update the so-called "core" Hamiltonian and veff after the density is updated
-        h1e = [mf.mf_elec.get_hcore(mol.elec)]
+        h1e = [mf.mf_elec.get_hcore()]
         vhf_last = vhf
         vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec, dm_elec_last, vhf_last[0])]
         for i in range(mol.nuc_num):
-            h1e.append(mf.mf_nuc[i].get_hcore(mol.nuc[i]))
+            h1e.append(mf.mf_nuc[i].get_hcore())
             vhf.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i], dm_nuc_last[i], vhf_last[1 + i]))
         vhf_last = None
 
@@ -974,7 +974,7 @@ class HF(scf.hf.SCF):
             mf_nuc = self.mf_nuc[-1]
             mf_nuc.occ_state = 0 # for Delta-SCF
             mf_nuc.get_occ = self.get_occ_nuc(mf_nuc)
-            mf_nuc.get_hcore = self.get_hcore_nuc
+            mf_nuc.get_hcore = self.get_hcore_nuc(mf_nuc)
             mf_nuc.get_veff = self.get_veff_nuc_bare
             mf_nuc.energy_qmnuc = self.energy_qmnuc
             self.dm_nuc.append(None)
@@ -1033,13 +1033,14 @@ class HF(scf.hf.SCF):
     def get_occ_elec(self, mf):
         return get_occ_elec(mf)
 
-    def get_hcore_nuc(self, mol):
-        return get_hcore_nuc(mol, self.dm_elec, self.dm_nuc, self.mol.elec, self.mol.nuc,
-                             eri_ne=self._eri_ne, eri_nn=self._eri_nn)
+    def get_hcore_nuc(self, mf):
+        def get_hcore(mol=None):
+            if mol is None: mol = mf.mol
+            return get_hcore_nuc(mol, self.dm_elec, self.dm_nuc, self.mol.elec, self.mol.nuc,
+                                 eri_ne=self._eri_ne, eri_nn=self._eri_nn)
+        return get_hcore
 
-    def get_veff_nuc_bare(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
-        if mol is None:
-            mol = self.mol
+    def get_veff_nuc_bare(self, mol, dm, dm_last=0, vhf_last=0, hermi=1):
         return get_veff_nuc_bare(mol)
 
     get_fock = get_fock
@@ -1094,7 +1095,7 @@ class HF(scf.hf.SCF):
         for i in range(mol.nuc_num):
             mf_nuc = self.mf_nuc[i]
             mf_nuc.get_occ = self.get_occ_nuc(mf_nuc)
-            mf_nuc.get_hcore = self.get_hcore_nuc
+            mf_nuc.get_hcore = self.get_hcore_nuc(mf_nuc)
             mf_nuc.get_veff = self.get_veff_nuc_bare
             mf_nuc.energy_qmnuc = self.energy_qmnuc
         return self
