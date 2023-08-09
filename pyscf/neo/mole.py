@@ -6,7 +6,6 @@ import contextlib
 from pyscf import gto
 from pyscf.data import nist
 from pyscf.lib import logger, param
-from pyscf.gto.mole import PTR_COORD
 
 # For code compatibility in python-2 and python-3
 if sys.version_info >= (3,):
@@ -146,8 +145,8 @@ def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
     quantum_nuclear_charge = 0
     for i in range(mol.natm):
         if mol.quantum_nuc[i]:
-            quantum_nuclear_charge -= nuc._atm[i, 0]
-            nuc._atm[i, 0] = 0 # set nuclear charges of quantum nuclei to 0
+            quantum_nuclear_charge -= nuc._atm[i, gto.CHARGE_OF]
+            nuc._atm[i, gto.CHARGE_OF] = 0 # set nuclear charges of quantum nuclei to 0
     nuc.charge += quantum_nuclear_charge
 
     # avoid UHF
@@ -278,12 +277,12 @@ class Mole(gto.mole.Mole):
             quantum_nuclear_charge = 0
             for i in range(self.natm):
                 if self.quantum_nuc[i]:
-                    quantum_nuclear_charge -= self.elec._atm[i, 0]
+                    quantum_nuclear_charge -= self.elec._atm[i, gto.CHARGE_OF]
                     if q_nuc_occ is not None:
-                        unocc_Z += unocc[idx] * self.elec._atm[i, 0]
+                        unocc_Z += unocc[idx] * self.elec._atm[i, gto.CHARGE_OF]
                         idx += 1
                     # set nuclear charges of quantum nuclei to 0
-                    self.elec._atm[i, 0] = 0
+                    self.elec._atm[i, gto.CHARGE_OF] = 0
             # charge determines the number of electrons
             self.elec.charge += quantum_nuclear_charge
             if q_nuc_occ is not None:
@@ -342,7 +341,7 @@ class Mole(gto.mole.Mole):
         # ensure correct core charge in case got elec mole rebuild
         for i in range(mol.natm):
             if mol.quantum_nuc[i]:
-                mol.elec._atm[i, 0] = 0
+                mol.elec._atm[i, gto.CHARGE_OF] = 0
 
         for i in range(mol.nuc_num):
             atom_index = self.nuc[i].atom_index
@@ -373,7 +372,7 @@ class Mole(gto.mole.Mole):
             for j in range(mol.natm):
                 # ensure correct core charge, because got rebuilt
                 if mol.quantum_nuc[j]:
-                    mol.nuc[i]._atm[j, 0] = 0
+                    mol.nuc[i]._atm[j, gto.CHARGE_OF] = 0
             mol.nuc[i].nelec = (1,1)
 
         # then set_geom_ for the base mole
@@ -402,7 +401,7 @@ class Mole(gto.mole.Mole):
 
             mol._atom = list(zip([x[0] for x in mol._atom],
                                  (atoms_or_coords * unit).tolist()))
-            ptr = mol._atm[:,PTR_COORD]
+            ptr = mol._atm[:, gto.PTR_COORD]
             mol._env[ptr+0] = unit * atoms_or_coords[:,0]
             mol._env[ptr+1] = unit * atoms_or_coords[:,1]
             mol._env[ptr+2] = unit * atoms_or_coords[:,2]
