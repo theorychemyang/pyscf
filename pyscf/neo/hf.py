@@ -14,9 +14,8 @@ from pyscf import gto, lib, neo, scf
 from pyscf.data import nist
 from pyscf.lib import logger
 from pyscf.scf import _vhf, chkfile
-from pyscf import __config__
+from pyscf.scf.hf import TIGHT_GRAD_CONV_TOL
 
-TIGHT_GRAD_CONV_TOL = getattr(__config__, 'scf_hf_kernel_tight_grad_conv_tol', True)
 
 def dot_eri_dm(eri, dms, nao_v=None, eri_dot_dm=True):
     assert(eri.dtype == numpy.double)
