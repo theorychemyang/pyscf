@@ -9,6 +9,7 @@ from pyscf.lib import logger
 from pyscf.dft.numint import eval_ao, eval_rho, _scale_ao, _dot_ao_ao, _dot_ao_ao_sparse
 from pyscf.neo.hf import HF
 from pyscf.dft.gen_grid import NBINS
+from pyscf.qmmm.itrf import qmmm_for_scf
 
 def eval_xc_nuc(epc, rho_e, rho_n):
     '''evaluate e_xc and v_xc of proton on a grid (epc17)'''
@@ -151,6 +152,8 @@ class KS(HF):
             self.mf_elec = dft.UKS(mol.elec)
         else:
             self.mf_elec = dft.RKS(mol.elec)
+        if self.mol.mm_mol is not None:
+            self.mf_elec = qmmm_for_scf(self.mf_elec, self.mol.mm_mol)
         # need to repeat these lines because self.mf_elec got overwritten
         self.mf_elec.xc = 'b3lyp' # use b3lyp as the default xc functional for electrons
         self.mf_elec.get_hcore = self.get_hcore_elec

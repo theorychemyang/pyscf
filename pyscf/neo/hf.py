@@ -15,6 +15,7 @@ from pyscf.data import nist
 from pyscf.lib import logger
 from pyscf.scf import _vhf, chkfile
 from pyscf.scf.hf import TIGHT_GRAD_CONV_TOL
+from pyscf.qmmm.itrf import qmmm_for_scf
 
 
 def dot_eri_dm(eri, dms, nao_v=None, eri_dot_dm=True):
@@ -165,34 +166,34 @@ def get_j_nn(idx1, idx2, dm_n2, mol_nuc1=None, mol_nuc2=None, eri_nn=None):
                                   dm_n2, scripts='ijkl,lk->ij',
                                   intor='int2e', aosym='s4')
 
-def hcore_qmmm(mol, mm_mol, max_memory):
+def hcore_nuc_qmmm(mm_mol, mol_n, charge):
     coords = mm_mol.atom_coords()
     charges = mm_mol.atom_charges()
-    nao = mol.nao
-    max_memory = max_memory - lib.current_memory()[0]
+    nao = mol_n.nao
+    max_memory = mol_n.super_mol.max_memory - lib.current_memory()[0]
     blksize = int(min(max_memory*1e6/8/nao**2, 200))
     blksize = max(blksize, 1)
     v = 0
     if mm_mol.charge_model == 'gaussian':
         expnts = mm_mol.get_zetas()
 
-        if mol.cart:
+        if mol_n.cart:
             intor = 'int3c2e_cart'
         else:
             intor = 'int3c2e_sph'
-        cintopt = gto.moleintor.make_cintopt(mol._atm, mol._bas,
-                                             mol._env, intor)
+        cintopt = gto.moleintor.make_cintopt(mol_n._atm, mol_n._bas,
+                                             mol_n._env, intor)
         for i0, i1 in lib.prange(0, charges.size, blksize):
             fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
-            j3c = df.incore.aux_e2(mol, fakemol, intor=intor,
+            j3c = df.incore.aux_e2(mol_n, fakemol, intor=intor,
                                    aosym='s2ij', cintopt=cintopt)
             v += numpy.einsum('xk,k->x', j3c, -charges[i0:i1])
         v = lib.unpack_tril(v)
     else: # point-charge model
         for i0, i1 in lib.prange(0, charges.size, blksize):
-            j3c = mol.intor('int1e_grids', hermi=1, grids=coords[i0:i1])
+            j3c = mol_n.intor('int1e_grids', hermi=1, grids=coords[i0:i1])
             v += numpy.einsum('kpq,k->pq', j3c, -charges[i0:i1])
-    return v
+    return -charge * v
 
 def get_hcore_nuc(mol, mf_nuc, dm_elec, dm_nuc, mol_elec=None,
                   mol_nuc=None, eri_ne=None, eri_nn=None):
@@ -212,8 +213,7 @@ def get_hcore_nuc(mol, mf_nuc, dm_elec, dm_nuc, mol_elec=None,
         mf_nuc.hcore_static -= mol.intor_symmetric('int1e_nuc') * charge
         # QMMM part
         if super_mol.mm_mol is not None:
-            mf_nuc.hcore_static -= charge * hcore_qmmm(mol, super_mol.mm_mol,
-                                                       super_mol.max_memory)
+            mf_nuc.hcore_static += hcore_nuc_qmmm(super_mol.mm_mol, mol, charge)
     h = 0
     # find the index of mol
     # TODO: store this information
@@ -333,11 +333,7 @@ def get_hcore_elec(mol, mf_elec, dm_nuc, mol_nuc=None, eri_ne=None):
     # create the static part of hcore (true hcore) for the first time
     # and cache it
     if mf_elec.hcore_static is None:
-        mf_elec.hcore_static = scf.hf.get_hcore(mol)
-        # QMMM part
-        if super_mol.mm_mol is not None:
-            mf_elec.hcore_static += hcore_qmmm(mol, super_mol.mm_mol,
-                                               super_mol.max_memory)
+        mf_elec.hcore_static = mf_elec.__class__.get_hcore(mf_elec, mol)
     j = 0
     # Coulomb interactions between electrons and all quantum nuclei
     for i in range(super_mol.nuc_num):
@@ -559,15 +555,6 @@ def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,
     logger.debug(super_mol, 'Energy of e-n Coulomb interactions: %s', ne_U)
     logger.debug(super_mol, 'Energy of n-n Coulomb interactions: %s', nn_U)
     E_tot = E_tot - ne_U - nn_U + mf_elec.energy_nuc()
-    # QMMM part. Must use mol in mf_elec, which has 0 charge for quantum nuc
-    if super_mol.mm_mol is not None:
-        mm_mol = super_mol.mm_mol
-        coords = mm_mol.atom_coords()
-        charges = mm_mol.atom_charges()
-        for j in range(mf_elec.mol.natm):
-            q2, r2 = mf_elec.mol.atom_charge(j), mf_elec.mol.atom_coord(j)
-            r = lib.norm(r2-coords, axis=1)
-            E_tot += q2*(charges/r).sum()
     return E_tot
 
 def init_guess_mixed(mol, mixing_parameter = numpy.pi/4):
@@ -1015,6 +1002,8 @@ class HF(scf.hf.SCF):
             self.mf_elec = scf.UHF(mol.elec)
         else:
             self.mf_elec = scf.RHF(mol.elec)
+        if self.mol.mm_mol is not None:
+            self.mf_elec = qmmm_for_scf(self.mf_elec, self.mol.mm_mol)
         self.mf_elec.get_hcore = self.get_hcore_elec
         self.mf_elec.hcore_static = None # cache true hcore
         if mol.elec.nhomo is not None:
