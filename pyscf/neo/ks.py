@@ -154,6 +154,7 @@ class KS(HF):
         # need to repeat these lines because self.mf_elec got overwritten
         self.mf_elec.xc = 'b3lyp' # use b3lyp as the default xc functional for electrons
         self.mf_elec.get_hcore = self.get_hcore_elec
+        self.mf_elec.hcore_static = None
         if self.epc is not None:
             self.mf_elec.get_veff = self.get_veff_elec_epc
         if mol.elec.nhomo is not None:
@@ -171,6 +172,7 @@ class KS(HF):
                 mf_nuc.occ_state = 0 # for Delta-SCF
                 mf_nuc.get_occ = self.get_occ_nuc(mf_nuc)
                 mf_nuc.get_hcore = self.get_hcore_nuc(mf_nuc)
+                mf_nuc.hcore_static = None
                 mf_nuc.get_veff = self.get_veff_nuc_epc
                 mf_nuc.energy_qmnuc = self.energy_qmnuc
 

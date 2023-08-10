@@ -202,9 +202,12 @@ class Mole(gto.mole.Mole):
         self.elec = None # a Mole object for NEO-electron and classical nuclei
         self.nuc = None # a list of Mole objects for quantum nuclei
         self.nuc_basis = None # name of nuclear basis
-        self._keys.update(['quantum_nuc', 'nuc_num', 'mass', 'elec', 'nuc', 'nuc_basis'])
+        self.mm_mol = None # QMMM support
+        self._keys.update(['quantum_nuc', 'nuc_num', 'mass', 'elec',
+                           'nuc', 'nuc_basis', 'mm_mol'])
 
-    def build(self, quantum_nuc=None, nuc_basis=None, q_nuc_occ=None, **kwargs):
+    def build(self, quantum_nuc=None, nuc_basis=None, q_nuc_occ=None,
+              mm_mol=None, **kwargs):
         '''assign which nuclei are treated quantum mechanically by quantum_nuc (list)'''
         super().build(**kwargs)
 
@@ -215,6 +218,10 @@ class Mole(gto.mole.Mole):
         # By default, use pb4d basis
         if self.nuc_basis is None and nuc_basis is None:
             nuc_basis = 'pb4d'
+
+        # QMMM mm mole from pyscf.qmmm.mm_mole.create_mm_mol
+        if mm_mol is not None:
+            self.mm_mol = mm_mol
 
         if nuc_basis is not None: self.nuc_basis = nuc_basis
 

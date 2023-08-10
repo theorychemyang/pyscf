@@ -10,7 +10,7 @@ import numpy
 import scipy
 import warnings
 import h5py
-from pyscf import gto, lib, neo, scf
+from pyscf import df, gto, lib, neo, scf
 from pyscf.data import nist
 from pyscf.lib import logger
 from pyscf.scf import _vhf, chkfile
@@ -165,21 +165,56 @@ def get_j_nn(idx1, idx2, dm_n2, mol_nuc1=None, mol_nuc2=None, eri_nn=None):
                                   dm_n2, scripts='ijkl,lk->ij',
                                   intor='int2e', aosym='s4')
 
-def get_hcore_nuc(mol, dm_elec, dm_nuc, mol_elec=None, mol_nuc=None,
-                  eri_ne=None, eri_nn=None):
+def hcore_qmmm(mol, mm_mol, max_memory):
+    coords = mm_mol.atom_coords()
+    charges = mm_mol.atom_charges()
+    nao = mol.nao
+    max_memory = max_memory - lib.current_memory()[0]
+    blksize = int(min(max_memory*1e6/8/nao**2, 200))
+    blksize = max(blksize, 1)
+    v = 0
+    if mm_mol.charge_model == 'gaussian':
+        expnts = mm_mol.get_zetas()
+
+        if mol.cart:
+            intor = 'int3c2e_cart'
+        else:
+            intor = 'int3c2e_sph'
+        cintopt = gto.moleintor.make_cintopt(mol._atm, mol._bas,
+                                             mol._env, intor)
+        for i0, i1 in lib.prange(0, charges.size, blksize):
+            fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
+            j3c = df.incore.aux_e2(mol, fakemol, intor=intor,
+                                   aosym='s2ij', cintopt=cintopt)
+            v += numpy.einsum('xk,k->x', j3c, -charges[i0:i1])
+        v = lib.unpack_tril(v)
+    else: # point-charge model
+        for i0, i1 in lib.prange(0, charges.size, blksize):
+            j3c = mol.intor('int1e_grids', hermi=1, grids=coords[i0:i1])
+            v += numpy.einsum('kpq,k->pq', j3c, -charges[i0:i1])
+    return v
+
+def get_hcore_nuc(mol, mf_nuc, dm_elec, dm_nuc, mol_elec=None,
+                  mol_nuc=None, eri_ne=None, eri_nn=None):
     '''Get the core Hamiltonian for quantum nucleus.'''
     super_mol = mol.super_mol
     if mol_elec is None: mol_elec = super_mol.elec
     if mol_nuc is None: mol_nuc = super_mol.nuc
     ia = mol.atom_index
-    # the mass of the quantum nucleus in a.u.
-    mass = super_mol.mass[ia] * nist.ATOMIC_MASS / nist.E_MASS
-    charge = super_mol.atom_charge(ia)
-    # nuclear kinetic energy and Coulomb interactions with classical nuclei
-    h = mol.intor_symmetric('int1e_kin') / mass
-    h -= mol.intor_symmetric('int1e_nuc') * charge
-    # TODO: this is not really the core Hamiltonian.
-    # TODO: avoid constructing the true core multiple times, as it is simply a waste.
+    # create the static part of hcore (true hcore) for the first time
+    # and cache it
+    if mf_nuc.hcore_static is None:
+        # the mass of the quantum nucleus in a.u.
+        mass = super_mol.mass[ia] * nist.ATOMIC_MASS / nist.E_MASS
+        charge = super_mol.atom_charge(ia)
+        # nuclear kinetic energy and Coulomb interactions with classical nuclei
+        mf_nuc.hcore_static = mol.intor_symmetric('int1e_kin') / mass
+        mf_nuc.hcore_static -= mol.intor_symmetric('int1e_nuc') * charge
+        # QMMM part
+        if super_mol.mm_mol is not None:
+            mf_nuc.hcore_static -= charge * hcore_qmmm(mol, super_mol.mm_mol,
+                                                       super_mol.max_memory)
+    h = 0
     # find the index of mol
     # TODO: store this information
     i = 0
@@ -215,7 +250,7 @@ def get_hcore_nuc(mol, dm_elec, dm_nuc, mol_elec=None, mol_nuc=None,
         if isinstance(dm_nuc[i], numpy.ndarray):
             nn_U = numpy.einsum('ij,ji', jcross, dm_nuc[i]) # n-n Coulomb energy
     # attach n-e and n-n Coulomb to h to use later when calculating the total energy
-    h = lib.tag_array(h, ne_U=ne_U, nn_U=nn_U)
+    h = lib.tag_array(mf_nuc.hcore_static + h, ne_U=ne_U, nn_U=nn_U)
     return h
 
 def get_occ_nuc(mf):
@@ -291,19 +326,25 @@ def get_init_guess_nuc(mf, mol):
     mo_occ = mf.get_occ(mo_energy, mo_coeff)
     return mf.make_rdm1(mo_coeff, mo_occ)
 
-def get_hcore_elec(mol, dm_nuc, mol_nuc=None, eri_ne=None):
+def get_hcore_elec(mol, mf_elec, dm_nuc, mol_nuc=None, eri_ne=None):
     '''Get the core Hamiltonian for electrons in NEO'''
     super_mol = mol.super_mol
     if mol_nuc is None: mol_nuc = super_mol.nuc
+    # create the static part of hcore (true hcore) for the first time
+    # and cache it
+    if mf_elec.hcore_static is None:
+        mf_elec.hcore_static = scf.hf.get_hcore(mol)
+        # QMMM part
+        if super_mol.mm_mol is not None:
+            mf_elec.hcore_static += hcore_qmmm(mol, super_mol.mm_mol,
+                                               super_mol.max_memory)
     j = 0
     # Coulomb interactions between electrons and all quantum nuclei
     for i in range(super_mol.nuc_num):
         if isinstance(dm_nuc[i], numpy.ndarray):
             j += get_j_e_dm_n(i, dm_nuc[i], mol_elec=mol, mol_nuc=mol_nuc[i],
                               eri_ne=eri_ne)
-    # TODO: this is not really the core Hamiltonian.
-    # TODO: avoid calling scf.hf.get_hcore multiple times, as it is simply a waste.
-    return scf.hf.get_hcore(mol) + j
+    return mf_elec.hcore_static + j
 
 def get_veff_nuc_bare(mol):
     return numpy.zeros((mol.nao_nr(), mol.nao_nr()))
@@ -518,6 +559,15 @@ def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,
     logger.debug(super_mol, 'Energy of e-n Coulomb interactions: %s', ne_U)
     logger.debug(super_mol, 'Energy of n-n Coulomb interactions: %s', nn_U)
     E_tot = E_tot - ne_U - nn_U + mf_elec.energy_nuc()
+    # QMMM part. Must use mol in mf_elec, which has 0 charge for quantum nuc
+    if super_mol.mm_mol is not None:
+        mm_mol = super_mol.mm_mol
+        coords = mm_mol.atom_coords()
+        charges = mm_mol.atom_charges()
+        for j in range(mf_elec.mol.natm):
+            q2, r2 = mf_elec.mol.atom_charge(j), mf_elec.mol.atom_coord(j)
+            r = lib.norm(r2-coords, axis=1)
+            E_tot += q2*(charges/r).sum()
     return E_tot
 
 def init_guess_mixed(mol, mixing_parameter = numpy.pi/4):
@@ -594,7 +644,8 @@ def init_guess_nuc_by_calculation(mf_nuc, mol):
     for i in range(mol.nuc_num):
         ia = mol.nuc[i].atom_index
         mol_tmp = neo.Mole()
-        mol_tmp.build(quantum_nuc=[ia], nuc_basis=mol.nuc_basis,
+        # do not invoke possibly expensive QMMM during init guess
+        mol_tmp.build(quantum_nuc=[ia], nuc_basis=mol.nuc_basis, mm_mol=None,
                       dump_input=False, parse_arg=False, verbose=mol.verbose,
                       output=mol.output, max_memory=mol.max_memory,
                       atom=mol.atom, unit=mol.unit, nucmod=mol.nucmod,
@@ -602,6 +653,7 @@ def init_guess_nuc_by_calculation(mf_nuc, mol):
                       symmetry=mol.symmetry, symmetry_subgroup=mol.symmetry_subgroup,
                       cart=mol.cart, magmom=mol.magmom)
         dm_nuc[i] = get_init_guess_nuc(mf_nuc[i], mol_tmp.nuc[0])
+        mf_nuc[i].hcore_static = None # clear the true hcore cache
     return dm_nuc
 
 def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
@@ -964,6 +1016,7 @@ class HF(scf.hf.SCF):
         else:
             self.mf_elec = scf.RHF(mol.elec)
         self.mf_elec.get_hcore = self.get_hcore_elec
+        self.mf_elec.hcore_static = None # cache true hcore
         if mol.elec.nhomo is not None:
             self.mf_elec.get_occ = self.get_occ_elec(self.mf_elec)
 
@@ -974,6 +1027,7 @@ class HF(scf.hf.SCF):
             mf_nuc.occ_state = 0 # for Delta-SCF
             mf_nuc.get_occ = self.get_occ_nuc(mf_nuc)
             mf_nuc.get_hcore = self.get_hcore_nuc(mf_nuc)
+            mf_nuc.hcore_static = None # cache true hcore
             mf_nuc.get_veff = self.get_veff_nuc_bare
             mf_nuc.energy_qmnuc = self.energy_qmnuc
             self.dm_nuc.append(None)
@@ -1024,7 +1078,8 @@ class HF(scf.hf.SCF):
 
     def get_hcore_elec(self, mol=None):
         if mol is None: mol = self.mol.elec
-        return get_hcore_elec(mol, self.dm_nuc, self.mol.nuc, eri_ne=self._eri_ne)
+        return get_hcore_elec(mol, self.mf_elec, self.dm_nuc,
+                              self.mol.nuc, eri_ne=self._eri_ne)
 
     def get_occ_nuc(self, mf):
         return get_occ_nuc(mf)
@@ -1035,7 +1090,8 @@ class HF(scf.hf.SCF):
     def get_hcore_nuc(self, mf):
         def get_hcore(mol=None):
             if mol is None: mol = mf.mol
-            return get_hcore_nuc(mol, self.dm_elec, self.dm_nuc, self.mol.elec, self.mol.nuc,
+            return get_hcore_nuc(mol, mf, self.dm_elec, self.dm_nuc,
+                                 self.mol.elec, self.mol.nuc,
                                  eri_ne=self._eri_ne, eri_nn=self._eri_nn)
         return get_hcore
 
@@ -1055,6 +1111,16 @@ class HF(scf.hf.SCF):
         cput0 = (logger.process_clock(), logger.perf_counter())
 
         self.dump_flags()
+        # QMMM dump_flags:
+        if self.mol.mm_mol is not None:
+            logger.info(self, '** Add background charges for %s **',
+                        self.__class__)
+            if self.verbose >= logger.DEBUG:
+                logger.debug(self, 'Charge      Location')
+                coords = self.mol.mm_mol.atom_coords()
+                charges = self.mol.mm_mol.atom_charges()
+                for i, z in enumerate(charges):
+                    logger.debug(self, '%.9g    %s', z, coords[i])
 
         if self.max_cycle > 0 or self.mo_coeff is None:
             # Note that all mo_*_[e,n] have already been passed to
@@ -1089,12 +1155,14 @@ class HF(scf.hf.SCF):
 
         # point to correct ``self'' for overriden functions
         self.mf_elec.get_hcore = self.get_hcore_elec
+        self.mf_elec.hcore_static = None
         if mol.elec.nhomo is not None:
             self.mf_elec.get_occ = self.get_occ_elec(self.mf_elec)
         for i in range(mol.nuc_num):
             mf_nuc = self.mf_nuc[i]
             mf_nuc.get_occ = self.get_occ_nuc(mf_nuc)
             mf_nuc.get_hcore = self.get_hcore_nuc(mf_nuc)
+            mf_nuc.hcore_static = None
             mf_nuc.get_veff = self.get_veff_nuc_bare
             mf_nuc.energy_qmnuc = self.energy_qmnuc
         return self
