@@ -4,7 +4,7 @@
 Analytical nuclear gradient for constrained nuclear-electronic orbital
 '''
 import numpy
-from pyscf import gto, lib, neo
+from pyscf import df, gto, lib, neo
 from pyscf.data import nist
 from pyscf.grad import rhf as rhf_grad
 from pyscf.lib import logger
@@ -12,6 +12,8 @@ from pyscf.scf.jk import get_jk
 from pyscf.dft.numint import eval_ao, eval_rho, _scale_ao
 from pyscf.neo.ks import eval_xc_nuc, eval_xc_elec
 from pyscf.grad.rks import _d1_dot_
+from pyscf.qmmm.itrf import qmmm_grad_for_scf
+import warnings
 
 
 def get_vepc_elec(mf_grad):
@@ -151,6 +153,35 @@ def get_hcore(mol_n):
     if mol.has_ecp():
         assert mol_n.has_ecp()
         h += mol_n.intor('ECPscalar_ipnuc', comp=3) * charge
+    # QMMM part:
+    if mol.mm_mol is not None:
+        mm_mol = mol.mm_mol
+        coords = mm_mol.atom_coords()
+        charges = mm_mol.atom_charges()
+
+        nao = mol_n.nao
+        max_memory = mol.max_memory - lib.current_memory()[0]
+        blksize = int(min(max_memory*1e6/8/nao**2/3, 200))
+        blksize = max(blksize, 1)
+        v = 0
+        if mm_mol.charge_model == 'gaussian':
+            expnts = mm_mol.get_zetas()
+            if mol_n.cart:
+                intor = 'int3c2e_ip1_cart'
+            else:
+                intor = 'int3c2e_ip1_sph'
+            cintopt = gto.moleintor.make_cintopt(mol_n._atm, mol_n._bas,
+                                                 mol_n._env, intor)
+            for i0, i1 in lib.prange(0, charges.size, blksize):
+                fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
+                j3c = df.incore.aux_e2(mol_n, fakemol, intor, aosym='s1',
+                                       comp=3, cintopt=cintopt)
+                v += numpy.einsum('ipqk,k->ipq', j3c, charges[i0:i1])
+        else:
+            for i0, i1 in lib.prange(0, charges.size, blksize):
+                j3c = mol_n.intor('int1e_grids_ip', grids=coords[i0:i1])
+                v += numpy.einsum('ikpq,k->ipq', j3c, charges[i0:i1])
+        h -= charge * v
     return h
 
 def hcore_generator(mf_grad, mol_n):
@@ -183,6 +214,44 @@ def hcore_generator(mf_grad, mol_n):
                 return vrinv + vrinv.transpose(0,2,1)
             return 0.0
     return hcore_deriv
+
+def grad_hcore_mm(mm_mol, mol_n, dm_n):
+    coords = mm_mol.atom_coords()
+    charges = mm_mol.atom_charges()
+    expnts = mm_mol.get_zetas()
+
+    intor = 'int3c2e_ip2'
+    nao = mol_n.nao
+    max_memory = mol_n.super_mol.max_memory - lib.current_memory()[0]
+    blksize = int(min(max_memory*1e6/8/nao**2/3, 200))
+    blksize = max(blksize, 1)
+    cintopt = gto.moleintor.make_cintopt(mol_n._atm, mol_n._bas,
+                                         mol_n._env, intor)
+
+    g = numpy.empty_like(coords)
+    for i0, i1 in lib.prange(0, charges.size, blksize):
+        fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
+        j3c = df.incore.aux_e2(mol_n, fakemol, intor, aosym='s1',
+                               comp=3, cintopt=cintopt)
+        g[i0:i1] = numpy.einsum('ipqk,qp->ik', j3c * charges[i0:i1], dm_n).T
+    ia = mol_n.atom_index
+    charge = mol_n.super_mol.atom_charge(ia)
+    return -charge * g
+
+def grad_mm(mf_grad):
+    if mf_grad.mol.mm_mol is not None:
+        # decorated elec part can already give grad_nuc_mm
+        # and electronic part of grad_hcore_mm
+        g = mf_grad.g_elec.grad_hcore_mm(mf_grad.base.dm_elec)
+        g += mf_grad.g_elec.grad_nuc_mm()
+        # grad_hcore_mm part from quantum nuclei
+        mol = mf_grad.mol
+        for i in range(mol.nuc_num):
+            g += grad_hcore_mm(mol.mm_mol, mol.nuc[i], mf_grad.base.dm_nuc[i])
+        return g
+    else:
+        warnings.warn('Not a QM/MM calculation, grad_mm should not be called!')
+        return None
 
 def as_scanner(mf_grad):
     '''Generating a nuclear gradients scanner/solver (for geometry optimizer).
@@ -240,6 +309,10 @@ class Gradients(rhf_grad.GradientsMixin):
         self.grid_response = None
         self.g_elec = self.base.mf_elec.nuc_grad_method() # elec part obj
         self.g_elec.verbose = self.verbose - 1
+        if self.mol.mm_mol is not None:
+            # decorate elec part gradient
+            self.g_elec = qmmm_grad_for_scf(self.g_elec)
+            self.g_elec.base.mm_mol = self.mol.mm_mol
         self._keys = self._keys.union(['grid_response', 'g_elec'])
 
     hcore_generator = hcore_generator
@@ -265,6 +338,16 @@ class Gradients(rhf_grad.GradientsMixin):
             self.check_sanity()
         if self.verbose >= logger.INFO:
             self.dump_flags()
+            # QMMM dump_flags:
+            if self.mol.mm_mol is not None:
+                logger.info(self, '** Add background charges for %s **',
+                            self.__class__)
+                if self.verbose >= logger.DEBUG1:
+                    logger.debug1(self, 'Charge      Location')
+                    coords = self.mol.mm_mol.atom_coords()
+                    charges = self.mol.mm_mol.atom_charges()
+                    for i, z in enumerate(charges):
+                        logger.debug1(self, '%.9g    %s', z, coords[i])
 
         de = self.grad_cneo(atmlst=atmlst)
         if self.base.epc is not None:
@@ -277,6 +360,8 @@ class Gradients(rhf_grad.GradientsMixin):
         return self.de
 
     grad = lib.alias(kernel, alias_name='grad')
+
+    grad_mm = grad_mm
 
     as_scanner = as_scanner
 
