@@ -474,7 +474,7 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
                 f.append(f_ravel[sizes[i] : sizes[i+1]].reshape(shapes[i]))
             if diis_type == 1:
                 for i in range(mol.nuc_num):
-                    f[start + i] = f0[start + i] + fock_add[i]
+                    f[start + i] += fock_add[i]
         else:
             # if not CNEO, directly use the scf.diis object provided
             f = diis.update(s1e, dm, f)
