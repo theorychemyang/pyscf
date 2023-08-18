@@ -39,7 +39,7 @@ class CDFT(KS):
             # the position matrix with its origin shifted to nuclear expectation position
             s1e = mf.get_ovlp(mf.mol)
             mf.int1e_r = mf.mol.intor_symmetric('int1e_r', comp=3) \
-                         - numpy.array([mf.nuclei_expect_position[i] * s1e for i in range(3)])
+                         - numpy.asarray([mf.nuclei_expect_position[i] * s1e for i in range(3)])
 
     def get_fock_add_cdft(self):
         f_add = []
@@ -68,7 +68,7 @@ class CDFT(KS):
             # the position matrix with its origin shifted to nuclear expectation position
             s1e = mf.get_ovlp(mf.mol)
             mf.int1e_r = mf.mol.intor_symmetric('int1e_r', comp=3) \
-                         - numpy.array([mf.nuclei_expect_position[i] * s1e for i in range(3)])
+                         - numpy.asarray([mf.nuclei_expect_position[i] * s1e for i in range(3)])
         return self
 
     def nuc_grad_method(self):

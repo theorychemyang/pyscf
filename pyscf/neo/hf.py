@@ -703,7 +703,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     if mf.max_cycle <= 0:
         fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf, no DIIS
         if mf.dm_elec.ndim > 2:
-            fock_e = numpy.array((fock[0], fock[1]))
+            fock_e = numpy.asarray((fock[0], fock[1]))
             start = 2
         else:
             fock_e = fock[0]
@@ -753,7 +753,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
 
         fock = mf.get_fock(h1e, s1e, vhf, dm, cycle, mf_diis)
         if mf.dm_elec.ndim > 2:
-            fock_e = numpy.array((fock[0], fock[1]))
+            fock_e = numpy.asarray((fock[0], fock[1]))
             start = 2
         else:
             fock_e = fock[0]
@@ -794,7 +794,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         # be modified in some methods.
         fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf, no DIIS
         if mf.dm_elec.ndim > 2:
-            fock_e = numpy.array((fock[0], fock[1]))
+            fock_e = numpy.asarray((fock[0], fock[1]))
             start = 2
         else:
             fock_e = fock[0]
@@ -869,7 +869,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
 
         fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf, no DIIS
         if mf.dm_elec.ndim > 2:
-            fock_e = numpy.array((fock[0], fock[1]))
+            fock_e = numpy.asarray((fock[0], fock[1]))
             start = 2
         else:
             fock_e = fock[0]
