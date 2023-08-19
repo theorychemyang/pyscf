@@ -2237,6 +2237,8 @@ class Mole(lib.StreamObject):
     # Whether to hold everything in memory
     incore_anyway = getattr(__config__, 'INCORE_ANYWAY', False)
 
+    direct_vee = getattr(__config__, 'DIRECT_VEE', False)
+
     # Using cartesian GTO (6d,10f,15g)
     cart = getattr(__config__, 'gto_mole_Mole_cart', False)
 
@@ -2296,7 +2298,7 @@ class Mole(lib.StreamObject):
         # Some methods modify ._env. These method are executed in the context
         # _TemporaryMoleContext which is protected by the _ctx_lock.
         self._ctx_lock = None
-        keys = set(('verbose', 'unit', 'cart', 'incore_anyway'))
+        keys = set(('verbose', 'unit', 'cart', 'incore_anyway', 'direct_vee'))
         self._keys = set(self.__dict__.keys()).union(keys)
         self.__dict__.update(kwargs)
 

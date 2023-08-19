@@ -71,9 +71,11 @@ def _is_mem_enough(nao1, nao2, max_memory):
     return nao1**2*nao2**2*2/1e6+lib.current_memory()[0] < max_memory*.95
 
 def _build_eri_ne(mol_elec, mol_nuc):
+    if mol_elec.super_mol.verbose >= logger.DEBUG:
+        cput0 = (logger.process_clock(), logger.perf_counter())
     eri_ne = None
-    if mol_elec.super_mol.incore_anyway or \
-        _is_mem_enough(mol_elec.nao_nr(), mol_nuc.nao_nr(), mol_elec.super_mol.max_memory):
+    if not mol_elec.super_mol.direct_vee and (mol_elec.super_mol.incore_anyway or
+        _is_mem_enough(mol_elec.nao_nr(), mol_nuc.nao_nr(), mol_elec.super_mol.max_memory)):
         atm, bas, env = gto.conc_env(mol_nuc._atm, mol_nuc._bas, mol_nuc._env,
                                      mol_elec._atm, mol_elec._bas, mol_elec._env)
         intor_name = 'int2e_sph'
@@ -87,13 +89,19 @@ def _build_eri_ne(mol_elec, mol_nuc):
                                               mol_nuc._bas.shape[0],
                                               mol_nuc._bas.shape[0] + mol_elec._bas.shape[0]),
                                   aosym='s4')
+    if mol_elec.super_mol.verbose >= logger.DEBUG and eri_ne is not None:
+        logger.timer(mol_elec.super_mol,
+                     f'Incore ERI between electron and {mol_nuc.index}-th nucleus', *cput0)
+        logger.debug(mol_elec.super_mol, f'Memory usage: {eri_ne.nbytes/1024**2:.3f} MB')
     return eri_ne
 
 def _build_eri_nn(mol_nuc1, mol_nuc2):
     '''idx mole_nuc2 > mole_nuc1'''
+    if mol_nuc1.super_mol.verbose >= logger.DEBUG:
+        cput0 = (logger.process_clock(), logger.perf_counter())
     eri_nn = None
-    if mol_nuc1.super_mol.incore_anyway or \
-        _is_mem_enough(mol_nuc1.nao_nr(), mol_nuc2.nao_nr(), mol_nuc1.super_mol.max_memory):
+    if not mol_nuc1.super_mol.direct_vee and (mol_nuc1.super_mol.incore_anyway or
+        _is_mem_enough(mol_nuc1.nao_nr(), mol_nuc2.nao_nr(), mol_nuc1.super_mol.max_memory)):
         atm, bas, env = gto.conc_env(mol_nuc1._atm, mol_nuc1._bas, mol_nuc1._env,
                                      mol_nuc2._atm, mol_nuc2._bas, mol_nuc2._env)
         intor_name = 'int2e_sph'
@@ -107,6 +115,11 @@ def _build_eri_nn(mol_nuc1, mol_nuc2):
                                               mol_nuc1._bas.shape[0],
                                               mol_nuc1._bas.shape[0] + mol_nuc2._bas.shape[0]),
                                   aosym='s4')
+    if mol_nuc1.super_mol.verbose >= logger.DEBUG and eri_nn is not None:
+        logger.timer(mol_nuc1.super_mol,
+                     f'Incore ERI between {mol_nuc1.index}-th nucleus '
+                     + f'and {mol_nuc2.index}-th nucleus', *cput0)
+        logger.debug(mol_nuc1.super_mol, f'Memory usage: {eri_nn.nbytes/1024**2:.3f} MB')
     return eri_nn
 
 def get_j_e_dm_n(idx_nuc, dm_n, mol_elec=None, mol_nuc=None, eri_ne=None):
@@ -119,7 +132,10 @@ def get_j_e_dm_n(idx_nuc, dm_n, mol_elec=None, mol_nuc=None, eri_ne=None):
         if eri_ne[idx_nuc] is not None:
             return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_n, nao_v=mol_elec.nao_nr(),
                                         eri_dot_dm=False)
-    warnings.warn("Direct Vee is used, might be slow. Check PYSCF_MAX_MEMORY?")
+    if not mol_elec.super_mol.direct_vee:
+        warnings.warn('Direct Vee is used for e-n ERIs, might be slow. '
+                      +f'PYSCF_MAX_MEMORY is set to {mol_elec.super_mol.max_memory} MB, '
+                      +f'required memory: {mol_elec.nao_nr()**2*mol_nuc.nao_nr()**2*2/1e6=:.2f} MB')
     return -charge * scf.jk.get_jk((mol_elec, mol_elec, mol_nuc, mol_nuc),
                                    dm_n, scripts='ijkl,lk->ij',
                                    intor='int2e', aosym='s4')
@@ -134,7 +150,10 @@ def get_j_n_dm_e(idx_nuc, dm_e, mol_elec=None, mol_nuc=None, eri_ne=None):
         if eri_ne[idx_nuc] is not None:
             return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_e, nao_v=mol_nuc.nao_nr(),
                                         eri_dot_dm=True)
-    warnings.warn("Direct Vee is used, might be slow. Check PYSCF_MAX_MEMORY?")
+    if not mol_elec.super_mol.direct_vee:
+        warnings.warn('Direct Vee is used for e-n ERIs, might be slow. '
+                      +f'PYSCF_MAX_MEMORY is set to {mol_elec.super_mol.max_memory} MB, '
+                      +f'required memory: {mol_elec.nao_nr()**2*mol_nuc.nao_nr()**2*2/1e6=:.2f} MB')
     return -charge * scf.jk.get_jk((mol_nuc, mol_nuc, mol_elec, mol_elec),
                                    dm_e, scripts='ijkl,lk->ij',
                                    intor='int2e', aosym='s4')
@@ -161,7 +180,10 @@ def get_j_nn(idx1, idx2, dm_n2, mol_nuc1=None, mol_nuc2=None, eri_nn=None):
                                            eri_dot_dm=False)
         elif idx1 == idx2:
             return 0.0
-    warnings.warn("Direct Vee is used, might be slow. Check PYSCF_MAX_MEMORY?")
+    if not mol_nuc1.super_mol.direct_vee:
+        warnings.warn('Direct Vee is used for n-n ERIs, might be slow. '
+                      +f'PYSCF_MAX_MEMORY is set to {mol_nuc1.super_mol.max_memory} MB, '
+                      +f'required memory: {mol_nuc1.nao_nr()**2*mol_nuc2.nao_nr()**2*2/1e6=:.2f} MB')
     return charge * scf.jk.get_jk((mol_nuc1, mol_nuc1, mol_nuc2, mol_nuc2),
                                   dm_n2, scripts='ijkl,lk->ij',
                                   intor='int2e', aosym='s4')
@@ -215,16 +237,7 @@ def get_hcore_nuc(mol, mf_nuc, dm_elec, dm_nuc, mol_elec=None,
         if super_mol.mm_mol is not None:
             mf_nuc.hcore_static += hcore_nuc_qmmm(super_mol.mm_mol, mol, charge)
     h = 0
-    # find the index of mol
-    # TODO: store this information
-    i = 0
-    found = False
-    for i in range(len(mol_nuc)):
-        if ia == mol_nuc[i].atom_index:
-            found = True
-            break
-    if not found:
-        raise RuntimeError('Failed to find the index of the quantum nucleus')
+    i = mol.index
     # Coulomb interaction between the quantum nucleus and electrons
     ne_U = 0.0
     if dm_elec.ndim > 2:

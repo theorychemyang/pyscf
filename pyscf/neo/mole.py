@@ -40,7 +40,7 @@ def copy(mol):
 
     return newmol
 
-def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
+def build_nuc_mole(mol, index, atom_index, nuc_basis, frac=None):
     '''
     Return a Mole object for specified quantum nuclei.
 
@@ -54,6 +54,7 @@ def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
     nuc = gto.Mole() # a Mole object for quantum nuclei
     nuc.super_mol = mol
     nuc.atom_index = atom_index
+    nuc.index = index
 
     # e.g., PB4-D, PB4D and PB4_D will all be converted to pb4d
     nuc_basis = nuc_basis.replace('-', '').replace('_', '').lower()
@@ -158,7 +159,7 @@ def build_nuc_mole(mol, atom_index, nuc_basis, frac=None):
     else:
         nuc.nnuc = 1
 
-    nuc._keys.update(['super_mol', 'atom_index', 'nnuc'])
+    nuc._keys.update(['super_mol', 'index', 'atom_index', 'nnuc'])
 
     return nuc
 
@@ -309,7 +310,7 @@ class Mole(gto.mole.Mole):
             self.nuc = []
             for i in range(self.natm):
                 if self.quantum_nuc[i]:
-                    self.nuc.append(build_nuc_mole(self, i,
+                    self.nuc.append(build_nuc_mole(self, idx, i,
                                                    nuc_basis=self.nuc_basis,
                                                    frac=q_nuc_occ[idx]))
                     idx += 1
