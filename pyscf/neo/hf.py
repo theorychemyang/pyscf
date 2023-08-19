@@ -985,7 +985,8 @@ class HF(scf.hf.SCF):
     -99.98104139461894
     '''
 
-    def __init__(self, mol, unrestricted=False):
+    def __init__(self, mol, unrestricted=False, df_ee=False,
+                 auxbasis_e=None, only_dfj_e=False):
         scf.hf.SCF.__init__(self, mol)
         if mol.elec.nhomo is not None or mol.spin != 0:
             unrestricted = True
@@ -1015,6 +1016,9 @@ class HF(scf.hf.SCF):
             self.mf_elec = scf.UHF(mol.elec)
         else:
             self.mf_elec = scf.RHF(mol.elec)
+        if df_ee:
+            self.mf_elec = self.mf_elec.density_fit(auxbasis=auxbasis_e,
+                                                    only_dfj=only_dfj_e)
         if self.mol.mm_mol is not None:
             self.mf_elec = qmmm_for_scf(self.mf_elec, self.mol.mm_mol)
         self.mf_elec.get_hcore = self.get_hcore_elec

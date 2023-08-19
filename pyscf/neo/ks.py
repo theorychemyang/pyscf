@@ -152,6 +152,21 @@ class KS(HF):
             self.mf_elec = dft.UKS(mol.elec)
         else:
             self.mf_elec = dft.RKS(mol.elec)
+        if 'df_ee' in kwargs:
+            df_ee = kwargs['df_ee']
+        else:
+            df_ee = False
+        if 'auxbasis_e' in kwargs:
+            auxbasis_e = kwargs['auxbasis_e']
+        else:
+            auxbasis_e = None
+        if 'only_dfj_e' in kwargs:
+            only_dfj_e = kwargs['only_dfj_e']
+        else:
+            only_dfj_e = False
+        if df_ee:
+            self.mf_elec = self.mf_elec.density_fit(auxbasis=auxbasis_e,
+                                                    only_dfj=only_dfj_e)
         if self.mol.mm_mol is not None:
             self.mf_elec = qmmm_for_scf(self.mf_elec, self.mol.mm_mol)
         # need to repeat these lines because self.mf_elec got overwritten
