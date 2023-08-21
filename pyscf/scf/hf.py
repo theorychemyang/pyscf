@@ -2069,7 +2069,7 @@ class RHF(SCF):
                     logger.debug(mol, f'Memory usage: {self._eri.nbytes/1024**2:.3f} MB')
             vj, vk = dot_eri_dm(self._eri, dm, hermi, with_j, with_k)
         else:
-            if not mol.direct_vee:
+            if not mol.direct_vee and not omega:
                 warnings.warn('Direct Vee is used for e-e ERIs, might be slow. '
                               +f'PYSCF_MAX_MEMORY is set to {mol.max_memory} MB, '
                               +f'required memory: {mol.nao_nr()**4/1e6=:.2f} MB')
