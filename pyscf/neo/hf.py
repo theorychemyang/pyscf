@@ -652,6 +652,7 @@ def init_guess_nuc_by_calculation(mf_nuc, mol):
                       ecp=mol.ecp, charge=mol.charge, spin=mol.spin,
                       symmetry=mol.symmetry, symmetry_subgroup=mol.symmetry_subgroup,
                       cart=mol.cart, magmom=mol.magmom)
+        mol_tmp.nuc[0].index = mol.nuc[i].index
         dm_nuc[i] = get_init_guess_nuc(mf_nuc[i], mol_tmp.nuc[0])
         mf_nuc[i].hcore_static = None # clear the true hcore cache
     return dm_nuc
