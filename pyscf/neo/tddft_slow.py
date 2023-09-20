@@ -1,11 +1,11 @@
 from pyscf.tdscf import rhf, uhf
-from pyscf import scf
 from pyscf import ao2mo
 from pyscf import lib
 from pyscf.neo.tddft import get_epc_iajb_rhf, get_epc_iajb_uhf
 from pyscf.tdscf.common_slow import eig
 from pyscf.data import nist
 from pyscf.lib import logger
+from pyscf import neo
 import numpy
 
 def aabb2a(a):
@@ -131,7 +131,7 @@ def get_abc_no_epc(mf):
 def get_epc_iajb(mf):
     if mf.unrestricted:
         iajb_aa, iajb_bb, iajb_ab, iajb_pe_a, iajb_pe_b, iajb_p = get_epc_iajb_uhf(mf, reshape=True)
-        iajb_e = [iajb_aa, iajb_bb, iajb_ab]
+        iajb_e = [iajb_aa, iajb_ab, iajb_bb]
         iajb_ne = []
         for i in range(mf.mol.nuc_num):
             iajb_ne.append([iajb_pe_a[i], iajb_pe_b[i]])
@@ -140,36 +140,30 @@ def get_epc_iajb(mf):
     
     return iajb_e, iajb_ne, iajb_p
     
-def add_epc(a, b, iajb):
+def add_epc(a, iajb):
+    '''
+    to accommodate both restrcted and unrestricted
+    '''
     if isinstance(a, list):
         for i in range(len(a)):
             a[i] += iajb[i]
-            b[i] += iajb[i]
 
     else:
         a += iajb
-        b += iajb
 
-    return a, b
-
-def add_epc_ne(c_ne, iajb_ne):
-    if isinstance(c_ne, list):
-        c_ne[0] += iajb_ne[0]
-        c_ne[1] += iajb_ne[1]
-
-    else:
-        c_ne += iajb_ne
-
-    return c_ne
+    return a
     
 def get_abc(mf):
     a_e, b_e, a_ns, b_ns, c_nes, c_nns = get_abc_no_epc(mf)
-    if mf.epc is not None:
-        iajb_e, iajb_ne, iajb_n = get_epc_iajb(mf)
-        a_e, b_e = add_epc(a_e, b_e, iajb_e)
-        for i in range(mf.mol.nuc_num):
-            a_ns[i], b_ns[i] = add_epc(a_ns[i], b_ns[i], iajb_n[i])
-            c_nes[i] = add_epc_ne(c_nes[i], iajb_ne[i])
+    if isinstance(mf, neo.KS):
+        if mf.epc is not None:
+            iajb_e, iajb_ne, iajb_n = get_epc_iajb(mf)
+            a_e = add_epc(a_e, iajb_e)
+            b_e = add_epc(b_e, iajb_e)
+            for i in range(mf.mol.nuc_num):
+                a_ns[i] += iajb_n[i]
+                b_ns[i] += iajb_n[i]
+                c_nes[i] = add_epc(c_nes[i], iajb_ne[i])
 
     return a_e, b_e, a_ns, b_ns, c_nes, c_nns
 
@@ -233,8 +227,20 @@ def get_td_mat(mf):
     return numpy.block([[elec, elec_nuc],[nuc_elec, nuc]])
 
 class TDBase(lib.StreamObject):
-    '''
-    Full diagonalization of the TDDFT matrix
+    '''Full td matrix diagonlization
+
+    Examples::
+
+    >>> from pyscf import neo
+    >>> from pyscf.neo import tddft_slow
+    >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g', 
+                    quantum_nuc = ['H'], nuc_basis = 'pb4p', cart=True)
+    >>> mf = neo.HF(mol)
+    >>> mf.scf()
+    >>> td_mf = tddft_slow.TDBase(mf)
+    >>> td_mf.kernel(nstates=5)
+    Excited State energies (eV)
+    [0.69058969 0.69058969 0.78053615 1.33065414 1.97414121]
     '''
 
     def __init__(self, mf, nstates=3, driver='eig'):
