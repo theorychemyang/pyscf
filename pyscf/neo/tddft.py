@@ -93,9 +93,6 @@ def init_guess(mf, nstates):
         x1 = numpy.hstack((x1, x0_p, y0_p))
 
     return numpy.asarray(numpy.vstack((x0,x1)))
-
-# def elec_dm_e_response(mf_elec, singlet = True):
-#     return mf_elec.gen_response(singlet=singlet, hermi=0)
     
 def nuc_dm_n_response_epc(mf_nuc):
     '''
@@ -175,7 +172,6 @@ def get_epc_iajb_rhf(mf, reshape=False):
     orbv_p = []
     orbo_p = []
     iajb_pe = []
-    # iajb_ep = []
     iajb_pp = []
     iajb_p = []
 
@@ -192,7 +188,6 @@ def get_epc_iajb_rhf(mf, reshape=False):
         orbo_p.append(mo_coeff_p[:,occidx_p])
         iajb_pp.append([None]*nuc_num)
         iajb_pe.append(numpy.zeros((nocc_p[i], nvir_p[i], nocc_e, nvir_e)))
-        # iajb_ep.append(numpy.zeros((nocc_e, nvir_e, nocc_p[i], nvir_p[i])))
         iajb_p.append(numpy.zeros((nocc_p[i], nvir_p[i], nocc_p[i], nvir_p[i])))
 
     for i in range(nuc_num):
@@ -234,8 +229,6 @@ def get_epc_iajb_rhf(mf, reshape=False):
             for j in range(i+1, nuc_num):
                 iajb_pp[i][j] += lib.einsum('ria,rjb->iajb', rho_ov_ps[i], w_ov_ps[j])
     
-    # for i in range(nuc_num):
-    #     iajb_ep[i] = iajb_pe[i].transpose(2,3,0,1)
 
     if reshape:
         for i in range(nuc_num):
@@ -444,18 +437,6 @@ def get_tdrhf_operation(mf, singlet=True):
         iajb_ep = []
         for i in range(nuc_num):
             iajb_ep.append(iajb_pe[i].transpose(2,3,0,1))
-
-    def add_epc(xs_e, ys_e, xs_ps, ys_ps):
-        xys_e = xs_e + ys_e
-        abcc_epc = numpy.einsum('iajb,njb->nia',iajb_e,xys_e)
-        ccab_epc = []
-        for i in range(nuc_num):
-            xys_p = xs_ps[i] + ys_ps[i]
-            ccab_epc.append(numpy.einsum('iajb,njb->nia',iajb_p[i],xys_p))
-            ccab_epc[i] += numpy.sqrt(2)*numpy.einsum('iajb,njb->nia',iajb_pe[i],xys_e)
-            abcc_epc += numpy.sqrt(2)*numpy.einsum('iajb,njb->nia',iajb_ep[i],xys_p)
-
-        return abcc_epc,ccab_epc
 
     def vind_elec_elec(xs_e, ys_e, dms_elec):
     
@@ -798,8 +779,6 @@ class TDDFT(lib.StreamObject):
 
         self.wfnsym = None
 
-        # xy = (X,Y), normalized to 1/2: 2(XX-YY) = 1
-        # In TDA, Y = 0
         self.converged = None
         self.e = None
         self.x1 = None
@@ -831,10 +810,8 @@ class TDDFT(lib.StreamObject):
         if mf is None:
             mf = self._scf
         if self.unrestricted:
-            # self.singlet = None
             return get_tduhf_operation(mf)
         else:
-            # singlet = mf.mf_elec.singlet
             return get_tdrhf_operation(mf, singlet=self.singlet)
         
     def init_guess(self, mf, nstates=None):

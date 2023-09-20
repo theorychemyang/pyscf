@@ -140,7 +140,7 @@ def get_epc_iajb(mf):
     
     return iajb_e, iajb_ne, iajb_p
     
-def add_epc(a, b, iajb, unrestricted=False):
+def add_epc(a, b, iajb):
     if isinstance(a, list):
         for i in range(len(a)):
             a[i] += iajb[i]
@@ -152,7 +152,7 @@ def add_epc(a, b, iajb, unrestricted=False):
 
     return a, b
 
-def add_epc_ne(c_ne, iajb_ne, unrestricted = False):
+def add_epc_ne(c_ne, iajb_ne):
     if isinstance(c_ne, list):
         c_ne[0] += iajb_ne[0]
         c_ne[1] += iajb_ne[1]
@@ -282,6 +282,5 @@ class TDBase(lib.StreamObject):
         self.x1 = x1
 
         log.timer('TDDFT full diagonalization', *cpu0)
-        # self._finalize()
         logger.note(self, 'Excited State energies (eV)\n%s', self.e * nist.HARTREE2EV)
         return self.e, self.x1
