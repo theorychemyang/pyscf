@@ -7,6 +7,7 @@ from pyscf import scf
 from pyscf import __config__
 from pyscf.lib import logger
 from pyscf.data import nist
+from pyscf import neo
 
 REAL_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_pick_eig_threshold', 1e-4)
 
@@ -94,7 +95,7 @@ def init_guess(mf, nstates):
 
     return numpy.asarray(numpy.vstack((x0,x1)))
     
-def nuc_dm_n_response_epc(mf_nuc):
+def nuc_dm_n_response(mf_nuc):
     '''
     Self interaction for one nucleus
     '''
@@ -423,7 +424,7 @@ def get_tdrhf_operation(mf, singlet=True):
         vresp_e_dm_n.append(elec_dm_n_response(mf,i))
         vresp_n_dm_e.append(nuc_dm_e_response(mf,i))
         vresp_n_n.append([None]*nuc_num)
-        vresp_n_dm_n.append(nuc_dm_n_response_epc(mf_nuc))
+        vresp_n_dm_n.append(nuc_dm_n_response(mf_nuc))
         for j in range(nuc_num):
             vresp_n_n[i][j] = dm_n_dm_n_response(mf,i,j)
         hdiag_p = fvv_p[-1].diagonal() - foo_p[-1].diagonal()[:,None]
@@ -431,12 +432,12 @@ def get_tdrhf_operation(mf, singlet=True):
     
     vresp_e = mf_elec.gen_response(singlet=singlet, hermi=0)
 
-    epc = mf.epc
-    if epc is not None:
-        iajb_e, iajb_pe, iajb_p = get_epc_iajb_rhf(mf,reshape=False)
-        iajb_ep = []
-        for i in range(nuc_num):
-            iajb_ep.append(iajb_pe[i].transpose(2,3,0,1))
+    if isinstance(mf, neo.KS):
+        if mf.epc is not None:
+            iajb_e, iajb_pe, iajb_p = get_epc_iajb_rhf(mf,reshape=False)
+            iajb_ep = []
+            for i in range(nuc_num):
+                iajb_ep.append(iajb_pe[i].transpose(2,3,0,1))
 
     def vind_elec_elec(xs_e, ys_e, dms_elec):
     
@@ -510,10 +511,11 @@ def get_tdrhf_operation(mf, singlet=True):
             ys_ps.append(ys_pi)
 
         abcc, bacc = vind_elec_elec(xs_e, ys_e, dms_elec)    # AeXe+BeYe; BeXe+AeYe
-        if epc is not None:
-            abcc_epc,ccab_epc = get_tdrhf_add_epc(xs_e, ys_e, xs_ps, ys_ps, iajb_e, iajb_p, iajb_ep, iajb_pe)
-            abcc += abcc_epc
-            bacc += abcc_epc
+        if isinstance(mf, neo.KS):
+            if mf.epc is not None:
+                abcc_epc,ccab_epc = get_tdrhf_add_epc(xs_e, ys_e, xs_ps, ys_ps, iajb_e, iajb_p, iajb_ep, iajb_pe)
+                abcc += abcc_epc
+                bacc += abcc_epc
             
         for i in range(nuc_num):
             v1ov_nuci, v1vo_nuci = vind_nuc(xs_ps[i], ys_ps[i], i, dms_nuc[i])
@@ -524,9 +526,10 @@ def get_tdrhf_operation(mf, singlet=True):
             v1ov_pe = vind_nuc_elec(i,dms_elec)
             ccabi = v1ov_pe + v1ov_nuci
             ccbai = v1ov_pe + v1vo_nuci
-            if epc is not None:
-                ccabi += ccab_epc[i]
-                ccbai += ccab_epc[i]
+            if isinstance(mf, neo.KS):
+                if mf.epc is not None:
+                    ccabi += ccab_epc[i]
+                    ccbai += ccab_epc[i]
             for j in range(nuc_num):
                 if j!=i:
                     v1ov_pp = vind_nuc1_nuc2(i,j,dms_nuc[j])
@@ -603,16 +606,15 @@ def get_tduhf_operation(mf):
         hdiag_p = fvv_p[-1].diagonal() - foo_p[-1].diagonal()[:,None]
         hdiag = numpy.hstack((hdiag, hdiag_p.ravel(), -hdiag_p.ravel()))
 
-    epc = mf.epc
-
-    if epc is not None:
-        iajb_aa, iajb_bb, iajb_ab, iajb_pe_a, iajb_pe_b, iajb_p = get_epc_iajb_uhf(mf, reshape=False)
-        iajb_ba = iajb_ab.transpose(2,3,0,1)
-        iajb_ep_a = []
-        iajb_ep_b = []
-        for i in range(len(iajb_pe_a)):
-            iajb_ep_a.append(iajb_pe_a[i].transpose(2,3,0,1))
-            iajb_ep_b.append(iajb_pe_b[i].transpose(2,3,0,1))
+    if isinstance(mf, neo.KS):
+        if mf.epc is not None:
+            iajb_aa, iajb_bb, iajb_ab, iajb_pe_a, iajb_pe_b, iajb_p = get_epc_iajb_uhf(mf, reshape=False)
+            iajb_ba = iajb_ab.transpose(2,3,0,1)
+            iajb_ep_a = []
+            iajb_ep_b = []
+            for i in range(len(iajb_pe_a)):
+                iajb_ep_a.append(iajb_pe_a[i].transpose(2,3,0,1))
+                iajb_ep_b.append(iajb_pe_b[i].transpose(2,3,0,1))
 
     def vind_elec_elec(dmsa, dmsb):
 
@@ -695,14 +697,15 @@ def get_tduhf_operation(mf):
             xs_ps.append(xs_pi)
             ys_ps.append(ys_pi)
 
-        if epc is not None:
-            abcc_epc_a, abcc_epc_b, ccab_epc = get_tduhf_add_epc(xa, xb, ya, yb, xs_ps, ys_ps,
-                                                                 iajb_aa, iajb_bb, iajb_ab, iajb_ba,
-                                                                 iajb_ep_a, iajb_pe_a, iajb_ep_b, iajb_pe_b, iajb_p)
-            v1aov += abcc_epc_a
-            v1avo += abcc_epc_a
-            v1bov += abcc_epc_b
-            v1bvo += abcc_epc_b
+        if isinstance(mf, neo.KS):
+            if mf.epc is not None:
+                abcc_epc_a, abcc_epc_b, ccab_epc = get_tduhf_add_epc(xa, xb, ya, yb, xs_ps, ys_ps,
+                                                                    iajb_aa, iajb_bb, iajb_ab, iajb_ba,
+                                                                    iajb_ep_a, iajb_pe_a, iajb_ep_b, iajb_pe_b, iajb_p)
+                v1aov += abcc_epc_a
+                v1avo += abcc_epc_a
+                v1bov += abcc_epc_b
+                v1bvo += abcc_epc_b
 
         for i in range(nuc_num):
             v1aov_ep, v1bov_ep = vind_elec_nuc(i, dms_nuc[i])
@@ -714,9 +717,10 @@ def get_tduhf_operation(mf):
             v1ov_pe = vind_nuc_elec(i,dms_elec)
             ccabi = v1ov_pe + v1ov_nuc[i]
             ccbai = v1ov_pe + v1vo_nuc[i]
-            if epc is not None:
-                ccabi += ccab_epc[i]
-                ccbai += ccab_epc[i]
+            if isinstance(mf, neo.KS):
+                if mf.epc is not None:
+                    ccabi += ccab_epc[i]
+                    ccbai += ccab_epc[i]
             for j in range(nuc_num):
                 if j!=i:
                     v1ov_pp = vind_nuc1_nuc2(i,j,dms_nuc[j])

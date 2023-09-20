@@ -6,6 +6,7 @@ from pyscf.neo.tddft import get_epc_iajb_rhf, get_epc_iajb_uhf
 from pyscf.tdscf.common_slow import eig
 from pyscf.data import nist
 from pyscf.lib import logger
+from pyscf import neo
 import numpy
 
 def aabb2a(a):
@@ -164,12 +165,13 @@ def add_epc_ne(c_ne, iajb_ne):
     
 def get_abc(mf):
     a_e, b_e, a_ns, b_ns, c_nes, c_nns = get_abc_no_epc(mf)
-    if mf.epc is not None:
-        iajb_e, iajb_ne, iajb_n = get_epc_iajb(mf)
-        a_e, b_e = add_epc(a_e, b_e, iajb_e)
-        for i in range(mf.mol.nuc_num):
-            a_ns[i], b_ns[i] = add_epc(a_ns[i], b_ns[i], iajb_n[i])
-            c_nes[i] = add_epc_ne(c_nes[i], iajb_ne[i])
+    if isinstance(mf, neo.KS):
+        if mf.epc is not None:
+            iajb_e, iajb_ne, iajb_n = get_epc_iajb(mf)
+            a_e, b_e = add_epc(a_e, b_e, iajb_e)
+            for i in range(mf.mol.nuc_num):
+                a_ns[i], b_ns[i] = add_epc(a_ns[i], b_ns[i], iajb_n[i])
+                c_nes[i] = add_epc_ne(c_nes[i], iajb_ne[i])
 
     return a_e, b_e, a_ns, b_ns, c_nes, c_nns
 
