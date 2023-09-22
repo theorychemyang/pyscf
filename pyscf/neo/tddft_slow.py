@@ -1,5 +1,4 @@
 from pyscf.tdscf import rhf, uhf
-from pyscf import scf
 from pyscf import ao2mo
 from pyscf import lib
 from pyscf.neo.tddft import get_epc_iajb_rhf, get_epc_iajb_uhf
@@ -132,7 +131,7 @@ def get_abc_no_epc(mf):
 def get_epc_iajb(mf):
     if mf.unrestricted:
         iajb_aa, iajb_bb, iajb_ab, iajb_pe_a, iajb_pe_b, iajb_p = get_epc_iajb_uhf(mf, reshape=True)
-        iajb_e = [iajb_aa, iajb_bb, iajb_ab]
+        iajb_e = [iajb_aa, iajb_ab, iajb_bb]
         iajb_ne = []
         for i in range(mf.mol.nuc_num):
             iajb_ne.append([iajb_pe_a[i], iajb_pe_b[i]])
@@ -235,8 +234,20 @@ def get_td_mat(mf):
     return numpy.block([[elec, elec_nuc],[nuc_elec, nuc]])
 
 class TDBase(lib.StreamObject):
-    '''
-    Full diagonalization of the TDDFT matrix
+    '''Full td matrix diagonlization
+
+    Examples::
+
+    >>> from pyscf import neo
+    >>> from pyscf.neo import tddft_slow
+    >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g', 
+                    quantum_nuc = ['H'], nuc_basis = 'pb4p', cart=True)
+    >>> mf = neo.HF(mol)
+    >>> mf.scf()
+    >>> td_mf = tddft_slow.TDBase(mf)
+    >>> td_mf.kernel(nstates=5)
+    Excited State energies (eV)
+    [0.69058969 0.69058969 0.78053615 1.33065414 1.97414121]
     '''
 
     def __init__(self, mf, nstates=3, driver='eig'):
