@@ -140,37 +140,30 @@ def get_epc_iajb(mf):
     
     return iajb_e, iajb_ne, iajb_p
     
-def add_epc(a, b, iajb):
+def add_epc(a, iajb):
+    '''
+    to accommodate both restrcted and unrestricted
+    '''
     if isinstance(a, list):
         for i in range(len(a)):
             a[i] += iajb[i]
-            b[i] += iajb[i]
 
     else:
         a += iajb
-        b += iajb
 
-    return a, b
-
-def add_epc_ne(c_ne, iajb_ne):
-    if isinstance(c_ne, list):
-        c_ne[0] += iajb_ne[0]
-        c_ne[1] += iajb_ne[1]
-
-    else:
-        c_ne += iajb_ne
-
-    return c_ne
+    return a
     
 def get_abc(mf):
     a_e, b_e, a_ns, b_ns, c_nes, c_nns = get_abc_no_epc(mf)
     if isinstance(mf, neo.KS):
         if mf.epc is not None:
             iajb_e, iajb_ne, iajb_n = get_epc_iajb(mf)
-            a_e, b_e = add_epc(a_e, b_e, iajb_e)
+            a_e = add_epc(a_e, iajb_e)
+            b_e = add_epc(b_e, iajb_e)
             for i in range(mf.mol.nuc_num):
-                a_ns[i], b_ns[i] = add_epc(a_ns[i], b_ns[i], iajb_n[i])
-                c_nes[i] = add_epc_ne(c_nes[i], iajb_ne[i])
+                a_ns[i] += iajb_n[i]
+                b_ns[i] += iajb_n[i]
+                c_nes[i] = add_epc(c_nes[i], iajb_ne[i])
 
     return a_e, b_e, a_ns, b_ns, c_nes, c_nns
 
