@@ -67,9 +67,9 @@ def grad_epc(mf_grad):
     atmlst = range(mol.natm)
     aoslices = mol.aoslice_by_atom()
     de = numpy.zeros((len(atmlst),3))
+    vepc_elec = get_vepc_elec(mf_grad)
     for j in atmlst:
         p0, p1 = aoslices[j,2:]
-        vepc_elec = get_vepc_elec(mf_grad)
         de[j] += numpy.einsum('xij,ij->x', vepc_elec[:,p0:p1], mf.dm_elec[p0:p1]) * 2
 
     for i in range(mol.nuc_num):
