@@ -32,6 +32,9 @@ def copy(mol):
     # inner mole's
     newmol.elec = mol.elec.copy()
     newmol.elec.super_mol = newmol
+    if mol.positron is not None:
+        newmol.positron = mol.positron.copy()
+        newmol.positron.super_mol = newmol
 
     newmol.nuc = [None] * mol.nuc_num
     for i in range(mol.nuc_num):
@@ -204,11 +207,15 @@ class Mole(gto.mole.Mole):
         self.nuc = None # a list of Mole objects for quantum nuclei
         self.nuc_basis = None # name of nuclear basis
         self.mm_mol = None # QMMM support
+        self.positron = None
+        self.positron_charge = None
+        self.positron_spin = None
         self._keys.update(['quantum_nuc', 'nuc_num', 'mass', 'elec',
-                           'nuc', 'nuc_basis', 'mm_mol'])
+                           'nuc', 'nuc_basis', 'mm_mol',
+                           'positron', 'positron_charge', 'positron_spin'])
 
     def build(self, quantum_nuc=None, nuc_basis=None, q_nuc_occ=None,
-              mm_mol=None, **kwargs):
+              mm_mol=None, positron_charge=None, positron_spin=None, **kwargs):
         '''assign which nuclei are treated quantum mechanically by quantum_nuc (list)'''
         super().build(**kwargs)
 
@@ -223,6 +230,21 @@ class Mole(gto.mole.Mole):
         # QMMM mm mole from pyscf.qmmm.mm_mole.create_mm_mol
         if mm_mol is not None:
             self.mm_mol = mm_mol
+
+        # NOTE: positron_charge should be understood as, with nuclei and
+        # the same amount of electrons as positrons, how much charge the
+        # molecule has.
+        # For example, for proton, 2e-, 1e+, you will need to build
+        # a mole with one H atom, set charge=-1, spin=0 to get H- (proton and 2e-),
+        # and set positron_charge=0 because proton and 1e- has 0 charge
+        # (also positron_spin=1 becaue of unpaired positron).
+        if positron_charge is not None:
+            self.positron_charge = int(numpy.floor(positron_charge+1e-10))
+            self.positron_spin = 0
+        if positron_spin is not None:
+            self.positron_spin = int(numpy.floor(positron_spin+1e-10))
+            if self.positron_charge is None:
+                self.positron_charge = 0
 
         if nuc_basis is not None: self.nuc_basis = nuc_basis
 
@@ -302,6 +324,32 @@ class Mole(gto.mole.Mole):
             self.elec.super_mol = self # proper super_mol linking
             self.elec._keys.update(['super_mol', 'nhomo'])
 
+        # build the Mole object for positrons and classical nuclei
+        # by default uses the same basis as electronic basis
+        if self.positron is None and self.positron_charge is not None:
+            self.positron = gto.Mole()
+            kwargs['charge'] = self.positron_charge
+            kwargs['spin'] = self.positron_spin
+            self.positron.build(**kwargs)
+
+            if q_nuc_occ is not None:
+                raise NotImplementedError
+            # set all quantum nuclei to have zero charges
+            quantum_nuclear_charge = 0
+            for i in range(self.natm):
+                if self.quantum_nuc[i]:
+                    quantum_nuclear_charge -= self.positron._atm[i, gto.CHARGE_OF]
+                    if q_nuc_occ is not None:
+                        unocc_Z += unocc[idx] * self.positron._atm[i, gto.CHARGE_OF]
+                        idx += 1
+                    # set nuclear charges of quantum nuclei to 0
+                    self.positron._atm[i, gto.CHARGE_OF] = 0
+            # charge determines the number of electrons/positrons
+            self.positron.charge += quantum_nuclear_charge
+            self.positron.nhomo = None
+            self.positron.super_mol = self # proper super_mol linking
+            self.positron._keys.update(['super_mol', 'nhomo'])
+
         # build a list of Mole objects for quantum nuclei
         if self.nuc is None:
             if q_nuc_occ is None:
@@ -327,6 +375,8 @@ class Mole(gto.mole.Mole):
                   inplace=True):
         '''Update geometry
         '''
+        if self.positron is not None:
+            raise NotImplementedError
         import copy
         if inplace:
             mol = self
