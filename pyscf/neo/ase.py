@@ -74,7 +74,7 @@ class Pyscf_NEO(Calculator):
                 atom_pyscf.append(['H*', tuple(positions[i])])
             elif atoms[i] == 'D':
                 atom_pyscf.append(['H+%i' %i, tuple(positions[i])])
-            elif atoms[i] == 'H' and abs(ase_masses[i]-2.014) < 0.01:
+            elif atoms[i] == 'H' and abs(ase_masses[i]-2.014) < 0.02:
                 # this is for person who does not want to modify ase
                 # by changing the mass array, pyscf still accepts H as D
                 atom_pyscf.append(['H+%i' %i, tuple(positions[i])])
@@ -89,7 +89,7 @@ class Pyscf_NEO(Calculator):
         if self.parameters.spin == 0:
             mf = neo.CDFT(mol, epc=self.parameters.epc)
         else:
-            mf = neo.CDFT(mol, unrestricted = True)
+            mf = neo.CDFT(mol, unrestricted=True, epc=self.parameters.epc)
         mf.mf_elec.xc = self.parameters.xc
         if self.parameters.atom_grid is not None:
             mf.mf_elec.grids.atom_grid = self.parameters.atom_grid
