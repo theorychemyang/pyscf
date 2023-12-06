@@ -10,6 +10,7 @@ from pyscf import gto, dft, tddft
 from pyscf.scf.hf import dip_moment
 from pyscf.lib import logger
 from pyscf.tdscf.rhf import oscillator_strength
+import copy
 
 try:
     from pyscf import dftd3
@@ -37,6 +38,17 @@ def stable_opt_internal(mf):
     return mf
 
 class Pyscf_NEO(Calculator):
+    """
+    init_guess:
+
+    None: The default option. use the default initial guess
+    'last_step': use both electronic and nuclear density 
+                 matrices from the last step as the initial guess
+    'elec_only': use only electronic density matrix 
+                 from the last step as the initial guess
+    {'e': rdm1, 'n': dm_nuc} : a dict, always use rdm1 and dm_nuc 
+                               as electronic and nuclear density matrix, respectively 
+    """
 
     implemented_properties = ['energy', 'forces', 'dipole', 'excited_energies', 'oscillator_strength']
     default_parameters = {'basis': 'ccpvdz',
@@ -60,6 +72,9 @@ class Pyscf_NEO(Calculator):
 
     def __init__(self, **kwargs):
         Calculator.__init__(self, **kwargs)
+        self.mf = None
+        self.rdm1 = None
+        self.dm_nuc = None
 
     def calculate(self, atoms=None, properties=['energy', 'forces', 'dipole'],
                   system_changes=['positions', 'numbers', 'cell', 'pbc', 'charges', 'magmoms']):
@@ -86,52 +101,85 @@ class Pyscf_NEO(Calculator):
                   nuc_basis=self.parameters.nuc_basis,
                   charge=self.parameters.charge,
                   spin=self.parameters.spin)
-        if self.parameters.spin == 0:
-            mf = neo.CDFT(mol, epc=self.parameters.epc)
+
+        # If there is no mf, create one
+        if self.mf is None:
+            if self.parameters.spin == 0:
+                mf = neo.CDFT(mol, epc=self.parameters.epc)
+            else:
+                mf = neo.CDFT(mol, unrestricted = True)
+            mf.mf_elec.xc = self.parameters.xc
+            if self.parameters.atom_grid is not None:
+                mf.mf_elec.grids.atom_grid = self.parameters.atom_grid
+            if self.parameters.add_vv10:
+                mf.mf_elec.nlc = 'VV10'
+                mf.mf_elec.grids.prune = None
+                mf.mf_elec.nlcgrids.atom_grid = (50,194)
+                mf.mf_elec.nlcgrids.prune = dft.gen_grid.sg1_prune
+            if isinstance(self.parameters.init_guess, str):
+                if self.parameters.init_guess != 'last_step' and self.parameters.init_guess != 'elec_only':
+                    mf.init_guess = self.parameters.init_guess
+            if self.parameters.conv_tol is not None:
+                mf.conv_tol = self.parameters.conv_tol
+            if self.parameters.conv_tol_grad is not None:
+                mf.conv_tol_grad = self.parameters.conv_tol_grad
+            if self.parameters.add_d3:
+                if not DFTD3_AVAILABLE:
+                    raise RuntimeError('DFTD3 PySCF extension not available')
+                mf.mf_elec = dftd3.dftd3(mf.mf_elec)
+            if self.parameters.add_solvent:
+                mf.scf(cycle=0) # TODO: remove this
+                mf = mf.ddCOSMO()
+
+            # always use dict as the initial guess
+            if isinstance(self.parameters.init_guess, dict):
+                dm0 = self.parameters.init_guess
+                mf.scf(dm0=[dm0['e']]+dm0['n'])
+            else:
+                mf.scf()
+            self.mf = mf
         else:
-            mf = neo.CDFT(mol, unrestricted = True)
-        mf.mf_elec.xc = self.parameters.xc
-        if self.parameters.atom_grid is not None:
-            mf.mf_elec.grids.atom_grid = self.parameters.atom_grid
-        if self.parameters.add_vv10:
-            mf.mf_elec.nlc = 'VV10'
-            mf.mf_elec.grids.prune = None
-            mf.mf_elec.nlcgrids.atom_grid = (50,194)
-            mf.mf_elec.nlcgrids.prune = dft.gen_grid.sg1_prune
-        if self.parameters.init_guess is not None:
-            mf.init_guess = self.parameters.init_guess
-        if self.parameters.conv_tol is not None:
-            mf.conv_tol = self.parameters.conv_tol
-        if self.parameters.conv_tol_grad is not None:
-            mf.conv_tol_grad = self.parameters.conv_tol_grad
-        if self.parameters.add_d3:
-            if not DFTD3_AVAILABLE:
-                raise RuntimeError('DFTD3 PySCF extension not available')
-            mf.mf_elec = dftd3.dftd3(mf.mf_elec)
-        if self.parameters.add_solvent:
-            mf.scf(cycle=0) # TODO: remove this
-            mf = mf.ddCOSMO()
+            # if mf is there, reset it with new mol
+            self.mf.reset(mol)
+            if self.parameters.init_guess == 'last_step':
+                self.mf.scf(dm0=[self.rdm1] + self.dm_nuc)
+            elif self.parameters.init_guess == 'elec_only':
+                self.mf.init_guess = self.rdm1
+                self.mf.scf()
+            elif isinstance(self.parameters.init_guess, dict):
+                dm0 = self.parameters.init_guess
+                self.mf.scf(dm0=[dm0['e']]+dm0['n'])
+            else:
+                self.mf.scf()
+
         # check stability for UKS
-        mf.scf()
         if self.parameters.spin !=0:
-            mf = stable_opt_internal(mf)
-        self.results['energy'] = mf.e_tot*Hartree
-        g = mf.Gradients()
+            self.mf = stable_opt_internal(self.mf)
+        self.results['energy'] = self.mf.e_tot*Hartree
+        g = self.mf.Gradients()
         if self.parameters.grid_response is not None:
             g.grid_response = self.parameters.grid_response
         self.results['forces'] = -g.grad()*Hartree/Bohr
 
-        dip_elec = dip_moment(mol.elec, mf.mf_elec.make_rdm1()) # dipole of electrons and classical nuclei
+        rdm1 = self.mf.mf_elec.make_rdm1()
+        # store the density matrix for next step
+        if self.parameters.init_guess == 'last_step':
+            self.rdm1 = rdm1
+            self.dm_nuc = copy.deepcopy(self.mf.dm_nuc)
+        elif self.parameters.init_guess == 'elec_only':
+            self.rdm1 = rdm1
+            
+        dip_elec = dip_moment(mol.elec, rdm1) # dipole of electrons and classical nuclei
         dip_nuc = 0
-        for i in range(len(mf.mf_nuc)):
-            ia = mf.mf_nuc[i].mol.atom_index
-            dip_nuc += mol.atom_charge(ia) * mf.mf_nuc[i].nuclei_expect_position * nist.AU2DEBYE
+        for i in range(len(self.mf.mf_nuc)):
+            ia = self.mf.mf_nuc[i].mol.atom_index
+            dip_nuc += mol.atom_charge(ia) * self.mf.mf_nuc[i].nuclei_expect_position * nist.AU2DEBYE
 
         self.results['dipole'] = dip_elec + dip_nuc
 
         if self.parameters.run_tda:
             # calculate excited energies and oscillator strength by TDDFT/TDA
-            td = tddft.TDA(mf.mf_elec)
+            td = tddft.TDA(self.mf.mf_elec)
             e, xy = td.kernel()
             os = oscillator_strength(td, e = e, xy = xy)
 
