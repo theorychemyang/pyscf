@@ -83,7 +83,7 @@ class Pyscf_NEO(Calculator):
         self.den_fit_basis = den_fit_basis
         self.init_guess = init_guess
         if isinstance(init_guess, dict): 
-            self.dm0=[init_guess['e']]+init_guess['n']
+            self.dm0 = [init_guess['e']] + init_guess['n']
         else:
             self.dm0 = None
         self.force_fresh_init = force_fresh_init
@@ -259,13 +259,16 @@ class Pyscf_DFT(Calculator):
         self.conv_tol_grad = conv_tol_grad
         self.den_fit = den_fit
         self.den_fit_basis = den_fit_basis
-        self.init_guess = init_guess
-        # TODO: retrieve dm0 from init_guess
-        self.dm0 = None
-        # However, if init_guess is an array, it can work as a pyscf init_guess
+        if isinstance(init_guess, dict): 
+            self.init_guess = init_guess['e']
+            self.dm0 = self.init_guess
+        else:
+            self.init_guess = init_guess
+            self.dm0 = None
+        # if init_guess is an dict, every step this dm0 is used.
+        # if init_guess is an array, it can work as a pyscf init_guess
         # for just the first step, then following steps use scanners' default:
-        # last step guess. Or one can pass init_guess to dm0 so that every step
-        # this dm0 is used even if using scanners. How to decide?
+        # last step guess.
         self.force_fresh_init = force_fresh_init
         if self.force_fresh_init:
             self.dm0 = None
