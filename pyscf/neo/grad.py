@@ -278,7 +278,11 @@ def as_scanner(mf_grad):
 
             self.reset(mol)
             mf_scanner = self.base
-            e_tot = mf_scanner(mol)
+            if 'dm0' in kwargs:
+                dm0 = kwargs.pop('dm0')
+                e_tot = mf_scanner(mol, dm0=dm0)
+            else:
+                e_tot = mf_scanner(mol)
 
             if isinstance(mf_scanner.mf_elec, hf.KohnShamDFT):
                 if getattr(self.g_elec, 'grids', None):
