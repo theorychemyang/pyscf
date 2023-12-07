@@ -1456,11 +1456,26 @@ class HF(scf.hf.SCF):
         super().reset(mol=mol)
         self.mf_elec.reset(self.mol.elec)
         self.dm_elec = None
-        for i in range(self.mol.nuc_num):
-            self.mf_nuc[i].reset(self.mol.nuc[i])
-            self.dm_nuc[i] = None
-            self._eri_ne[i] = None
-            self._eri_nn[i] = [None] * self.mol.nuc_num
+        if len(self.mf_nuc) == mol.nuc_num:
+            # number of quantum nuc is the same, reset nuc mole
+            for i in range(mol.nuc_num):
+                self.mf_nuc[i].reset(mol.nuc[i])
+                self.dm_nuc[i] = None
+                self._eri_ne[i] = None
+                self._eri_nn[i] = [None] * mol.nuc_num
+        else:
+            # number of quantum nuc is different, need to rebuild
+            self.mf_nuc = []
+            self.dm_nuc = []
+            self._eri_ne = []
+            self._eri_nn = []
+            for i in range(mol.nuc_num):
+                self.mf_nuc.append(scf.RHF(mol.nuc[i]))
+                mf_nuc = self.mf_nuc[-1]
+                mf_nuc.occ_state = 0
+                self.dm_nuc.append(None)
+                self._eri_ne.append(None)
+                self._eri_nn.append([None] * mol.nuc_num)
 
         # point to correct ``self'' for overriden functions
         self.mf_elec.get_hcore = self.get_hcore_elec
