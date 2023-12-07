@@ -82,8 +82,10 @@ class Pyscf_NEO(Calculator):
         self.den_fit = den_fit
         self.den_fit_basis = den_fit_basis
         self.init_guess = init_guess
-        # TODO: retrieve dm0 from dict definition of init_guess
-        self.dm0 = None
+        if isinstance(init_guess, dict): 
+            self.dm0=[init_guess['e']]+init_guess['n']
+        else:
+            self.dm0 = None
         self.force_fresh_init = force_fresh_init
         if self.force_fresh_init:
             self.dm0 = None
