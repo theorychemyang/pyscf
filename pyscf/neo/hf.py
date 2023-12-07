@@ -1179,6 +1179,7 @@ def as_scanner(mf):
     class CNEO_Scanner(mf.__class__, lib.SinglePointScanner):
         def __init__(self, mf_obj):
             self.__dict__.update(mf_obj.__dict__)
+            self._last_mol_fp = mf.mol.elec.ao_loc
 
         def __call__(self, mol_or_geom, **kwargs):
             if isinstance(mol_or_geom, neo.Mole):
@@ -1189,30 +1190,51 @@ def as_scanner(mf):
             # Cleanup intermediates associated to the pervious mol object
             self.reset(mol)
 
-            # Only electronic dm0 is of interest
             if 'dm0' in kwargs:
-                dm0 = kwargs.pop('dm0')
+                dm0 = kwargs.pop('dm0') # this can be electronic only or full
             elif self.mf_elec.mo_coeff is None:
                 dm0 = None
             elif self.chkfile and h5py.is_hdf5(self.chkfile):
                 dm0 = self.mf_elec.from_chk(self.chkfile)
             else:
-                dm0 = self.mf_elec.make_rdm1()
-                if dm0.shape[-1] != mol.elec.nao:
-                    dm0 = None
+                dm0 = None
+                # dm0 form last calculation cannot be used in the current
+                # calculation if a completely different system is given.
+                # Obviously, the systems are very different if the number of
+                # basis functions are different.
+                # TODO: A robust check should include more comparison on
+                # various attributes between current `mol` and the `mol` in
+                # last calculation.
+                if numpy.array_equal(self._last_mol_fp, mol.elec.ao_loc):
+                    dm0 = self.mf_elec.make_rdm1()
             self.mf_elec.mo_coeff = None
-            if dm0 is not None:
-                dm0n = []
-                for i in range(mol.nuc_num):
-                    dm0n.append(self.mf_nuc[i].make_rdm1())
-                    if dm0n[-1].shape[-1] != mol.nuc[i].nao:
-                        dm0n = None
-                        break
+            # NOTE: if you really do not want the last step nuclear dm0
+            # from here but want to specify electronic dm0 through the
+            # dm0 option, make your dm0 a list with only one ndarry in it:
+            #    [dm0_e]
+            # such that it is a list, then it won't enter the following
+            # code block, and scf can successfully run, knowing only
+            # electronic dm0 is supplied.
+            if dm0 is not None and not isinstance(dm0, list):
+                # Full dm0 should be a list. If array, must be elec only.
+                # Then get the nuclear dm0 if still the same system.
+                # Still the same check as before.
+                if numpy.array_equal(self._last_mol_fp, mol.elec.ao_loc):
+                    dm0n = []
+                    for i in range(mol.nuc_num):
+                        if self.mf_nuc[i].mo_coeff is None:
+                            dm0n = None
+                            break
+                        dm0n.append(self.mf_nuc[i].make_rdm1())
+                        if dm0n[-1].shape[-1] != mol.nuc[i].nao:
+                            dm0n = None
+                            break
                 if dm0n is not None and len(dm0n) == mol.nuc_num:
                     dm0 = [dm0] + dm0n
             for i in range(mol.nuc_num):
                 self.mf_nuc[i].mo_coeff = None
             e_tot = self.kernel(dm0=dm0, **kwargs)
+            self._last_mol_fp = mol.elec.ao_loc
             return e_tot
 
     return CNEO_Scanner(mf)
