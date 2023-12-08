@@ -84,6 +84,17 @@ class Pyscf_NEO(Calculator):
         self.init_guess = init_guess
         if isinstance(init_guess, dict): 
             self.dm0 = [init_guess['e']] + init_guess['n']
+            self.is_first_time = True
+            def print_cycles(envs):
+                # define a callback function, print scf cycles
+                # In the ideal case, only 1 cycle is needed to converge the SCF, with a good dict
+                if self.is_first_time:
+                    cycle = envs['cycle']
+                    info = envs['e_tot']
+                    print(f'Cycle: {cycle}, E_tol {info}')
+                    if envs['scf_conv']:
+                        # only use this callback function for the first geometry 
+                        self.is_first_time = False
         else:
             self.dm0 = None
         self.force_fresh_init = force_fresh_init
@@ -105,6 +116,8 @@ class Pyscf_NEO(Calculator):
             # initialize a fake mol then create scanners
             mol = neo.M(atom='H 0 0 0; F 0 0 0.9')
             mf = self.create_mf(mol)
+            if isinstance(init_guess, dict):
+                mf.callback=print_cycles
             self.mf_scanner = mf.as_scanner()
             self.mf_grad_scanner = mf.Gradients().set(grid_response=self.grid_response).as_scanner()
             self.scanner_available = True
@@ -262,6 +275,17 @@ class Pyscf_DFT(Calculator):
         if isinstance(init_guess, dict): 
             self.init_guess = init_guess['e']
             self.dm0 = self.init_guess
+            self.is_first_time = True
+            def print_cycles(envs):
+                # define a callback function, print scf cycles
+                # In the ideal case, only 1 cycle is needed to converge the SCF, with a good dict  
+                if self.is_first_time:
+                    cycle = envs['cycle']
+                    info = envs['e_tot']
+                    print(f'Cycle: {cycle}, E_tol {info}')
+                    if envs['scf_conv']:
+                        # only use this callback function for the first geometry 
+                        self.is_first_time = False
         else:
             self.init_guess = init_guess
             self.dm0 = None
@@ -288,6 +312,8 @@ class Pyscf_DFT(Calculator):
             # initialize a fake mol then create scanners
             mol = gto.M(atom='H 0 0 0; F 0 0 0.9')
             mf = self.create_mf(mol)
+            if isinstance(init_guess, dict):
+                mf.callback=print_cycles
             self.mf_scanner = mf.as_scanner()
             self.mf_grad_scanner = mf.Gradients().set(grid_response=self.grid_response).as_scanner()
             self.scanner_available = True
