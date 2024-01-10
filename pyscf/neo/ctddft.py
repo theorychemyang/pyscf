@@ -20,6 +20,12 @@ class CTDBase(object):
     
     def __init__(self, mf, nstates=3, driver='eig'):
         self._scf = mf
+        self.mol = mf.mol
+
+        self.stdout = mf.stdout
+        self.verbose = mf.verbose
+        self.max_memory = mf.max_memory
+        self.chkfile = mf.chkfile
         self.nstates = nstates
         self.driver = driver
         self.verbose = mf.verbose
@@ -27,7 +33,7 @@ class CTDBase(object):
         self.full = None
         self.ab = None
         self.e = None
-        self.x1 = None
+        self.xy = None
 
     @property
     def nroots(self):
