@@ -10,17 +10,6 @@ from pyscf import gto, dft, tddft
 from pyscf.lib import logger
 from pyscf.tdscf.rhf import oscillator_strength
 
-try:
-    # TODO: pyscf-dftd3 extension is deprecated.
-    # It is recommended to use the newest DFTD3 and DFTD4 interfaces hosted at
-    # https://github.com/dftd3/simple-dftd3
-    # and
-    # https://github.com/dftd4/dftd4
-    # Source: https://github.com/pyscf/dftd3
-    from pyscf import dftd3
-    DFTD3_AVAILABLE = True
-except ImportError:
-    DFTD3_AVAILABLE = False
 
 # from examples/scf/17-stability.py
 def stable_opt_internal(mf):
@@ -52,7 +41,7 @@ class Pyscf_NEO(Calculator):
                  quantum_nuc=['H'], xc='b3lyp',
                  add_solvent=False,        # add implict solvent model ddCOSMO
                  run_tda=False,            # run TDA calculations
-                 add_d3=False,             # add dispersion correction D3
+                 disp=False,               # add dispersion correction (such as d3, d3bj, d4)
                  add_vv10=False,           # add dispersion correction VV10
                  epc=None,                 # add eletron proton correlation
                  atom_grid=None,           # (99,590) or even (99,974) for accuracy
@@ -96,9 +85,9 @@ class Pyscf_NEO(Calculator):
             self.unrestricted = True
         self.add_solvent = add_solvent
         self.run_tda = run_tda
-        self.add_d3 = add_d3
+        self.disp = disp
         self.stable_opt = stable_opt
-        if self.add_solvent or self.run_tda or self.add_d3 or self.stable_opt:
+        if self.add_solvent or self.run_tda or self.stable_opt:
             # TODO: see if some of them can work with scanners
             self.scanner_available = False
         else:
@@ -185,10 +174,8 @@ class Pyscf_NEO(Calculator):
                 mf = self.mf_scanner
         else:
             mf = self.create_mf(mol)
-            if self.add_d3:
-                if not DFTD3_AVAILABLE:
-                    raise RuntimeError('DFTD3 PySCF extension not available')
-                mf.mf_elec = dftd3.dftd3(mf.mf_elec)
+            if self.disp:
+                mf.disp = self.disp
             if self.add_solvent:
                 mf.scf(cycle=0) # TODO: remove this
                 mf = mf.ddCOSMO()
@@ -234,7 +221,7 @@ class Pyscf_DFT(Calculator):
     def __init__(self, basis='ccpvdz', charge=0, spin=0, xc='b3lyp',
                  add_solvent=False,        # add implict solvent model ddCOSMO
                  run_tda=False,            # run TDA calculations
-                 add_d3=False,             # add dispersion correction D3
+                 disp=False,               # add dispersion correction (such as d3, d3bj, d4)
                  add_vv10=False,           # add dispersion correction VV10
                  atom_grid=None,           # (99,590) or even (99,974) for accuracy
                  grid_response=False,      # recommended for meta-GGA
@@ -279,9 +266,9 @@ class Pyscf_DFT(Calculator):
             self.unrestricted = True
         self.add_solvent = add_solvent
         self.run_tda = run_tda
-        self.add_d3 = add_d3
+        self.disp = disp
         self.stable_opt = stable_opt
-        if self.add_solvent or self.run_tda or self.add_d3 or self.stable_opt:
+        if self.add_solvent or self.run_tda or self.stable_opt:
             # TODO: see if some of them can work with scanners
             self.scanner_available = False
         else:
@@ -362,10 +349,8 @@ class Pyscf_DFT(Calculator):
                 mf = self.mf_scanner
         else:
             mf = self.create_mf(mol)
-            if self.add_d3:
-                if not DFTD3_AVAILABLE:
-                    raise RuntimeError('DFTD3 PySCF extension not available')
-                mf = dftd3.dftd3(mf)
+            if self.disp:
+                mf.disp = self.disp
             if self.add_solvent:
                 from pyscf import solvent
                 mf = mf.ddCOSMO()

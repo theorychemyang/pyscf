@@ -620,7 +620,7 @@ def energy_qmnuc(mf, h1n, dm_nuc, veff_n=None):
     logger.debug(mf, 'Energy of %s (%3d): %s', mf.mol.super_mol.atom_symbol(ia), ia, n1)
     return n1
 
-def energy_tot(mf_elec=None, dm_elec=None, h1e=None, vhf_e=None,
+def energy_tot(mf, mf_elec=None, dm_elec=None, h1e=None, vhf_e=None,
                mf_nuc=None, dm_nuc=None, h1n=None, veff_n=None,
                mf_positron=None,dm_positron=None, h1p=None, vhf_p=None):
     '''Total energy of NEO-HF'''
@@ -637,6 +637,7 @@ def energy_tot(mf_elec=None, dm_elec=None, h1e=None, vhf_e=None,
     if vhf_e is None:
         vhf_e = mf_elec.get_veff(mf_elec.mol, dm_elec)
     E_tot += mf_elec.energy_elec(dm=dm_elec, h1e=h1e, vhf=vhf_e)[0]
+    mf.scf_summary = mf_elec.scf_summary.copy()
     # add the energy of quantum nuclei
     if h1n is None:
         h1n = []
@@ -664,11 +665,15 @@ def energy_tot(mf_elec=None, dm_elec=None, h1e=None, vhf_e=None,
         nn_U += 0.5 * h1n[i].nn_U
     if len(mf_nuc) > 0:
         logger.debug(super_mol, 'Energy of e-n Coulomb interactions: %s', ne_U)
+        mf.scf_summary['ne_U'] = ne_U
         logger.debug(super_mol, 'Energy of n-n Coulomb interactions: %s', nn_U)
-    E_tot = E_tot - ne_U - nn_U + mf_elec.energy_nuc()
+        mf.scf_summary['nn_U'] = nn_U
+    mf.scf_summary['nuc'] = mf_elec.energy_nuc().real
+    E_tot = E_tot - ne_U - nn_U + mf.scf_summary['nuc']
     if mf_positron is not None:
         ep_U = h1p.ep_U
         logger.debug(super_mol, 'Energy of e-p Coulomb interactions: %s', ep_U)
+        mf.scf_summary['ep_U'] = ep_U
         E_tot -= ep_U
     return E_tot
 
@@ -1157,6 +1162,12 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         if dump_chk:
             mf.dump_chk(locals())
 
+    if mf.disp is not None:
+        mf.mf_elec.disp = mf.disp
+        e_disp = mf.mf_elec.get_dispersion()
+        mf.scf_summary['dispersion'] = mf.mf_elec.scf_summary['dispersion'] = e_disp
+        e_tot += e_disp
+
     logger.timer(mf, 'scf_cycle', *cput0)
     # A post-processing hook before return
     mf.post_kernel(locals())
@@ -1410,7 +1421,7 @@ class HF(scf.hf.SCF):
 
     def energy_tot(self, dm_elec, h1e, vhf_e, dm_nuc=None, h1n=None, veff_n=None,
                    dm_positron=None, h1p=None, vhf_p=None):
-        return energy_tot(self.mf_elec, dm_elec, h1e, vhf_e,
+        return energy_tot(self, self.mf_elec, dm_elec, h1e, vhf_e,
                           self.mf_nuc, dm_nuc, h1n, veff_n,
                           self.mf_positron,dm_positron, h1p, vhf_p)
 
