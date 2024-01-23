@@ -413,8 +413,6 @@ if __name__ == '__main__':
 
     nocc = mol.nelectron//2
 
-    nocc = mol.nelectron//2
-
     gw.linearized = True
     gw.kernel(orbs=[nocc-1,nocc])
     print(gw.mo_energy[nocc-1] - -0.44684106)
