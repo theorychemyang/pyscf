@@ -266,33 +266,36 @@ def as_scanner(mf_grad):
         return mf_grad
 
     logger.info(mf_grad, 'Create scanner for %s', mf_grad.__class__)
+    name = mf_grad.__class__.__name__ + CNEO_GradScanner.__name_mixin__
+    return lib.set_class(CNEO_GradScanner(mf_grad),
+                         (CNEO_GradScanner, mf_grad.__class__), name)
 
-    class CNEO_GradScanner(mf_grad.__class__, lib.GradScanner):
-        def __init__(self, g):
-            lib.GradScanner.__init__(self, g)
-        def __call__(self, mol_or_geom, **kwargs):
-            if isinstance(mol_or_geom, neo.Mole):
-                mol = mol_or_geom
-            else:
-                mol = self.mol.set_geom_(mol_or_geom, inplace=False)
+class CNEO_GradScanner(lib.GradScanner):
+    def __init__(self, g):
+        lib.GradScanner.__init__(self, g)
 
-            self.reset(mol)
-            mf_scanner = self.base
-            if 'dm0' in kwargs:
-                dm0 = kwargs.pop('dm0')
-                e_tot = mf_scanner(mol, dm0=dm0)
-            else:
-                e_tot = mf_scanner(mol)
+    def __call__(self, mol_or_geom, **kwargs):
+        if isinstance(mol_or_geom, neo.Mole):
+            mol = mol_or_geom
+        else:
+            mol = self.mol.set_geom_(mol_or_geom, inplace=False)
 
-            if isinstance(mf_scanner.mf_elec, hf.KohnShamDFT):
-                if getattr(self.g_elec, 'grids', None):
-                    self.g_elec.grids.reset(mol.elec)
-                if getattr(self.g_elec, 'nlcgrids', None):
-                    self.g_elec.nlcgrids.reset(mol.elec)
+        self.reset(mol)
+        mf_scanner = self.base
+        if 'dm0' in kwargs:
+            dm0 = kwargs.pop('dm0')
+            e_tot = mf_scanner(mol, dm0=dm0)
+        else:
+            e_tot = mf_scanner(mol)
 
-            de = self.kernel(**kwargs)
-            return e_tot, de
-    return CNEO_GradScanner(mf_grad)
+        if isinstance(mf_scanner.mf_elec, hf.KohnShamDFT):
+            if getattr(self.g_elec, 'grids', None):
+                self.g_elec.grids.reset(mol.elec)
+            if getattr(self.g_elec, 'nlcgrids', None):
+                self.g_elec.nlcgrids.reset(mol.elec)
+
+        de = self.kernel(**kwargs)
+        return e_tot, de
 
 
 class Gradients(rhf_grad.GradientsMixin):

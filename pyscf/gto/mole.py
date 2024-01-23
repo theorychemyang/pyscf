@@ -1245,7 +1245,9 @@ def dumps(mol):
     '''
     exclude_keys = {'output', 'stdout', '_keys',
                         # Constructing in function loads
-                        'symm_orb', 'irrep_id', 'irrep_name'}
+                        'symm_orb', 'irrep_id', 'irrep_name',
+                        # (C)NEO mole attributes
+                        'quantum_nuc', 'mass', 'elec', 'nuc'}
     # FIXME: nparray and kpts for cell objects may need to be excluded
     nparray_keys = {'_atm', '_bas', '_env', '_ecpbas',
                         '_symm_orig', '_symm_axes'}

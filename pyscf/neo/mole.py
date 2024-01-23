@@ -7,10 +7,6 @@ from pyscf import gto
 from pyscf.data import nist
 from pyscf.lib import logger, param
 
-# For code compatibility in python-2 and python-3
-if sys.version_info >= (3,):
-    unicode = str
-
 
 def M(**kwargs):
     r'''This is a shortcut to build up Mole object.
@@ -19,9 +15,13 @@ def M(**kwargs):
     mol.build(**kwargs)
     return mol
 
-def copy(mol):
+def copy(mol, deep=True):
     '''Deepcopy of the given :class:`Mole` object
     '''
+    newmol = mol.view(mol.__class__)
+    if not deep:
+        return newmol
+
     import copy
     newmol = gto.mole.Mole.copy(mol)
 
@@ -377,11 +377,10 @@ class Mole(gto.mole.Mole):
         '''
         if self.positron is not None:
             raise NotImplementedError
-        import copy
         if inplace:
             mol = self
         else:
-            mol = copy.copy(self)
+            mol = self.copy(deep=False)
             mol._env = mol._env.copy()
             mol.nuc = [None] * mol.nuc_num
 
@@ -449,7 +448,7 @@ class Mole(gto.mole.Mole):
             mol.atom = atoms_or_coords
 
         if isinstance(atoms_or_coords, numpy.ndarray) and not symmetry:
-            if isinstance(unit, (str, unicode)):
+            if isinstance(unit, str):
                 if unit.upper().startswith(('B', 'AU')):
                     unit = 1.
                 else: #unit[:3].upper() == 'ANG':
