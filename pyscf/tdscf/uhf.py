@@ -619,7 +619,6 @@ class TDA(TDBase):
         viridxb = numpy.where(mo_occ[1]==0)[0]
         e_ia_a = (mo_energy[0][viridxa,None] - mo_energy[0][occidxa]).T
         e_ia_b = (mo_energy[1][viridxb,None] - mo_energy[1][occidxb]).T
-        e_ia_max = max(e_ia_a.max(), e_ia_b.max())
 
         if wfnsym is not None and mol.symmetry:
             if isinstance(wfnsym, str):
