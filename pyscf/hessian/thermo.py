@@ -411,7 +411,7 @@ def dump_molden(mol, results, filename='vib.molden'):
         dump = f.write
     except (OSError, IOError) as e:
         dump = mol.stdout.write
-    
+
     freq_wn = results['freq_wavenumber']
     nfreq = freq_wn.size
 

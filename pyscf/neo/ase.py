@@ -82,7 +82,7 @@ class Pyscf_NEO(Calculator):
         self.den_fit = den_fit
         self.den_fit_basis = den_fit_basis
         self.init_guess = init_guess
-        if isinstance(init_guess, dict): 
+        if isinstance(init_guess, dict):
             self.dm0 = [init_guess['e']] + init_guess['n']
         else:
             self.dm0 = None
@@ -259,7 +259,7 @@ class Pyscf_DFT(Calculator):
         self.conv_tol_grad = conv_tol_grad
         self.den_fit = den_fit
         self.den_fit_basis = den_fit_basis
-        if isinstance(init_guess, dict): 
+        if isinstance(init_guess, dict):
             self.init_guess = init_guess['e']
             self.dm0 = self.init_guess
         else:
