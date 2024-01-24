@@ -8,6 +8,7 @@ from pyscf import df, gto, lib, neo
 from pyscf.data import nist
 from pyscf.grad import rhf as rhf_grad
 from pyscf.lib import logger
+from pyscf.scf import hf
 from pyscf.scf.jk import get_jk
 from pyscf.dft.numint import eval_ao, eval_rho, _scale_ao
 from pyscf.neo.ks import eval_xc_nuc, eval_xc_elec
@@ -67,9 +68,9 @@ def grad_epc(mf_grad):
     atmlst = range(mol.natm)
     aoslices = mol.aoslice_by_atom()
     de = numpy.zeros((len(atmlst),3))
+    vepc_elec = get_vepc_elec(mf_grad)
     for j in atmlst:
         p0, p1 = aoslices[j,2:]
-        vepc_elec = get_vepc_elec(mf_grad)
         de[j] += numpy.einsum('xij,ij->x', vepc_elec[:,p0:p1], mf.dm_elec[p0:p1]) * 2
 
     for i in range(mol.nuc_num):
@@ -265,29 +266,36 @@ def as_scanner(mf_grad):
         return mf_grad
 
     logger.info(mf_grad, 'Create scanner for %s', mf_grad.__class__)
+    name = mf_grad.__class__.__name__ + CNEO_GradScanner.__name_mixin__
+    return lib.set_class(CNEO_GradScanner(mf_grad),
+                         (CNEO_GradScanner, mf_grad.__class__), name)
 
-    class CNEO_GradScanner(mf_grad.__class__, lib.GradScanner):
-        def __init__(self, g):
-            lib.GradScanner.__init__(self, g)
-        def __call__(self, mol_or_geom, **kwargs):
-            if isinstance(mol_or_geom, neo.Mole):
-                mol = mol_or_geom
-            else:
-                mol = self.mol.set_geom_(mol_or_geom, inplace=False)
+class CNEO_GradScanner(lib.GradScanner):
+    def __init__(self, g):
+        lib.GradScanner.__init__(self, g)
 
-            mf_scanner = self.base
+    def __call__(self, mol_or_geom, **kwargs):
+        if isinstance(mol_or_geom, neo.Mole):
+            mol = mol_or_geom
+        else:
+            mol = self.mol.set_geom_(mol_or_geom, inplace=False)
+
+        self.reset(mol)
+        mf_scanner = self.base
+        if 'dm0' in kwargs:
+            dm0 = kwargs.pop('dm0')
+            e_tot = mf_scanner(mol, dm0=dm0)
+        else:
             e_tot = mf_scanner(mol)
-            self.mol = mol
-            self.g_elec.mol = mol.elec
 
-            # If second integration grids are created for RKS and UKS
-            # electronic part gradients
+        if isinstance(mf_scanner.mf_elec, hf.KohnShamDFT):
             if getattr(self.g_elec, 'grids', None):
                 self.g_elec.grids.reset(mol.elec)
+            if getattr(self.g_elec, 'nlcgrids', None):
+                self.g_elec.nlcgrids.reset(mol.elec)
 
-            de = self.kernel(**kwargs)
-            return e_tot, de
-    return CNEO_GradScanner(mf_grad)
+        de = self.kernel(**kwargs)
+        return e_tot, de
 
 
 class Gradients(rhf_grad.GradientsMixin):
@@ -318,6 +326,13 @@ class Gradients(rhf_grad.GradientsMixin):
     hcore_generator = hcore_generator
     grad_cneo = grad_cneo
     grad_epc = grad_epc
+
+    def reset(self, mol=None):
+        if mol is not None:
+            self.mol = mol
+        self.g_elec.mol = self.mol.elec
+        self.base.reset(mol)
+        return self
 
     def grad_elec(self, atmlst=None):
         '''gradients of electrons and classic nuclei'''

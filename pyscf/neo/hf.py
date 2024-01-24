@@ -217,11 +217,14 @@ def hcore_nuc_qmmm(mm_mol, mol_n, charge):
             v += numpy.einsum('kpq,k->pq', j3c, -charges[i0:i1])
     return -charge * v
 
-def get_hcore_nuc(mol, mf_nuc, dm_elec, dm_nuc, mol_elec=None,
-                  mol_nuc=None, eri_ne=None, eri_nn=None):
+def get_hcore_nuc(mol, mf_nuc, mol_elec=None, dm_elec=None,
+                  mol_nuc=None, dm_nuc=None,
+                  mol_positron=None, dm_positron=None,
+                  eri_ne=None, eri_nn=None):
     '''Get the core Hamiltonian for quantum nucleus.'''
     super_mol = mol.super_mol
     if mol_elec is None: mol_elec = super_mol.elec
+    if mol_positron is None: mol_positron = super_mol.positron
     if mol_nuc is None: mol_nuc = super_mol.nuc
     ia = mol.atom_index
     # create the static part of hcore (true hcore) for the first time
@@ -246,6 +249,14 @@ def get_hcore_nuc(mol, mf_nuc, dm_elec, dm_nuc, mol_elec=None,
     else:
         jcross = get_j_n_dm_e(i, dm_elec, mol_elec=mol_elec, mol_nuc=mol,
                               eri_ne=eri_ne)
+    # NOTE: eri_np is assumed to be the same as eri_ne
+    if dm_positron is not None and mol_positron is not None:
+        if dm_elec.ndim > 2:
+            jcross -= get_j_n_dm_e(i, dm_positron[0]+dm_positron[1], mol_elec=mol_positron,
+                                   mol_nuc=mol, eri_ne=eri_ne)
+        else:
+            jcross -= get_j_n_dm_e(i, dm_positron, mol_elec=mol_positron, mol_nuc=mol,
+                                   eri_ne=eri_ne)
     h += jcross
     if isinstance(dm_nuc[i], numpy.ndarray):
         ne_U = numpy.einsum('ij,ji', jcross, dm_nuc[i]) # n-e Coulomb energy
@@ -339,10 +350,12 @@ def get_init_guess_nuc(mf, mol):
     mo_occ = mf.get_occ(mo_energy, mo_coeff)
     return mf.make_rdm1(mo_coeff, mo_occ)
 
-def get_hcore_elec(mol, mf_elec, dm_nuc, mol_nuc=None, eri_ne=None):
+def get_hcore_elec(mol, mf_elec, mol_nuc=None, dm_nuc=None,
+                   mol_positron=None, dm_positron=None, eri_ne=None):
     '''Get the core Hamiltonian for electrons in NEO'''
     super_mol = mol.super_mol
     if mol_nuc is None: mol_nuc = super_mol.nuc
+    if mol_positron is None: mol_positron = super_mol.positron
     # create the static part of hcore (true hcore) for the first time
     # and cache it
     if mf_elec.hcore_static is None:
@@ -353,7 +366,59 @@ def get_hcore_elec(mol, mf_elec, dm_nuc, mol_nuc=None, eri_ne=None):
         if isinstance(dm_nuc[i], numpy.ndarray):
             j += get_j_e_dm_n(i, dm_nuc[i], mol_elec=mol, mol_nuc=mol_nuc[i],
                               eri_ne=eri_ne)
+    # Coulomb interactions between electrons and positrons
+    # NOTE: assuming same basis
+    # TODO: avoid duplicated ERI constructions if same basis
+    if dm_positron is not None and mol_positron is not None:
+        vj, _ = mf_elec.get_jk(mol, dm=dm_positron, with_k=False)
+        if vj.ndim > 2:
+            vj = vj[0] + vj[1]
+        j -= vj
     return mf_elec.hcore_static + j
+
+def get_hcore_positron(mol, mf_positron, mol_elec=None, dm_elec=None,
+                       mol_nuc=None, dm_nuc=None, dm_positron=None,
+                       eri_ne=None):
+    '''Get the core Hamiltonian for positrons'''
+    super_mol = mol.super_mol
+    if mol_nuc is None: mol_nuc = super_mol.nuc
+    if mol_elec is None: mol_elec = super_mol.elec
+    # create the static part of hcore (true hcore) for the first time
+    # and cache it
+    if mf_positron.hcore_static is None:
+        mf_positron.hcore_static = mol.intor_symmetric('int1e_kin')
+        if mol._pseudo:
+            # Although mol._pseudo for GTH PP is only available in Cell, GTH PP
+            # may exist if mol is converted from cell object.
+            from pyscf.gto import pp_int
+            mf_positron.hcore_static -= pp_int.get_gth_pp(mol)
+        else:
+            mf_positron.hcore_static -= mol.intor_symmetric('int1e_nuc')
+
+        if len(mol._ecpbas) > 0:
+            mf_positron.hcore_static -= mol.intor_symmetric('ECPscalar')
+    j = 0
+    # Coulomb interactions between positrons and all quantum nuclei
+    for i in range(super_mol.nuc_num):
+        if isinstance(dm_nuc[i], numpy.ndarray):
+            j -= get_j_e_dm_n(i, dm_nuc[i], mol_elec=mol, mol_nuc=mol_nuc[i],
+                              eri_ne=eri_ne)
+    # Coulomb interactions between electrons and positrons
+    # NOTE: assuming same basis
+    # TODO: avoid duplicated ERI constructions if same basis
+    vj, _ = mf_positron.get_jk(mol, dm=dm_elec, with_k=False)
+    if vj.ndim > 2:
+        vj = vj[0] + vj[1]
+    j -= vj
+    h = mf_positron.hcore_static + j
+    ep_U = 0.0 # e-p Coulomb energy
+    if dm_positron.ndim > 2:
+        ep_U = numpy.einsum('ij,ji', -vj, dm_positron[0]+dm_positron[1])
+    else:
+        ep_U = numpy.einsum('ij,ji', -vj, dm_positron)
+    # attach e-p Coulomb to h to use later when calculating the total energy
+    h = lib.tag_array(h, ep_U=ep_U)
+    return h
 
 def get_veff_nuc_bare(mol):
     return numpy.zeros((mol.nao_nr(), mol.nao_nr()))
@@ -367,12 +432,19 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
     for i in range(mol.nuc_num):
         if mf.dm_nuc[i] is None:
             mf.dm_nuc[i] = mf.mf_nuc[i].make_rdm1()
+    if mf.dm_positron is None and mf.mf_positron is not None:
+        mf.dm_positron = mf.mf_positron.make_rdm1()
     if dm is None:
         if mf.dm_elec.ndim > 2: # UHF/UKS
             dm = [mf.dm_elec[0], mf.dm_elec[1]]
         else:
             dm = [mf.dm_elec]
         dm += mf.dm_nuc
+        if mf.dm_positron is not None:
+            if mf.dm_positron.ndim > 2:
+                dm += [mf.dm_positron[0], mf.dm_positron[1]]
+            else:
+                dm += [mf.dm_positron]
     if s1e is None:
         s1e_e = mf.mf_elec.get_ovlp()
         if mf.dm_elec.ndim > 2: # UHF/UKS
@@ -381,13 +453,23 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
             s1e = [s1e_e]
         for i in range(mol.nuc_num):
             s1e.append(mf.mf_nuc[i].get_ovlp())
+        if mf.dm_positron is not None:
+            s1e_p = mf.mf_positron.get_ovlp()
+            if mf.dm_positron.ndim > 2:
+                s1e += [s1e_p, s1e_p]
+            else:
+                s1e += [s1e_p]
     if h1e is None:
-        h1e = [mf.mf_elec.get_hcore()] \
-              + [mf.mf_nuc[i].get_hcore() for i in range(mol.nuc_num)]
+        h1e = [mf.mf_elec.get_hcore()]
+        h1e += [mf.mf_nuc[i].get_hcore() for i in range(mol.nuc_num)]
+        if mf.mf_positron is not None:
+            h1e += [mf.mf_positron.get_hcore()]
     if vhf is None:
-        vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec)] \
-              + [mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i])
-                 for i in range(mol.nuc_num)]
+        vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec)]
+        vhf += [mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i])
+                for i in range(mol.nuc_num)]
+        if mf.mf_positron is not None:
+            vhf += [mf.mf_positron.get_veff(mol.positron, mf.dm_positron)]
 
     if mf.dm_elec.ndim > 2: # UHF/UKS
         f = [h1e[0] + vhf[0][0], h1e[0] + vhf[0][1]]
@@ -397,6 +479,11 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
         start = 1
     for i in range(mol.nuc_num):
         f.append(h1e[i + 1] + vhf[i + 1])
+    if mf.dm_positron is not None:
+        if mf.dm_positron.ndim > 2: # UHF/UKS
+            f += [h1e[-1] + vhf[-1][0], h1e[-1] + vhf[-1][1]]
+        else:
+            f += [h1e[-1] + vhf[-1]]
 
     # CNEO constraint term
     f0 = None
@@ -454,15 +541,14 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
                 if abs(dampa)+abs(dampb) > 1e-4:
                     f[0] = scf.hf.damping(s1e[0], dm[0], f[0], dampa)
                     f[1] = scf.hf.damping(s1e[1], dm[1], f[1], dampb)
-                start = 2
             else:
                 if abs(dampa) > 1e-4:
                     f[0] = scf.hf.damping(s1e[0], dm[0]*.5, f[0], dampa)
-                start = 1
             if abs(dampp) > 1e-4:
                 for i in range(mol.nuc_num):
                     f[start + i] = scf.hf.damping(s1e[start + i], dm[start + i],
                                                   f[start + i], dampp)
+            # TODO: damping for positron?
 
     if diis and cycle >= diis_start_cycle:
         if isinstance(mf, neo.CDFT):
@@ -517,15 +603,14 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
             if abs(shifta)+abs(shiftb) > 1e-4:
                 f[0] = scf.hf.level_shift(s1e[0], dm[0], f[0], shifta)
                 f[1] = scf.hf.level_shift(s1e[1], dm[1], f[1], shiftb)
-            start = 2
         else:
             if abs(shifta) > 1e-4:
                 f[0] = scf.hf.level_shift(s1e[0], dm[0]*.5, f[0], shifta)
-            start = 1
         if abs(shiftp) > 1e-4:
             for i in range(mol.nuc_num):
                 f[start + i] = scf.hf.level_shift(s1e[start + i], dm[start + i],
                                                   f[start + i], shiftp)
+        # TODO: level shift for positron?
     return f
 
 def energy_qmnuc(mf, h1n, dm_nuc, veff_n=None):
@@ -535,8 +620,9 @@ def energy_qmnuc(mf, h1n, dm_nuc, veff_n=None):
     logger.debug(mf, 'Energy of %s (%3d): %s', mf.mol.super_mol.atom_symbol(ia), ia, n1)
     return n1
 
-def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,
-               h1n=None, veff_n=None):
+def energy_tot(mf, mf_elec=None, dm_elec=None, h1e=None, vhf_e=None,
+               mf_nuc=None, dm_nuc=None, h1n=None, veff_n=None,
+               mf_positron=None,dm_positron=None, h1p=None, vhf_p=None):
     '''Total energy of NEO-HF'''
     E_tot = 0
     # add the energy of electrons
@@ -551,6 +637,7 @@ def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,
     if vhf_e is None:
         vhf_e = mf_elec.get_veff(mf_elec.mol, dm_elec)
     E_tot += mf_elec.energy_elec(dm=dm_elec, h1e=h1e, vhf=vhf_e)[0]
+    mf.scf_summary = mf_elec.scf_summary.copy()
     # add the energy of quantum nuclei
     if h1n is None:
         h1n = []
@@ -558,6 +645,17 @@ def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,
             h1n.append(mf_nuc[i].get_hcore())
     for i in range(len(mf_nuc)):
         E_tot += mf_nuc[i].energy_qmnuc(mf_nuc[i], h1n[i], dm_nuc[i], veff_n=veff_n[i])
+
+    # add the energy of positrons
+    if mf_positron is not None:
+        if dm_positron is None:
+            dm_positron = mf_positron.make_rdm1()
+        if h1p is None:
+            h1p = mf_positron.get_hcore()
+        if vhf_p is None:
+            vhf_p = mf_positron.get_veff(mf_positron.mol, dm_positron)
+        E_tot += mf_positron.energy_elec(dm=dm_positron, h1e=h1p, vhf=vhf_p)[0]
+
     # substract double-counted terms and add classical nuclear repulsion
     super_mol = mf_elec.mol.super_mol
     ne_U = 0.0
@@ -565,9 +663,18 @@ def energy_tot(mf_elec, mf_nuc, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,
     for i in range(len(mf_nuc)):
         ne_U += h1n[i].ne_U
         nn_U += 0.5 * h1n[i].nn_U
-    logger.debug(super_mol, 'Energy of e-n Coulomb interactions: %s', ne_U)
-    logger.debug(super_mol, 'Energy of n-n Coulomb interactions: %s', nn_U)
-    E_tot = E_tot - ne_U - nn_U + mf_elec.energy_nuc()
+    if len(mf_nuc) > 0:
+        logger.debug(super_mol, 'Energy of e-n Coulomb interactions: %s', ne_U)
+        mf.scf_summary['ne_U'] = ne_U
+        logger.debug(super_mol, 'Energy of n-n Coulomb interactions: %s', nn_U)
+        mf.scf_summary['nn_U'] = nn_U
+    mf.scf_summary['nuc'] = mf_elec.energy_nuc().real
+    E_tot = E_tot - ne_U - nn_U + mf.scf_summary['nuc']
+    if mf_positron is not None:
+        ep_U = h1p.ep_U
+        logger.debug(super_mol, 'Energy of e-p Coulomb interactions: %s', ep_U)
+        mf.scf_summary['ep_U'] = ep_U
+        E_tot -= ep_U
     return E_tot
 
 def init_guess_mixed(mol, mixing_parameter = numpy.pi/4):
@@ -649,7 +756,7 @@ def init_guess_nuc_by_calculation(mf_nuc, mol):
                       dump_input=False, parse_arg=False, verbose=mol.verbose,
                       output=mol.output, max_memory=mol.max_memory,
                       atom=mol.atom, unit=mol.unit, nucmod=mol.nucmod,
-                      ecp=mol.ecp, charge=mol.charge, spin=mol.spin,
+                      ecp=mol.ecp, pseudo=mol.pseudo, charge=mol.charge, spin=mol.spin,
                       symmetry=mol.symmetry, symmetry_subgroup=mol.symmetry_subgroup,
                       cart=mol.cart, magmom=mol.magmom)
         mol_tmp.nuc[0].index = mol.nuc[i].index
@@ -681,17 +788,37 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     else:
         mf.dm_nuc = mf.get_init_guess_nuc(mol)
 
+    if mf.mf_positron is not None:
+        # NOTE: a bad initial guess
+        mf.dm_positron = mf.dm_elec
+
     if mf.dm_elec.ndim > 2:
         dm = [mf.dm_elec[0], mf.dm_elec[1]]
     else:
         dm = [mf.dm_elec]
+
     dm += mf.dm_nuc
+
+    if mf.dm_positron is not None:
+        if mf.dm_positron.ndim > 2:
+            dm += [mf.dm_positron[0], mf.dm_positron[1]]
+        else:
+            dm += [mf.dm_positron]
+
     h1e = [mf.mf_elec.get_hcore()]
     vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec)]
     for i in range(mol.nuc_num):
         h1e.append(mf.mf_nuc[i].get_hcore())
         vhf.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i]))
-    e_tot = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e[0], vhf[0], h1e[1:], vhf[1:])
+    if mf.mf_positron is not None:
+        h1e += [mf.mf_positron.get_hcore()]
+        vhf += [mf.mf_positron.get_veff(mol.positron, mf.dm_positron)]
+        e_tot = mf.energy_tot(mf.dm_elec, h1e[0], vhf[0],
+                              mf.dm_nuc, h1e[1:-1], vhf[1:-1],
+                              mf.dm_positron, h1e[-1], vhf[-1])
+    else:
+        e_tot = mf.energy_tot(mf.dm_elec, h1e[0], vhf[0],
+                              mf.dm_nuc, h1e[1:], vhf[1:])
     logger.info(mf, 'init E= %.15g', e_tot)
 
     scf_conv = False
@@ -699,6 +826,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     mo_energy_n = [None] * mol.nuc_num
     mo_coeff_n = [None] * mol.nuc_num
     mo_occ_n = [None] * mol.nuc_num
+    mo_energy_p = mo_coeff_p = mo_occ_p = None
 
     s1e_e = mf.mf_elec.get_ovlp()
     if mf.dm_elec.ndim > 2:
@@ -712,6 +840,12 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
                     'SCF may be inaccurate and hard to converge.', numpy.max(cond))
     for i in range(mol.nuc_num):
         s1e.append(mf.mf_nuc[i].get_ovlp())
+    if mf.mf_positron is not None:
+        s1e_p = mf.mf_positron.get_ovlp()
+        if mf.dm_positron.ndim > 2:
+            s1e += [s1e_p, s1e_p]
+        else:
+            s1e += [s1e_p]
 
     # Skip SCF iterations. Compute only the total energy of the initial density
     if mf.max_cycle <= 0:
@@ -734,8 +868,18 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             mf.mf_nuc[i].mo_occ = mo_occ_n[i]
         if mf.dm_elec.ndim > 2:
             mf.dm_elec = mf.dm_elec[0] + mf.dm_elec[1]
+        if start + mol.nuc_num < len(fock):
+            if mf.dm_positron.ndim > 2:
+                fock_p = numpy.asarray((fock[-2], fock[-1]))
+            else:
+                fock_p = fock[-1]
+            mo_energy_p, mo_coeff_p = mf.mf_positron.eig(fock_p, s1e[-1])
+            mf.mf_positron.mo_energy, mf.mf_positron.mo_coeff = mo_energy_p, mo_coeff_p
+            mo_occ_p = mf.mf_positron.get_occ(mo_energy_p, mo_coeff_p)
+            mf.mf_positron.mo_occ = mo_occ_p
         return scf_conv, e_tot, mo_energy_e, mo_coeff_e, mo_occ_e, \
-               mo_energy_n, mo_coeff_n, mo_occ_n
+               mo_energy_n, mo_coeff_n, mo_occ_n, \
+               mo_energy_p, mo_coeff_p, mo_occ_p,
 
     if isinstance(mf.diis, lib.diis.DIIS):
         mf_diis = mf.diis
@@ -763,6 +907,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     for cycle in range(mf.max_cycle):
         dm_elec_last = numpy.copy(mf.dm_elec) # why didn't pyscf.scf.hf use copy?
         dm_nuc_last = copy.deepcopy(mf.dm_nuc)
+        if mf.dm_positron is not None:
+            dm_positron_last = numpy.copy(mf.dm_positron)
         last_e = e_tot
 
         fock = mf.get_fock(h1e, s1e, vhf, dm, cycle, mf_diis)
@@ -788,11 +934,28 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             mf.mf_nuc[i].mo_occ = mo_occ_n[i]
             mf.dm_nuc[i] = mf.mf_nuc[i].make_rdm1(mo_coeff_n[i], mo_occ_n[i])
 
+        if start + mol.nuc_num < len(fock):
+            if mf.dm_positron.ndim > 2:
+                fock_p = numpy.asarray((fock[-2], fock[-1]))
+            else:
+                fock_p = fock[-1]
+            mo_energy_p, mo_coeff_p = mf.mf_positron.eig(fock_p, s1e[-1])
+            mf.mf_positron.mo_energy, mf.mf_positron.mo_coeff = mo_energy_p, mo_coeff_p
+            mo_occ_p = mf.mf_positron.get_occ(mo_energy_p, mo_coeff_p)
+            mf.mf_positron.mo_occ = mo_occ_p
+            mf.dm_positron = mf.mf_positron.make_rdm1(mo_coeff_p, mo_occ_p)
+            mf.dm_positron = lib.tag_array(mf.dm_positron, mo_coeff=mo_coeff_p, mo_occ=mo_occ_p)
+
         if mf.dm_elec.ndim > 2:
             dm = [mf.dm_elec[0], mf.dm_elec[1]]
         else:
             dm = [mf.dm_elec]
         dm += mf.dm_nuc
+        if mf.dm_positron is not None:
+            if mf.dm_positron.ndim > 2:
+                dm += [mf.dm_positron[0], mf.dm_positron[1]]
+            else:
+                dm += [mf.dm_positron]
 
         # update the so-called "core" Hamiltonian and veff after the density is updated
         h1e = [mf.mf_elec.get_hcore()]
@@ -800,7 +963,12 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec, dm_elec_last, vhf_last[0])]
         for i in range(mol.nuc_num):
             h1e.append(mf.mf_nuc[i].get_hcore())
-            vhf.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i], dm_nuc_last[i], vhf_last[1 + i]))
+            vhf.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i],
+                                             dm_nuc_last[i], vhf_last[1 + i]))
+        if mf.mf_positron is not None:
+            h1e.append(mf.mf_positron.get_hcore())
+            vhf.append(mf.mf_positron.get_veff(mol.positron, mf.dm_positron,
+                                               dm_positron_last, vhf_last[-1]))
         vhf_last = None
 
         # Here Fock matrix is h1e + vhf, without DIIS.  Calling get_fock
@@ -809,30 +977,60 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf, no DIIS
         if mf.dm_elec.ndim > 2:
             fock_e = numpy.asarray((fock[0], fock[1]))
-            start = 2
         else:
             fock_e = fock[0]
-            start = 1
         norm_gorb_e = numpy.linalg.norm(mf.mf_elec.get_grad(mo_coeff_e, mo_occ_e, fock_e))
         if not TIGHT_GRAD_CONV_TOL:
             norm_gorb_e = norm_gorb_e / numpy.sqrt(norm_gorb_e.size)
         norm_ddm_e = numpy.linalg.norm(mf.dm_elec - dm_elec_last)
 
-        grad_n = []
-        for i in range(mol.nuc_num):
-            fock_n = fock[start + i]
-            grad_n.append(mf.mf_nuc[i].get_grad(mo_coeff_n[i], mo_occ_n[i], fock_n))
-        norm_gorb_n = numpy.linalg.norm(numpy.concatenate(grad_n, axis=None))
-        if not TIGHT_GRAD_CONV_TOL:
-            norm_gorb_n = norm_gorb_n / numpy.sqrt(norm_gorb_n.size)
-        norm_ddm_n = numpy.linalg.norm(numpy.concatenate(mf.dm_nuc, axis=None)
-                                       - numpy.concatenate(dm_nuc_last, axis=None))
+        norm_gorb_n = norm_ddm_n = 0.0
+        if mol.nuc_num > 0:
+            grad_n = []
+            for i in range(mol.nuc_num):
+                fock_n = fock[start + i]
+                grad_n.append(mf.mf_nuc[i].get_grad(mo_coeff_n[i], mo_occ_n[i], fock_n))
+            norm_gorb_n = numpy.linalg.norm(numpy.concatenate(grad_n, axis=None))
+            if not TIGHT_GRAD_CONV_TOL:
+                norm_gorb_n = norm_gorb_n / numpy.sqrt(norm_gorb_n.size)
+            norm_ddm_n = numpy.linalg.norm(numpy.concatenate(mf.dm_nuc, axis=None)
+                                           - numpy.concatenate(dm_nuc_last, axis=None))
+        norm_gorb_p = norm_ddm_p = 0.0
 
-        e_tot = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e[0], vhf[0], h1e[1:], vhf[1:])
-        logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |g_n|= %4.3g  |ddm_n|= %4.3g',
-                    cycle + 1, e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e, norm_gorb_n, norm_ddm_n)
+        if mf.mf_positron is not None:
+            if mf.dm_positron.ndim > 2:
+                fock_p = numpy.asarray((fock[-2], fock[-1]))
+            else:
+                fock_p = fock[-1]
+            norm_gorb_p = numpy.linalg.norm(mf.mf_positron.get_grad(mo_coeff_p, mo_occ_p, fock_p))
+            if not TIGHT_GRAD_CONV_TOL:
+                norm_gorb_p = norm_gorb_p / numpy.sqrt(norm_gorb_p.size)
+            norm_ddm_p = numpy.linalg.norm(mf.dm_positron - dm_positron_last)
 
-        if abs(e_tot - last_e) < conv_tol and norm_gorb_e < conv_tol_grad and norm_gorb_n < conv_tol_grad:
+            e_tot = mf.energy_tot(mf.dm_elec, h1e[0], vhf[0],
+                                  mf.dm_nuc, h1e[1:-1], vhf[1:-1],
+                                  mf.dm_positron, h1e[-1], vhf[-1])
+            if mol.nuc_num > 0:
+                logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |g_n|= %4.3g  |ddm_n|= %4.3g  |g_p|= %4.3g  |ddm_p|= %4.3g',
+                            cycle + 1, e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e,
+                            norm_gorb_n, norm_ddm_n, norm_gorb_p, norm_ddm_p)
+            else:
+                logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |g_p|= %4.3g  |ddm_p|= %4.3g',
+                            cycle + 1, e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e,
+                            norm_gorb_p, norm_ddm_p)
+        else:
+            e_tot = mf.energy_tot(mf.dm_elec, h1e[0], vhf[0],
+                                  mf.dm_nuc, h1e[1:], vhf[1:])
+            if mol.nuc_num > 0:
+                logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |g_n|= %4.3g  |ddm_n|= %4.3g',
+                            cycle + 1, e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e,
+                            norm_gorb_n, norm_ddm_n)
+            else:
+                logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g',
+                            cycle + 1, e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e)
+
+        if abs(e_tot - last_e) < conv_tol and norm_gorb_e < conv_tol_grad and \
+                norm_gorb_n < conv_tol_grad and norm_gorb_p < conv_tol_grad:
             scf_conv = True
 
         if dump_chk:
@@ -864,11 +1062,24 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             mf.mf_nuc[i].mo_occ = mo_occ_n[i]
             mf.dm_nuc[i], dm_nuc_last[i] = mf.mf_nuc[i].make_rdm1(mo_coeff_n[i], mo_occ_n[i]), mf.dm_nuc[i]
 
+        if start + mol.nuc_num < len(fock):
+            mo_energy_p, mo_coeff_p = mf.mf_positron.eig(fock_p, s1e[-1])
+            mf.mf_positron.mo_energy, mf.mf_positron.mo_coeff = mo_energy_p, mo_coeff_p
+            mo_occ_p = mf.mf_positron.get_occ(mo_energy_p, mo_coeff_p)
+            mf.mf_positron.mo_occ = mo_occ_p
+            mf.dm_positron, dm_positron_last = mf.mf_positron.make_rdm1(mo_coeff_p, mo_occ_p), mf.dm_positron
+            mf.dm_positron = lib.tag_array(mf.dm_positron, mo_coeff=mo_coeff_p, mo_occ=mo_occ_p)
+
         if mf.dm_elec.ndim > 2:
             dm = [mf.dm_elec[0], mf.dm_elec[1]]
         else:
             dm = [mf.dm_elec]
         dm += mf.dm_nuc
+        if mf.dm_positron is not None:
+            if mf.dm_positron.ndim > 2:
+                dm += [mf.dm_positron[0], mf.dm_positron[1]]
+            else:
+                dm += [mf.dm_positron]
 
         # update the so-called "core" Hamiltonian and veff after the density is updated
         h1e = [mf.mf_elec.get_hcore()]
@@ -876,41 +1087,86 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         vhf = [mf.mf_elec.get_veff(mol.elec, mf.dm_elec, dm_elec_last, vhf_last[0])]
         for i in range(mol.nuc_num):
             h1e.append(mf.mf_nuc[i].get_hcore())
-            vhf.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i], dm_nuc_last[i], vhf_last[1 + i]))
+            vhf.append(mf.mf_nuc[i].get_veff(mol.nuc[i], mf.dm_nuc[i],
+                                             dm_nuc_last[i], vhf_last[1 + i]))
+        if mf.mf_positron is not None:
+            h1e.append(mf.mf_positron.get_hcore())
+            vhf.append(mf.mf_positron.get_veff(mol.positron, mf.dm_positron,
+                                               dm_positron_last, vhf_last[-1]))
         vhf_last = None
 
-        e_tot, last_e = mf.energy_tot(mf.dm_elec, mf.dm_nuc, h1e[0], vhf[0], h1e[1:], vhf[1:]), e_tot
+        if mf.mf_positron is not None:
+            e_tot, last_e = mf.energy_tot(mf.dm_elec, h1e[0], vhf[0],
+                                          mf.dm_nuc, h1e[1:-1], vhf[1:-1],
+                                          mf.dm_positron, h1e[-1], vhf[-1]), e_tot
+        else:
+            e_tot, last_e = mf.energy_tot(mf.dm_elec, h1e[0], vhf[0],
+                                          mf.dm_nuc, h1e[1:], vhf[1:]), e_tot
 
         fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf, no DIIS
         if mf.dm_elec.ndim > 2:
             fock_e = numpy.asarray((fock[0], fock[1]))
-            start = 2
         else:
             fock_e = fock[0]
-            start = 1
         norm_gorb_e = numpy.linalg.norm(mf.mf_elec.get_grad(mo_coeff_e, mo_occ_e, fock_e))
         if not TIGHT_GRAD_CONV_TOL:
             norm_gorb_e = norm_gorb_e / numpy.sqrt(norm_gorb_e.size)
         norm_ddm_e = numpy.linalg.norm(mf.dm_elec - dm_elec_last)
 
-        grad_n = []
-        for i in range(mol.nuc_num):
-            fock_n = fock[start + i]
-            grad_n.append(mf.mf_nuc[i].get_grad(mo_coeff_n[i], mo_occ_n[i], fock_n))
-        norm_gorb_n = numpy.linalg.norm(numpy.concatenate(grad_n, axis=None))
-        if not TIGHT_GRAD_CONV_TOL:
-            norm_gorb_n = norm_gorb_n / numpy.sqrt(norm_gorb_n.size)
-        norm_ddm_n = numpy.linalg.norm(numpy.concatenate(mf.dm_nuc, axis=None)
-                                       - numpy.concatenate(dm_nuc_last, axis=None))
+        norm_gorb_n = norm_ddm_n = 0.0
+        if mol.nuc_num > 0:
+            grad_n = []
+            for i in range(mol.nuc_num):
+                fock_n = fock[start + i]
+                grad_n.append(mf.mf_nuc[i].get_grad(mo_coeff_n[i], mo_occ_n[i], fock_n))
+            norm_gorb_n = numpy.linalg.norm(numpy.concatenate(grad_n, axis=None))
+            if not TIGHT_GRAD_CONV_TOL:
+                norm_gorb_n = norm_gorb_n / numpy.sqrt(norm_gorb_n.size)
+            norm_ddm_n = numpy.linalg.norm(numpy.concatenate(mf.dm_nuc, axis=None)
+                                           - numpy.concatenate(dm_nuc_last, axis=None))
+
+        norm_gorb_p = norm_ddm_p = 0.0
 
         conv_tol = conv_tol * 10
         conv_tol_grad = conv_tol_grad * 3
-        if abs(e_tot - last_e) < conv_tol or (norm_gorb_e < conv_tol_grad and norm_gorb_n < conv_tol_grad):
+        if abs(e_tot - last_e) < conv_tol or \
+                (norm_gorb_e < conv_tol_grad and norm_gorb_n < conv_tol_grad and
+                 norm_gorb_p < conv_tol_grad):
             scf_conv = True
-        logger.info(mf, 'Extra cycle  E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |g_n|=%4.3g  |ddm_n|= %4.3g',
-                    e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e, norm_gorb_n, norm_ddm_n)
+        if mf.mf_positron is not None:
+            if mf.dm_positron.ndim > 2:
+                fock_p = numpy.asarray((fock[-2], fock[-1]))
+            else:
+                fock_p = fock[-1]
+            norm_gorb_p = numpy.linalg.norm(mf.mf_positron.get_grad(mo_coeff_p, mo_occ_p, fock_p))
+            if not TIGHT_GRAD_CONV_TOL:
+                norm_gorb_p = norm_gorb_p / numpy.sqrt(norm_gorb_p.size)
+            norm_ddm_p = numpy.linalg.norm(mf.dm_positron - dm_positron_last)
+
+            if mol.nuc_num > 0:
+                logger.info(mf, 'Extra cycle  E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |g_n|= %4.3g  |ddm_n|= %4.3g  |g_p|= %4.3g  |ddm_p|= %4.3g',
+                            e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e,
+                            norm_gorb_n, norm_ddm_n, norm_gorb_p, norm_ddm_p)
+            else:
+                logger.info(mf, 'Extra cycle  E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |g_p|= %4.3g  |ddm_p|= %4.3g',
+                            e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e,
+                            norm_gorb_p, norm_ddm_p)
+        else:
+            if mol.nuc_num > 0:
+                logger.info(mf, 'Extra cycle  E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  |g_n|= %4.3g  |ddm_n|= %4.3g',
+                            e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e,
+                            norm_gorb_n, norm_ddm_n)
+            else:
+                logger.info(mf, 'Extra cycle  E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g',
+                            e_tot, e_tot - last_e, norm_gorb_e, norm_ddm_e)
         if dump_chk:
             mf.dump_chk(locals())
+
+    if mf.disp is not None:
+        mf.mf_elec.disp = mf.disp
+        e_disp = mf.mf_elec.get_dispersion()
+        mf.scf_summary['dispersion'] = mf.mf_elec.scf_summary['dispersion'] = e_disp
+        e_tot += e_disp
 
     logger.timer(mf, 'scf_cycle', *cput0)
     # A post-processing hook before return
@@ -919,7 +1175,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     if mf.dm_elec.ndim > 2:
         mf.dm_elec = mf.dm_elec[0] + mf.dm_elec[1]
     return scf_conv, e_tot, mo_energy_e, mo_coeff_e, mo_occ_e, \
-           mo_energy_n, mo_coeff_n, mo_occ_n
+           mo_energy_n, mo_coeff_n, mo_occ_n, \
+           mo_energy_p, mo_coeff_p, mo_occ_p
 
 def as_scanner(mf):
     '''Generating a scanner/solver for (C)NEO PES.
@@ -929,47 +1186,69 @@ def as_scanner(mf):
         return mf
 
     logger.info(mf, 'Create scanner for %s', mf.__class__)
+    name = mf.__class__.__name__ + CNEO_Scanner.__name_mixin__
+    return lib.set_class(CNEO_Scanner(mf), (CNEO_Scanner, mf.__class__), name)
 
-    class CNEO_Scanner(mf.__class__, lib.SinglePointScanner):
-        def __init__(self, mf_obj):
-            self.__dict__.update(mf_obj.__dict__)
+class CNEO_Scanner(lib.SinglePointScanner):
+    def __init__(self, mf_obj):
+        self.__dict__.update(mf_obj.__dict__)
+        self._last_mol_fp = mf_obj.mol.elec.ao_loc
 
-        def __call__(self, mol_or_geom, **kwargs):
-            if isinstance(mol_or_geom, neo.Mole):
-                mol = mol_or_geom
-            else:
-                mol = self.mol.set_geom_(mol_or_geom, inplace=False)
+    def __call__(self, mol_or_geom, **kwargs):
+        if isinstance(mol_or_geom, neo.Mole):
+            mol = mol_or_geom
+        else:
+            mol = self.mol.set_geom_(mol_or_geom, inplace=False)
 
-            # Cleanup intermediates associated to the pervious mol object
-            self.reset(mol)
+        # Cleanup intermediates associated to the pervious mol object
+        self.reset(mol)
 
-            # Only electronic dm0 is of interest
-            if 'dm0' in kwargs:
-                dm0 = kwargs.pop('dm0')
-            elif self.mf_elec.mo_coeff is None:
-                dm0 = None
-            elif self.chkfile and h5py.is_hdf5(self.chkfile):
-                dm0 = self.mf_elec.from_chk(self.chkfile)
-            else:
+        if 'dm0' in kwargs:
+            dm0 = kwargs.pop('dm0') # this can be electronic only or full
+        elif self.mf_elec.mo_coeff is None:
+            dm0 = None
+        elif self.chkfile and h5py.is_hdf5(self.chkfile):
+            dm0 = self.mf_elec.from_chk(self.chkfile)
+        else:
+            dm0 = None
+            # dm0 form last calculation cannot be used in the current
+            # calculation if a completely different system is given.
+            # Obviously, the systems are very different if the number of
+            # basis functions are different.
+            # TODO: A robust check should include more comparison on
+            # various attributes between current `mol` and the `mol` in
+            # last calculation.
+            if numpy.array_equal(self._last_mol_fp, mol.elec.ao_loc):
                 dm0 = self.mf_elec.make_rdm1()
-                if dm0.shape[-1] != mol.elec.nao:
-                    dm0 = None
-            self.mf_elec.mo_coeff = None
-            if dm0 is not None:
+        self.mf_elec.mo_coeff = None
+        # NOTE: if you really do not want the last step nuclear dm0
+        # from here but want to specify electronic dm0 through the
+        # dm0 option, make your dm0 a list with only one ndarry in it:
+        #    [dm0_e]
+        # such that it is a list, then it won't enter the following
+        # code block, and scf can successfully run, knowing only
+        # electronic dm0 is supplied.
+        if dm0 is not None and not isinstance(dm0, list):
+            # Full dm0 should be a list. If array, must be elec only.
+            # Then get the nuclear dm0 if still the same system.
+            # Still the same check as before.
+            if numpy.array_equal(self._last_mol_fp, mol.elec.ao_loc):
                 dm0n = []
                 for i in range(mol.nuc_num):
+                    if self.mf_nuc[i].mo_coeff is None:
+                        dm0n = None
+                        break
                     dm0n.append(self.mf_nuc[i].make_rdm1())
                     if dm0n[-1].shape[-1] != mol.nuc[i].nao:
                         dm0n = None
                         break
-                if dm0n is not None and len(dm0n) == mol.nuc_num:
-                    dm0 = [dm0] + dm0n
-            for i in range(mol.nuc_num):
-                self.mf_nuc[i].mo_coeff = None
-            e_tot = self.kernel(dm0=dm0, **kwargs)
-            return e_tot
-
-    return CNEO_Scanner(mf)
+            if dm0n is not None and len(dm0n) == mol.nuc_num:
+                dm0 = [dm0] + dm0n
+        for i in range(mol.nuc_num):
+            self.mf_nuc[i].mo_coeff = None
+        e_tot = self.kernel(dm0=dm0, **kwargs)
+        self._last_mol_fp = mol.elec.ao_loc
+        return e_tot
 
 
 class HF(scf.hf.SCF):
@@ -991,6 +1270,11 @@ class HF(scf.hf.SCF):
         scf.hf.SCF.__init__(self, mol)
         if mol.elec.nhomo is not None or mol.spin != 0:
             unrestricted = True
+        # NOTE: LIMIT: when EITHER electron or positron wave function
+        # is unrestricted, both will be unrestricted. It is to let
+        # `get_jk` communicate more easily between electron and positron.
+        if mol.positron is not None and mol.positron.spin != 0:
+            unrestricted = True
         self.unrestricted = unrestricted
         self.mf_elec = None
         # dm_elec will be the total density after SCF, but can be spin
@@ -998,18 +1282,28 @@ class HF(scf.hf.SCF):
         self.dm_elec = None
         self.mf_nuc = []
         self.dm_nuc = []
+        self.mf_positron = None
+        self.dm_positron = None
         # The verbosity flag is passed now instead of when creating those mol
         # objects because users need time to change mol's verbose level after
         # the mol object is created.
         self.mol.elec.verbose = self.mol.verbose
         for i in range(mol.nuc_num):
             self.mol.nuc[i].verbose = self.mol.verbose
+        if self.mol.positron is not None:
+            self.mol.positron.verbose = self.mol.verbose
         # placeholder for ERIs
         self._eri_ne = []
         self._eri_nn = []
         for i in range(mol.nuc_num):
             self._eri_ne.append(None)
             self._eri_nn.append([None] * mol.nuc_num)
+        # Positron ERIs, but if we assume positron basis is the
+        # same as electronic basis, then we don't need to rebuild anything.
+        self._eri_ep = None # electron - positron
+        self._eri_np = [] # quantum nuclei - positron
+        for i in range(mol.nuc_num):
+            self._eri_np.append(None)
 
         # initialize sub mf objects for electrons and quantum nuclei
         # electronic part:
@@ -1017,6 +1311,11 @@ class HF(scf.hf.SCF):
             self.mf_elec = scf.UHF(mol.elec)
         else:
             self.mf_elec = scf.RHF(mol.elec)
+        if mol.positron is not None:
+            if unrestricted:
+                self.mf_positron = scf.UHF(mol.positron)
+            else:
+                self.mf_positron = scf.RHF(mol.positron)
         if df_ee:
             self.mf_elec = self.mf_elec.density_fit(auxbasis=auxbasis_e,
                                                     only_dfj=only_dfj_e)
@@ -1026,6 +1325,9 @@ class HF(scf.hf.SCF):
         self.mf_elec.hcore_static = None # cache true hcore
         if mol.elec.nhomo is not None:
             self.mf_elec.get_occ = self.get_occ_elec(self.mf_elec)
+        if self.mf_positron is not None:
+            self.mf_positron.get_hcore = self.get_hcore_positron
+            self.mf_positron.hcore_static = None # cache true hcore
 
         # nuclear part
         for i in range(mol.nuc_num):
@@ -1085,8 +1387,14 @@ class HF(scf.hf.SCF):
 
     def get_hcore_elec(self, mol=None):
         if mol is None: mol = self.mol.elec
-        return get_hcore_elec(mol, self.mf_elec, self.dm_nuc,
-                              self.mol.nuc, eri_ne=self._eri_ne)
+        return get_hcore_elec(mol, self.mf_elec, self.mol.nuc, self.dm_nuc,
+                              self.mol.positron, self.dm_positron, eri_ne=self._eri_ne)
+
+    def get_hcore_positron(self, mol=None):
+        if mol is None: mol = self.mol.positron
+        return get_hcore_positron(mol, self.mf_positron, self.mol.elec, self.dm_elec,
+                                  self.mol.nuc, self.dm_nuc, self.dm_positron,
+                                  eri_ne=self._eri_ne)
 
     def get_occ_nuc(self, mf):
         return get_occ_nuc(mf)
@@ -1097,8 +1405,9 @@ class HF(scf.hf.SCF):
     def get_hcore_nuc(self, mf):
         def get_hcore(mol=None):
             if mol is None: mol = mf.mol
-            return get_hcore_nuc(mol, mf, self.dm_elec, self.dm_nuc,
-                                 self.mol.elec, self.mol.nuc,
+            return get_hcore_nuc(mol, mf, self.mol.elec,self.dm_elec,
+                                 self.mol.nuc, self.dm_nuc,
+                                 self.mol.positron, self.dm_positron,
                                  eri_ne=self._eri_ne, eri_nn=self._eri_nn)
         return get_hcore
 
@@ -1110,9 +1419,11 @@ class HF(scf.hf.SCF):
     def energy_qmnuc(self, mf, h1n, dm_nuc, veff_n=None):
         return energy_qmnuc(mf, h1n, dm_nuc, veff_n=veff_n)
 
-    def energy_tot(self, dm_elec, dm_nuc, h1e, vhf_e, h1n, veff_n=None):
-        return energy_tot(self.mf_elec, self.mf_nuc, dm_elec, dm_nuc, h1e,
-                          vhf_e, h1n, veff_n=veff_n)
+    def energy_tot(self, dm_elec, h1e, vhf_e, dm_nuc=None, h1n=None, veff_n=None,
+                   dm_positron=None, h1p=None, vhf_p=None):
+        return energy_tot(self, self.mf_elec, dm_elec, h1e, vhf_e,
+                          self.mf_nuc, dm_nuc, h1n, veff_n,
+                          self.mf_positron,dm_positron, h1p, vhf_p)
 
     def scf(self, dm0=None, **kwargs):
         cput0 = (logger.process_clock(), logger.perf_counter())
@@ -1151,14 +1462,31 @@ class HF(scf.hf.SCF):
 
     def reset(self, mol=None):
         '''Reset mol and relevant attributes associated to the old mol object'''
+        if self.mf_positron is not None:
+            raise NotImplementedError
         super().reset(mol=mol)
         self.mf_elec.reset(self.mol.elec)
         self.dm_elec = None
-        for i in range(self.mol.nuc_num):
-            self.mf_nuc[i].reset(self.mol.nuc[i])
-            self.dm_nuc[i] = None
-            self._eri_ne[i] = None
-            self._eri_nn[i] = [None] * self.mol.nuc_num
+        if len(self.mf_nuc) == mol.nuc_num:
+            # number of quantum nuc is the same, reset nuc mole
+            for i in range(mol.nuc_num):
+                self.mf_nuc[i].reset(mol.nuc[i])
+                self.dm_nuc[i] = None
+                self._eri_ne[i] = None
+                self._eri_nn[i] = [None] * mol.nuc_num
+        else:
+            # number of quantum nuc is different, need to rebuild
+            self.mf_nuc = []
+            self.dm_nuc = []
+            self._eri_ne = []
+            self._eri_nn = []
+            for i in range(mol.nuc_num):
+                self.mf_nuc.append(scf.RHF(mol.nuc[i]))
+                mf_nuc = self.mf_nuc[-1]
+                mf_nuc.occ_state = 0
+                self.dm_nuc.append(None)
+                self._eri_ne.append(None)
+                self._eri_nn.append([None] * mol.nuc_num)
 
         # point to correct ``self'' for overriden functions
         self.mf_elec.get_hcore = self.get_hcore_elec

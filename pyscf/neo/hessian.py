@@ -881,6 +881,9 @@ class Hessian(lib.StreamObject):
         de2 = hobj.hess_elec(mo1=mo1e, mo_e1=e1e, h1ao=h1ao_e,
                              max_memory=max_memory, verbose=verbose) \
               + hobj.hess_nuc()
+        if self.base.disp is not None:
+            self.base.mf_elec.disp = self.base.disp
+            de2 += hobj.get_dispersion()
         return de2
 
     def kernel(self, atmlst=None):
