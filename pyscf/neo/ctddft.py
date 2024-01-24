@@ -52,6 +52,31 @@ def _normalize(x1, mo_occ):
 
     return xy
 
+def as_scanner(td):
+
+    if isinstance(td, lib.SinglePointScanner):
+        return td
+
+    logger.info(td, 'Set %s as a scanner', td.__class__)
+
+    class CNEO_TD_Scanner(td.__class__, lib.SinglePointScanner):
+        def __init__(self, td):
+            self.__dict__.update(td.__dict__)
+            self._scf = td._scf.as_scanner()
+        def __call__(self, mol_or_geom, **kwargs):
+            if isinstance(mol_or_geom, neo.Mole):
+                mol = mol_or_geom
+            else:
+                mol = self.mol.set_geom_(mol_or_geom, inplace=False)
+
+            self.reset(mol)
+
+            mf_scanner = self._scf
+            mf_e = mf_scanner(mol)
+            self.kernel(**kwargs)
+            return self.e + mf_e
+    return CNEO_TD_Scanner(td)
+
     
 class CTDBase(rhf.TDMixin):
     
@@ -60,8 +85,8 @@ class CTDBase(rhf.TDMixin):
 
         self.driver = driver
         self.unrestricted = mf.unrestricted
-        self.full = None
-        self.ab = None
+
+        self._keys = self._keys.union(['driver', 'unrestricted'])
     
     def check_sanity(self):
         if self._scf.mf_elec.mo_coeff is None:
@@ -69,18 +94,12 @@ class CTDBase(rhf.TDMixin):
         lib.StreamObject.check_sanity(self)
     
     def get_ab(self):
-        if self.ab is None:
-            a, b = get_ab(self._scf)
-            self.ab = [a, b]
-
-        return self.ab
+        a, b = get_ab(self._scf)
+        return [a,b]
     
     def get_full(self):
-        if self.full is None:
-            a, b = self.get_ab()
-            self.full = tddft_slow.full_elec(a, b)
-
-        return self.full
+        a, b = self.get_ab()
+        return tddft_slow.full_elec(a, b)
 
     def kernel(self, nstates=None):
         cpu0 = (logger.process_clock(), logger.perf_counter())
@@ -99,9 +118,6 @@ class CTDBase(rhf.TDMixin):
 
         self.e = numpy.array(w)
         self.xy = _normalize(x1, self._scf.mf_elec.mo_occ)
-        if self.chkfile:
-            lib.chkfile.save(self.chkfile, 'tddft/e', self.e)
-            lib.chkfile.save(self.chkfile, 'tddft/xy', self.xy)
 
         log.timer('TDDFT', *cpu0)
         self._finalize()
@@ -113,6 +129,8 @@ class CTDBase(rhf.TDMixin):
             raise NotImplementedError('unrestricted is not supported for td gradients')
         from pyscf.neo import tdgrad
         return tdgrad.Gradients(self)
+
+    as_scanner = as_scanner
     
 
 class CTDDFT(CTDBase):
@@ -168,11 +186,11 @@ class CTDDFT(CTDBase):
         
         self.e = numpy.array(w)
         self.xy = _normalize(x1, self._scf.mf_elec.mo_occ)
-        if self.chkfile:
-            lib.chkfile.save(self.chkfile, 'tddft/e', self.e)
-            lib.chkfile.save(self.chkfile, 'tddft/xy', self.xy)
 
         log.timer('TDDFT', *cpu0)
         self._finalize()
 
         return self.e, self.xy
+
+neo.cdft.CDFT.TDBase = lib.class_as_method(CTDBase)
+neo.cdft.CDFT.TDDFT = lib.class_as_method(CTDDFT)

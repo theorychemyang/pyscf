@@ -313,6 +313,11 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
 
     mf_grad = neo.Gradients(mf)
     mf_grad_e = mf_grad.g_elec
+    
+    if td_grad.grid_response is not None:
+        mf_grad_e.grid_response = td_grad.grid_response
+        vhf = mf_grad_e.get_veff(mol.elec, mf.dm_elec)
+
     hcore_deriv_e = mf_grad_e.hcore_generator(mol_e)
     s1_e = mf_grad_e.get_ovlp(mol_e)
     hcore_deriv_n = []
@@ -421,6 +426,8 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
         de[k] += numpy.einsum('xij,ij->x', h1ao_e, dmz1doo+mf.dm_elec)  # dm_elec: ground state gradients
         de[k] += numpy.einsum('xij,ij->x', z1ao_e, mf.dm_elec[p0:p1])
 
+        de[k] += mf_grad_e.extra_force(ka, locals())
+
     log.timer('TDHF nuclear gradients', *time0)
     return de
 
@@ -465,6 +472,11 @@ def as_scanner(td_grad, state=1):
 
 class Gradients(tdrhf.Gradients):
 
+    def __init__(self, td):
+        tdrhf.Gradients.__init__(self, td)
+        self.grid_response = None
+        self._keys = self._keys.union(['grid_response'])
+
     @lib.with_doc(grad_elec.__doc__)
     def grad_elec(self, xy, singlet, atmlst=None):
         return grad_elec(self, xy, singlet, atmlst, self.max_memory, self.verbose)
@@ -472,6 +484,19 @@ class Gradients(tdrhf.Gradients):
     def grad_nuc(self, mol=None, atmlst=None):
         mf_grad = self.base._scf.mf_elec.nuc_grad_method()
         return mf_grad.grad_nuc(mol, atmlst)
+    
+    def optimizer(self, solver='geometric', state=1):
+        '''Geometry optimization solver
+            Copied from grad.rhf.GradientsMixin.optimizer() (add state)
+        '''
+        if solver.lower() == 'geometric':
+            from pyscf.geomopt import geometric_solver
+            return geometric_solver.GeometryOptimizer(self.as_scanner(state=state))
+        elif solver.lower() == 'berny':
+            from pyscf.geomopt import berny_solver
+            return berny_solver.GeometryOptimizer(self.as_scanner(state=state))
+        else:
+            raise RuntimeError('Unknown geometry optimization solver %s' % solver)
     
     def kernel(self, xy=None, state=None, singlet=True, atmlst=None):
         '''
