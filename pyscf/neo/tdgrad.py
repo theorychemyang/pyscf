@@ -93,7 +93,7 @@ def solve_nos1(fvind, mf_e, mf_n, h1e, h1n, with_f1n=False,
     if with_f1n:
         mo1base = numpy.concatenate((mo1base_e,
                                      numpy.concatenate(mo1base_n, axis=None),
-                                     numpy.zeros(3*len(mf_n)*len(mo1base_e))),
+                                     numpy.zeros(3*len(mf_n))),
                                     axis=None)
     else:
         mo1base = numpy.concatenate((mo1base_e,
@@ -247,34 +247,24 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
         v1e = reduce(numpy.dot, (orbv_e.T, v1ao_e, orbo_e)).ravel()
         v1n = []
         for i in range(len(x_n)):
+            if f1n is not None:
+                f_add = neo.cdft.get_fock_add_cdft(f1n[i].ravel(), int1e_r_ao[i]) * 2.0
+                v1ao_n[i] += f_add
             v1n.append(reduce(numpy.dot, (orbv_n[i].T, v1ao_n[i], orbo_n[i])).ravel())
 
-        return v1e, v1n, None
-    
-    if isinstance(mf, neo.CDFT):
-        def z1r1vo(gs):
-            gs = gs.reshape((-1,3))
-            wvo_n_cdft = []
-            for i in range(len(wvo_n)):
-                f_add = neo.cdft.get_fock_add_cdft(gs[i], int1e_r_ao[i]) * 2.0
-                wvo_n_cdft.append(wvo_n[i]+reduce(numpy.dot, (orbv_n[i].T, f_add, orbo_n[i])))
-            z1_e, mo_e1_e, z1_n, f1n = solve_nos1(fvind, mf_e, mf_n, wvo_e, wvo_n_cdft,
-                                                  max_cycle = td_grad.cphf_max_cycle, 
-                                                  tol = td_grad.cphf_conv_tol)
-            for i in range(len(z1_n)):
-                z1_n[i] = z1_n[i].reshape(nvir_n[i], nocc_n[i])
+        rfn = None
+        if f1n is not None:
+            rfn = position_analysis(x_n, int1e_r_vo)
 
-            return position_analysis(z1_n, int1e_r_vo).ravel()
-        
-        sol = scipy.optimize.root(z1r1vo, numpy.zeros(mol.nuc_num*3), method='hybr')
-        gs = sol.x.reshape((-1,3))
-        for i in range(len(wvo_n)):
-            g_add = neo.cdft.get_fock_add_cdft(gs[i], int1e_r_ao[i]) * 2.0
-            wvo_n[i] += reduce(numpy.dot, (orbv_n[i].T, g_add, orbo_n[i]))
+        return v1e, v1n, rfn
     
+    with_f1n = False
+    if isinstance(mf, neo.CDFT):
+        with_f1n = True
     z1_e, mo_e1_e, z1_n, f1n = solve_nos1(fvind, mf_e, mf_n, wvo_e, wvo_n,
                                           max_cycle=td_grad.cphf_max_cycle,
-                                          tol=td_grad.cphf_conv_tol)
+                                          tol=td_grad.cphf_conv_tol,
+                                          with_f1n = with_f1n)
     
     z1_e.reshape(nvir_e, nocc_e)
     for i in range(len(z1_n)):

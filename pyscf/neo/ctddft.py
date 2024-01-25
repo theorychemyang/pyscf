@@ -78,10 +78,10 @@ def as_scanner(td):
     return CNEO_TD_Scanner(td)
 
     
-class CTDBase(rhf.TDMixin):
+class CTDBase(rhf.TDBase):
     
     def __init__(self, mf, driver='eig'):
-        rhf.TDMixin.__init__(self, mf)
+        rhf.TDBase.__init__(self, mf)
 
         self.driver = driver
         self.unrestricted = mf.unrestricted
