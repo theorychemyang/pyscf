@@ -49,7 +49,28 @@ def init_guess_by_atom(mol):
 
 init_guess_by_huckel = uhf.init_guess_by_huckel
 init_guess_by_mod_huckel = uhf.init_guess_by_mod_huckel
-init_guess_by_chkfile = uhf.init_guess_by_chkfile
+
+def init_guess_by_chkfile(mol, chkfile_name, project=None):
+    '''Read SCF chkfile and make the density matrix for ROHF initial guess.
+
+    Kwargs:
+        project : None or bool
+            Whether to project chkfile's orbitals to the new basis.  Note when
+            the geometry of the chkfile and the given molecule are very
+            different, this projection can produce very poor initial guess.
+            In PES scanning, it is recommended to switch off project.
+
+            If project is set to None, the projection is only applied when the
+            basis sets of the chkfile's molecule are different to the basis
+            sets of the given molecule (regardless whether the geometry of
+            the two molecules are different).  Note the basis sets are
+            considered to be different if the two molecules are derived from
+            the same molecule with different ordering of atoms.
+    '''
+    dm = uhf.init_guess_by_chkfile(mol, chkfile_name, project)
+    mo_coeff = dm.mo_coeff[0]
+    mo_occ = dm.mo_occ[0] + dm.mo_occ[1]
+    return lib.tag_array(dm, mo_coeff=mo_coeff, mo_occ=mo_occ)
 
 def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
              diis_start_cycle=None, level_shift_factor=None, damp_factor=None):
@@ -145,7 +166,6 @@ def get_occ(mf, mo_energy=None, mo_coeff=None):
     else:
         mo_ea = mo_eb = mo_energy
     nmo = mo_ea.size
-    mo_occ = numpy.zeros(nmo)
     if getattr(mf, 'nelec', None) is None:
         nelec = mf.mol.nelec
     else:
@@ -220,8 +240,8 @@ def get_grad(mo_coeff, mo_occ, fock):
         focka, fockb = fock
     else:
         focka = fockb = fock
-    focka = reduce(numpy.dot, (mo_coeff.conj().T, focka, mo_coeff))
-    fockb = reduce(numpy.dot, (mo_coeff.conj().T, fockb, mo_coeff))
+    focka = mo_coeff.conj().T.dot(focka).dot(mo_coeff)
+    fockb = mo_coeff.conj().T.dot(fockb).dot(mo_coeff)
 
     g = numpy.zeros_like(focka)
     g[uniq_var_a]  = focka[uniq_var_a]
