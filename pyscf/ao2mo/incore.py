@@ -194,15 +194,20 @@ def half_e1(eri_ao, mo_coeffs, compact=True):
     nao, nmoi = mo_coeffs[0].shape
     nmoj = mo_coeffs[1].shape[1]
     nao_pair = nao*(nao+1)//2
+    if len(mo_coeffs) == 4:
+        nao2 = mo_coeffs[2].shape[0]
+        nao2_pair = nao2*(nao2+1)//2
+    else:
+        nao2_pair = nao_pair
     ijmosym, nij_pair, moij, ijshape = _conc_mos(mo_coeffs[0], mo_coeffs[1], compact)
     ijshape = (ijshape[0], ijshape[1]-ijshape[0],
                ijshape[2], ijshape[3]-ijshape[2])
 
-    eri1 = numpy.empty((nij_pair,nao_pair))
+    eri1 = numpy.empty((nij_pair,nao2_pair))
     if nij_pair == 0:
         return eri1
 
-    if eri_ao.size == nao_pair**2: # 4-fold symmetry
+    if eri_ao.size == nao_pair*nao2_pair: # 4-fold symmetry
         # half_e1 first transforms the indices which are contiguous in memory
         # transpose the 4-fold integrals to make ij the contiguous indices
         eri_ao = lib.transpose(eri_ao)
@@ -221,7 +226,7 @@ def half_e1(eri_ao, mo_coeffs, compact=True):
     fdrv = getattr(_ao2mo.libao2mo, 'AO2MOnr_e1incore_drv')
 
     buf = numpy.empty((BLOCK, nij_pair))
-    for p0, p1 in lib.prange(0, nao_pair, BLOCK):
+    for p0, p1 in lib.prange(0, nao2_pair, BLOCK):
         fdrv(ftrans, fmmm,
              buf.ctypes.data_as(ctypes.c_void_p),
              eri_ao.ctypes.data_as(ctypes.c_void_p),
