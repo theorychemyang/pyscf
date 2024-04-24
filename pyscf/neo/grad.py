@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 '''
-Analytical nuclear gradient for constrained nuclear-electronic orbital
+Analytic nuclear gradient for constrained nuclear-electronic orbital
 '''
 import numpy
 from pyscf import df, gto, lib, neo
@@ -219,22 +219,33 @@ def hcore_generator(mf_grad, mol_n):
 def grad_hcore_mm(mm_mol, mol_n, dm_n):
     coords = mm_mol.atom_coords()
     charges = mm_mol.atom_charges()
-    expnts = mm_mol.get_zetas()
-
-    intor = 'int3c2e_ip2'
-    nao = mol_n.nao
-    max_memory = mol_n.super_mol.max_memory - lib.current_memory()[0]
-    blksize = int(min(max_memory*1e6/8/nao**2/3, 200))
-    blksize = max(blksize, 1)
-    cintopt = gto.moleintor.make_cintopt(mol_n._atm, mol_n._bas,
-                                         mol_n._env, intor)
-
     g = numpy.empty_like(coords)
-    for i0, i1 in lib.prange(0, charges.size, blksize):
-        fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
-        j3c = df.incore.aux_e2(mol_n, fakemol, intor, aosym='s1',
-                               comp=3, cintopt=cintopt)
-        g[i0:i1] = numpy.einsum('ipqk,qp->ik', j3c * charges[i0:i1], dm_n).T
+    if mm_mol.charge_model == 'gaussian':
+        expnts = mm_mol.get_zetas()
+
+        intor = 'int3c2e_ip2'
+        nao = mol_n.nao
+        max_memory = mol_n.super_mol.max_memory - lib.current_memory()[0]
+        blksize = int(min(max_memory*1e6/8/nao**2/3, 200))
+        blksize = max(blksize, 1)
+        cintopt = gto.moleintor.make_cintopt(mol_n._atm, mol_n._bas,
+                                             mol_n._env, intor)
+
+        for i0, i1 in lib.prange(0, charges.size, blksize):
+            fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
+            j3c = df.incore.aux_e2(mol_n, fakemol, intor, aosym='s1',
+                                   comp=3, cintopt=cintopt)
+            g[i0:i1] = numpy.einsum('ipqk,qp->ik', j3c * charges[i0:i1], dm_n).T
+    else:
+        # From examples/qmmm/30-force_on_mm_particles.py
+        # The interaction between electron density and MM particles
+        # d/dR <i| (1/|r-R|) |j> = <i| d/dR (1/|r-R|) |j> = <i| -d/dr (1/|r-R|) |j>
+        #   = <d/dr i| (1/|r-R|) |j> + <i| (1/|r-R|) |d/dr j>
+        for i, q in enumerate(charges):
+            with mol_n.with_rinv_origin(coords[i]):
+                v = mol_n.intor('int1e_iprinv')
+            g[i] = (numpy.einsum('ij,xji->x', dm_n, v) +
+                    numpy.einsum('ij,xij->x', dm_n, v.conj())) * -q
     ia = mol_n.atom_index
     charge = mol_n.super_mol.atom_charge(ia)
     return -charge * g
