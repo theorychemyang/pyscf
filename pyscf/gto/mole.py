@@ -25,9 +25,7 @@ import os
 import sys
 import types
 import re
-import platform
 import gc
-import time
 
 import json
 import ctypes
@@ -63,6 +61,7 @@ PTR_COORD  = 1
 NUC_MOD_OF = 2
 PTR_ZETA   = 3
 PTR_FRAC_CHARGE = 4
+PTR_RADIUS = 5
 ATM_SLOTS  = 6
 ATOM_OF    = 0
 ANG_OF     = 1
@@ -1209,7 +1208,8 @@ def copy(mol, deep=True):
     newmol._ecp    = copy.deepcopy(mol._ecp)
     newmol.pseudo  = copy.deepcopy(mol.pseudo)
     newmol._pseudo = copy.deepcopy(mol._pseudo)
-    newmol.magmom  = list(mol.magmom)
+    if mol.magmom is not None:
+        newmol.magmom  = list(mol.magmom)
     return newmol
 
 def pack(mol):
@@ -2419,6 +2419,15 @@ class MoleBase(lib.StreamObject):
         else:
             self.spin = int(round(2*x, 4))
 
+    @property
+    def enuc(self):
+        '''nuclear repulsion energy'''
+        if self._enuc is None:
+            self._enuc = self.energy_nuc()
+        return self._enuc
+    @enuc.setter
+    def enuc(self, x):
+        self._enuc = x
 
     copy = copy
 
@@ -2583,16 +2592,19 @@ class MoleBase(lib.StreamObject):
             # number of electrons are consistent.
             self.nelec
 
-        if self.magmom is None:
+        # reset nuclear energy
+        self.enuc = None
+
+        if not self.magmom:
             self.magmom = [0,] * self.natm
         elif len(self.magmom) != self.natm:
             logger.warn(self, 'len(magmom) != natm. Set magmom to zero')
             self.magmom = [0,] * self.natm
+        elif isinstance(self.magmom, np.ndarray):
+            self.magmom = self.magmom.tolist()
         if self.spin == 0 and abs(numpy.sum(self.magmom) - self.spin) > 1e-6:
             #don't check for unrestricted calcs.
             raise ValueError("mol.magmom is set incorrectly.")
-        if isinstance(self.magmom, np.ndarray):
-            self.magmom = self.magmom.tolist()
 
         if self.symmetry:
             self._build_symmetry()
@@ -2700,7 +2712,6 @@ class MoleBase(lib.StreamObject):
 
     def dump_input(self):
         import __main__
-        import pyscf
         if hasattr(__main__, '__file__'):
             try:
                 filename = os.path.abspath(__main__.__file__)
@@ -2714,19 +2725,9 @@ class MoleBase(lib.StreamObject):
             except IOError:
                 logger.warn(self, 'input file does not exist')
 
-        self.stdout.write('System: %s  Threads %s\n' %
-                          (str(platform.uname()), lib.num_threads()))
-        self.stdout.write('Python %s\n' % sys.version)
-        self.stdout.write('numpy %s  scipy %s\n' %
-                          (numpy.__version__, scipy.__version__))
-        self.stdout.write('Date: %s\n' % time.ctime())
-        self.stdout.write('PySCF version %s\n' % pyscf.__version__)
-        info = lib.repo_info(os.path.join(__file__, '..', '..'))
-        self.stdout.write('PySCF path  %s\n' % info['path'])
-        if 'git' in info:
-            self.stdout.write(info['git'] + '\n')
+        self.stdout.write('\n'.join(lib.misc.format_sys_info()))
 
-        self.stdout.write('\n')
+        self.stdout.write('\n\n')
         for key in os.environ:
             if 'PYSCF' in key:
                 self.stdout.write('[ENV] %s %s\n' % (key, os.environ[key]))
@@ -2802,7 +2803,8 @@ class MoleBase(lib.StreamObject):
 
         if self.verbose >= logger.INFO:
             self.stdout.write('\n')
-            logger.info(self, 'nuclear repulsion = %.15g', self.energy_nuc())
+            logger.info(self, 'nuclear repulsion = %.15g', self.enuc)
+
             if self.symmetry:
                 if self.topgroup == self.groupname:
                     logger.info(self, 'point group symmetry = %s', self.topgroup)
@@ -3067,6 +3069,9 @@ class MoleBase(lib.StreamObject):
         else:
             mol.symmetry = symmetry
             mol.build(False, False)
+
+        # reset nuclear energy
+        mol.enuc = None
 
         if mol.verbose >= logger.INFO:
             logger.info(mol, 'New geometry')
@@ -3560,7 +3565,9 @@ class MoleBase(lib.StreamObject):
 
     eval_ao = eval_gto = eval_gto
 
-    energy_nuc = get_enuc = energy_nuc
+    energy_nuc = energy_nuc
+    def get_enuc(self):
+        return self.enuc
 
     def get_ao_indices(self, bas_list, ao_loc=None):
         '''
@@ -3708,12 +3715,11 @@ class Mole(MoleBase):
         from Mole object.
         '''
         if key[0] == '_':  # Skip private attributes and Python builtins
-            raise AttributeError('Mole object does not have attribute %s' % key)
-        elif key in ('_ipython_canary_method_should_not_exist_',
-                     '_repr_mimebundle_'):
-            # https://github.com/mewwts/addict/issues/26
-            # https://github.com/jupyter/notebook/issues/2014
-            raise AttributeError(f'Mole object has no attribute {key}')
+            # https://bugs.python.org/issue45985
+            # https://github.com/python/cpython/issues/103936
+            # @property and __getattr__ conflicts. As a temporary fix, call
+            # object.__getattribute__ method to re-raise AttributeError
+            return object.__getattribute__(self, key)
 
         # Import all available modules. Some methods are registered to other
         # classes/modules when importing modules in __all__.
@@ -3737,7 +3743,7 @@ class Mole(MoleBase):
         elif 'CI' in key or 'CC' in key or 'CAS' in key or 'MP' in key:
             mf = scf.HF(self)
         else:
-            raise AttributeError(f'Mole object has no attribute {key}')
+            return object.__getattribute__(self, key)
 
         method = getattr(mf, key)
 
