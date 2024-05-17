@@ -1,5 +1,6 @@
 # N resolution method for multicomponent FCI
 import numpy
+import scipy
 from pyscf import lib
 from pyscf import ao2mo
 from pyscf.fci import cistring
@@ -220,6 +221,44 @@ def make_rdm1(fcivec, index, norb, nparticle):
                                           fcivec[str0_indices_tuple].ravel())
     return rdm1
 
+def entropy(indices, fcivec, norb, nparticle):
+    """Subspace von Neumann entropy.
+    indices means the indices you want for the subspace entropy.
+    For example, if we have a system of [0, 1, 2, 3],
+    indices = [2]
+    means we will first get rho[2] = \sum_{0,1,3} rho[0,1,2,3]
+    then calculate the entropy via -\sum \lambda ln(\lambda);
+    indices = [0,1,2]
+    means we will first get rho[0,1,2] = \sum_{3} rho[0,1,2,3]
+    then calculate the entropy.
+    """
+    if isinstance(indices, (int, numpy.integer)):
+        indices = [indices]
+    ndim = len(norb)
+    dim = []
+    size = 1
+    for i in range(ndim):
+        n = cistring.num_strings(norb[i], nparticle[i])
+        dim.append(n)
+        if i in indices:
+            size *= n
+    fcivec = fcivec.reshape(dim)
+
+    sum_dims = [i for i in range(ndim) if i not in indices]
+
+    input_subscripts1 = ''.join(chr(97 + i) for i in range(ndim))
+    input_subscripts2 = ''.join(chr(97 + i) if i in sum_dims
+                                else chr(97 + ndim + i)
+                                for i in range(ndim))
+    output_subscripts = ''.join(chr(97 + i) for i in indices) \
+                      + ''.join(chr(97 + ndim + i) for i in indices)
+
+    einsum_str = f'{input_subscripts1},{input_subscripts2}->{output_subscripts}'
+    rdm = numpy.einsum(einsum_str, fcivec, fcivec)
+    w = scipy.linalg.eigh(rdm.reshape(size,size), eigvals_only=True)
+    w = w[w>1e-16]
+    return -(w * numpy.log(w)).sum()
+
 def FCI(mf):
     from functools import reduce
     assert mf.unrestricted
@@ -299,7 +338,6 @@ def FCI(mf):
 
     ecore = mf.mf_elec.energy_nuc()
     if is_cneo:
-        import scipy
         class CCISolver():
             def position_analysis(self, f, h1, r1, g2, norb, nparticle, ecore):
                 f = f.reshape(len(norb)-2,-1)
@@ -348,12 +386,21 @@ def FCI(mf):
                 self.e = numpy.dot(self.c, ci1)
                 print(f'CNEO| Energy recalculated using c^T*H*c: {self.e}, difference={self.e-eigenvalue}')
                 return self.e, self.c, f
+            def entropy(self, indices, fcivec=None, norb=norb, nparticle=nparticle):
+                if fcivec is None:
+                    fcivec = self.c
+                return entropy(indices, fcivec, norb, nparticle)
         cisolver = CCISolver()
     else:
         class CISolver():
             def kernel(self, h1=h1, g2=g2, norb=norb, nparticle=nparticle,
                        ecore=ecore):
-                return kernel(h1, g2, norb, nparticle, ecore)
+                self.e, self.c = kernel(h1, g2, norb, nparticle, ecore)
+                return self.e, self.c
+            def entropy(self, indices, fcivec=None, norb=norb, nparticle=nparticle):
+                if fcivec is None:
+                    fcivec = self.c
+                return entropy(indices, fcivec, norb, nparticle)
         cisolver = CISolver()
     return cisolver
 
