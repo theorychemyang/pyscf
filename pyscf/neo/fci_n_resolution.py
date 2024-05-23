@@ -5,6 +5,7 @@ from pyscf import lib
 from pyscf import ao2mo
 from pyscf.fci import cistring
 from pyscf import neo
+import time
 
 def contract(h1, h2, fcivec, norb, nparticle, link_index=None):
     ndim = len(norb)
@@ -111,59 +112,63 @@ def absorb_h1e(h1e, eri, norb, nelec, fac=1):
         h2e_bb[k,k,:,:] += f1e_b
     return (h2e_aa * fac, h2e_ab * fac, h2e_bb * fac)
 
-def make_hdiag(h1, g2, norb, nparticle, opt=None):
-    h1e_a = h1[0]
-    h1e_b = h1[1]
-    g2e_aa = ao2mo.restore(1, g2[0][0], norb[0])
-    g2e_ab = ao2mo.restore(1, g2[0][1], norb[0])
-    g2e_bb = ao2mo.restore(1, g2[1][1], norb[0])
-
+def make_hdiag(h1, g2, norb, nparticle):
+    t0 = time.time()
     ndim = len(norb)
+    dim = []
+    for i in range(ndim):
+        dim.append(cistring.num_strings(norb[i], nparticle[i]))
+    hdiag = numpy.zeros(tuple(dim))
     occslists = []
     for i in range(ndim):
         occslists.append(cistring.gen_occslst(range(norb[i]), nparticle[i]))
-    occslista = occslists[0]
-    occslistb = occslists[1]
-    jdiag_aa = numpy.einsum('iijj->ij',g2e_aa)
-    jdiag_ab = numpy.einsum('iijj->ij',g2e_ab)
-    jdiag_bb = numpy.einsum('iijj->ij',g2e_bb)
-    kdiag_aa = numpy.einsum('ijji->ij',g2e_aa)
-    kdiag_bb = numpy.einsum('ijji->ij',g2e_bb)
     jdiag = [[None] * ndim for _ in range(ndim)]
+    kdiag = [None] * ndim
+    done = [[False] * ndim for _ in range(ndim)]
+    if g2 is not None:
+        for k in range(ndim):
+            for l in range(ndim):
+                if g2[k][l] is not None and not done[k][l]:
+                    if k == l:
+                        g2_ = ao2mo.restore(1, g2[k][l], norb[k])
+                        jdiag[k][l] = numpy.einsum('iijj->ij', g2_)
+                        kdiag[k] = numpy.einsum('ijji->ij', g2_)
+                    else:
+                        jdiag[k][l] = numpy.einsum('iijj->ij', g2[k][l].reshape([norb[k]]*2+[norb[l]]*2))
+                    done[k][l] = done[l][k] = True
+
+    for i in range(ndim):
+        if h1[i] is not None or jdiag[i][i] is not None or kdiag[i] is not None:
+            str0_indices = [slice(None)] * ndim
+            for str0, occ in enumerate(occslists[i]):
+                str0_indices[i] = str0
+                e1 = 0
+                if h1[i] is not None:
+                    e1 = h1[i][occ,occ].sum()
+                e2 = 0
+                if jdiag[i][i] is not None:
+                    e2 += jdiag[i][i][occ][:,occ].sum()
+                if kdiag[i] is not None:
+                    e2 -= kdiag[i][occ][:,occ].sum()
+                hdiag[tuple(str0_indices)] += e1 + e2*.5
+
     done = [[False] * ndim for _ in range(ndim)]
     for k in range(ndim):
         for l in range(ndim):
-            if k != l and (k >= 2 or l >= 2) and g2[k][l] is not None and not done[k][l]:
-                jdiag[k][l] = numpy.einsum('iijj->ij',g2[k][l].reshape([norb[k]]*2+[norb[l]]*2))
+            if k != l and jdiag[k][l] is not None and not done[k][l]:
+                str0_indices = [slice(None)] * ndim
+                jdiag_ = jdiag[k][l]
+                for str0, aocc in enumerate(occslists[k]):
+                    str0_indices[k] = str0
+                    for str1, bocc in enumerate(occslists[l]):
+                        e2 = jdiag_[aocc][:,bocc].sum()
+                        str0_indices[l] = str1
+                        hdiag[tuple(str0_indices)] += e2
                 done[k][l] = done[l][k] = True
+    print(f'make_hdiag: {time.time() - t0} seconds', flush=True)
+    return hdiag.reshape(-1)
 
-    def nested_loop(lists, prev_occ, current_index=2, result=0.0):
-        if current_index == len(lists):
-            hdiag.append(result)
-            return
-
-        for occ in lists[current_index]:
-            e1n = h1[current_index][occ,occ].sum()
-            e2n = 0.0
-            for previous_index, occ_ in enumerate(prev_occ):
-                if jdiag[previous_index][current_index] is not None:
-                    e2n += jdiag[previous_index][current_index][occ_][:,occ].sum()
-                else:
-                    e2n += jdiag[current_index][previous_index][occ][:,occ_].sum()
-            nested_loop(lists, prev_occ + [occ], current_index + 1, result + e1n + e2n)
-
-    hdiag = []
-    for aocc in occslista:
-        e1a = h1e_a[aocc,aocc].sum()
-        e2a = jdiag_aa[aocc][:,aocc].sum() - kdiag_aa[aocc][:,aocc].sum()
-        for bocc in occslistb:
-            e1 = e1a + h1e_b[bocc,bocc].sum()
-            e2 = e2a + jdiag_ab[aocc][:,bocc].sum() * 2 \
-                 + jdiag_bb[bocc][:,bocc].sum() - kdiag_bb[bocc][:,bocc].sum()
-            nested_loop(occslists, [aocc, bocc], current_index=2, result=e1+e2*.5)
-    return numpy.array(hdiag)
-
-def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None):
+def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None):
     h2 = [[None] * len(norb) for _ in range(len(norb))]
     h2[0][0], h2[0][1], h2[1][1] = absorb_h1e(h1[:2], (g2[0][0], g2[0][1], g2[1][1]),
                                               norb[0], (nparticle[0], nparticle[1]), .5)
@@ -189,17 +194,31 @@ def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None):
     def hop(c):
         hc = contract(h1, h2, c, norb, nparticle)
         return hc.reshape(-1)
-    hdiag = make_hdiag(h1, g2, norb, nparticle)
-    print(f'{hdiag[:4]=}', flush=True)
+    if hdiag is None:
+        hdiag = make_hdiag(h1, g2, norb, nparticle)
+        print(f'{hdiag[:4]=}', flush=True)
     precond = lambda x, e, *args: x/(hdiag-e+1e-4)
+    t0 = time.time()
     converged, e, c = lib.davidson1(lambda xs: [hop(x) for x in xs],
                                     ci0.reshape(-1), precond, max_cycle=100,
-                                    verbose=10)
+                                    max_memory=32000, verbose=10)
+    print(f'davidson: {time.time() - t0} seconds', flush=True)
     if converged[0]:
         print('FCI Davidson converged!')
     else:
         print('FCI Davidson did not converge according to current setting.')
     return e[0]+ecore, c[0]
+
+def energy(h1, g2, fcivec, norb, nparticle, ecore=0):
+    h2 = [[None] * len(norb) for _ in range(len(norb))]
+    h2[0][0], h2[0][1], h2[1][1] = absorb_h1e(h1[:2], (g2[0][0], g2[0][1], g2[1][1]),
+                                              norb[0], (nparticle[0], nparticle[1]), .5)
+    for i in range(len(norb)):
+        for j in range(len(norb)):
+            if i >= 2 or j >= 2:
+                h2[i][j] = g2[i][j]
+    ci1 = contract(h1, h2, fcivec, norb, nparticle)
+    return numpy.dot(fcivec, ci1) + ecore
 
 # dm_pq = <|p^+ q|>
 def make_rdm1(fcivec, index, norb, nparticle):
@@ -217,8 +236,8 @@ def make_rdm1(fcivec, index, norb, nparticle):
         str0_indices_tuple = tuple(str0_indices)
         for a, i, str1, sign in tab:
             str1_indices[index] = str1
-            rdm1[a,i] += sign * numpy.dot(fcivec[tuple(str1_indices)].ravel(),
-                                          fcivec[str0_indices_tuple].ravel())
+            rdm1[a,i] += sign * numpy.dot(fcivec[tuple(str1_indices)].reshape(-1),
+                                          fcivec[str0_indices_tuple].reshape(-1))
     return rdm1
 
 def entropy(indices, fcivec, norb, nparticle):
@@ -259,7 +278,7 @@ def entropy(indices, fcivec, norb, nparticle):
     w = w[w>1e-16]
     return -(w * numpy.log(w)).sum()
 
-def FCI(mf):
+def FCI(mf, kernel=kernel, energy=energy):
     from functools import reduce
     assert mf.unrestricted
     norb_e = mf.mf_elec.mo_coeff[0].shape[1]
@@ -292,7 +311,8 @@ def FCI(mf):
         for i in range(mol.nuc_num):
             r1n = []
             for x in range(mf.mf_nuc[i].int1e_r.shape[0]):
-                r1n.append(reduce(numpy.dot, (mf.mf_nuc[i].mo_coeff.T, mf.mf_nuc[i].int1e_r[x], mf.mf_nuc[i].mo_coeff)))
+                r1n.append(reduce(numpy.dot, (mf.mf_nuc[i].mo_coeff.T, mf.mf_nuc[i].int1e_r[x],
+                                              mf.mf_nuc[i].mo_coeff)))
             r1n = numpy.array(r1n)
             r1.append(r1n)
     eri_ee_aa = ao2mo.kernel(mf.mf_elec._eri,
@@ -340,16 +360,28 @@ def FCI(mf):
     if is_cneo:
         class CCISolver():
             def position_analysis(self, f, h1, r1, g2, norb, nparticle, ecore):
-                f = f.reshape(len(norb)-2,-1)
-                f1 = [h1[0], h1[1]]
+                f = f.reshape((len(norb)-2,3))
+                self.last_f = f
+                if self.hdiag is None:
+                    self.hdiag = make_hdiag(h1, g2, norb, nparticle)
+                    print(f'hdiag: {self.hdiag[:4]}', flush=True)
+                f1 = [None] * len(norb)
                 for i in range(len(norb)-2):
-                    f1.append(h1[i+2] + numpy.einsum('xij,x->ij', r1[i], f[i]))
-                self.e, self.c = kernel(f1, g2, norb, nparticle, ecore, self.c)
-                dr = []
+                    f1[i+2] = numpy.einsum('xij,x->ij', r1[i], f[i])
+                fr = make_hdiag(f1, None, norb, nparticle)
+                f1[0] = h1[0]
+                f1[1] = h1[1]
+                for i in range(len(norb)-2):
+                    f1[i+2] += h1[i+2]
+                self.e, self.c = kernel(f1, g2, norb, nparticle, ecore,
+                                        self.c, self.hdiag + fr)
+                t0 = time.time()
+                dr = numpy.empty_like(f)
                 for i in range(len(norb)-2):
                     rdm1 = make_rdm1(self.c, i+2, norb, nparticle)
-                    dr.append(numpy.einsum('xij,ij->x', r1[i], rdm1))
-                dr = numpy.array(dr).ravel()
+                    dr[i] = numpy.einsum('xij,ij->x', r1[i], rdm1)
+                dr = dr.ravel()
+                print(f'dr: {time.time() - t0} seconds', flush=True)
                 print()
                 print(f'CNEO| {f=}')
                 print(f'CNEO| lowest eigenvalue of H+f(r-R)={self.e}')
@@ -366,24 +398,24 @@ def FCI(mf):
                     f[i] = mf.f[ia]
                 print(f'Initial f: {f}')
                 self.c = None
-                opt = scipy.optimize.root(self.position_analysis, f,
+                self.hdiag = None
+                sol = scipy.optimize.root(self.position_analysis, f.ravel(),
                                           args=(h1, r1, g2, norb, nparticle, ecore),
-                                          method='hybr',
-                                          options={'xtol': 1e-15})
-                print(f'CNEO| Final: Optimized f: {f.reshape(mol.nuc_num,-1)}')
-                print(f'CNEO| Final: Position deviation: {opt.fun.reshape(mol.nuc_num,-1)}')
-                print(f'CNEO| Final: Position deviation max: {numpy.abs(opt.fun).max()}')
+                                          method='hybr', options={'eps': 1e-2})
+                if sol.success:
+                    print('Lagrange multiplier optimization succeeded!')
+                else:
+                    print('Lagrange multiplier optimization failed!')
+                print(f'Root finding message: {sol.message}')
+                f = sol.x.reshape((mol.nuc_num,3))
+                print(f'CNEO| Final: Optimized f: {f}')
+                print(f'CNEO| Final: Position deviation: {sol.fun.reshape((mol.nuc_num,3))}')
+                print(f'CNEO| Final: Position deviation max: {numpy.abs(sol.fun).max()}')
+                print()
+                print(f'CNEO| Last f: {self.last_f}')
                 eigenvalue = self.e
-                print(f'CNEO| Energy directly from the eigenvalue of H+f(r-R) matrix: {self.e}')
-                h2 = [[None] * len(norb) for _ in range(len(norb))]
-                h2[0][0], h2[0][1], h2[1][1] = absorb_h1e(h1[:2], (g2[0][0], g2[0][1], g2[1][1]),
-                                                          norb[0], (nparticle[0], nparticle[1]), .5)
-                for i in range(len(norb)):
-                    for j in range(len(norb)):
-                        if i >= 2 or j >= 2:
-                            h2[i][j] = g2[i][j]
-                ci1 = contract(h1, h2, self.c, norb, nparticle)
-                self.e = numpy.dot(self.c, ci1)
+                print(f'CNEO| Energy directly from the eigenvalue of H+f(r-R) matrix (with last f): {self.e}')
+                self.e = energy(h1, g2, self.c, norb, nparticle, ecore)
                 print(f'CNEO| Energy recalculated using c^T*H*c: {self.e}, difference={self.e-eigenvalue}')
                 return self.e, self.c, f
             def entropy(self, indices, fcivec=None, norb=norb, nparticle=nparticle):
