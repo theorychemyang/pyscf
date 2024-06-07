@@ -240,6 +240,47 @@ def make_rdm1(fcivec, index, norb, nparticle):
                                           fcivec[str0_indices_tuple].reshape(-1))
     return rdm1
 
+def make_rdm2(fcivec, index1, index2, norb, nparticle):
+    assert index1 != index2
+    ndim = len(norb)
+    link_index1 = cistring.gen_linkstr_index(range(norb[index1]), nparticle[index1])
+    link_index2 = cistring.gen_linkstr_index(range(norb[index2]), nparticle[index2])
+    dim = []
+    for i in range(ndim):
+        dim.append(cistring.num_strings(norb[i], nparticle[i]))
+    fcivec = fcivec.reshape(dim)
+    rdm2 = numpy.zeros((norb[index1],norb[index1],norb[index2],norb[index2]))
+    str0_indices = [slice(None)] * ndim
+    str1_indices = [slice(None)] * ndim
+    for str01, tab1 in enumerate(link_index1):
+        str0_indices[index1] = str01
+        for p, q, str11, sign1 in tab1:
+            str1_indices[index1] = str11
+            for str02, tab2 in enumerate(link_index2):
+                str0_indices[index2] = str02
+                str0_indices_tuple = tuple(str0_indices)
+                for r, s, str12, sign2 in tab2:
+                    str1_indices[index2] = str12
+                    rdm2[p,q,r,s] += sign1 * sign2 \
+                                     * numpy.dot(fcivec[tuple(str1_indices)].reshape(-1),
+                                                 fcivec[str0_indices_tuple].reshape(-1))
+    return rdm2
+
+def energy_decomp(h1, g2, fcivec, norb, nparticle):
+    ndim = len(norb)
+    for i in range(ndim):
+        rdm1 = make_rdm1(fcivec, i, norb, nparticle)
+        e1 = numpy.dot(h1[i].reshape(-1), rdm1.reshape(-1))
+        print(f'1-body energy for {i}-th particle: {e1}')
+    done = [[False] * ndim for _ in range(ndim)]
+    for i in range(ndim):
+        for j in range(ndim):
+            if i != j and g2[i][j] is not None and not done[i][j]:
+                rdm2 = make_rdm2(fcivec, i, j, norb, nparticle)
+                e2 = numpy.dot(g2[i][j].reshape(-1), rdm2.reshape(-1))
+                print(f'2-body energy between {i}-th particle and {j}-th particle: {e2}')
+                done[i][j] = done[j][i] = True
+
 def entropy(indices, fcivec, norb, nparticle):
     """Subspace von Neumann entropy.
     indices means the indices you want for the subspace entropy.
@@ -422,6 +463,10 @@ def FCI(mf, kernel=kernel, energy=energy):
                 if fcivec is None:
                     fcivec = self.c
                 return entropy(indices, fcivec, norb, nparticle)
+            def energy_decomp(self, h1=h1, g2=g2, fcivec=None, norb=norb, nparticle=nparticle):
+                if fcivec is None:
+                    fcivec = self.c
+                return energy_decomp(h1, g2, fcivec, norb, nparticle)
         cisolver = CCISolver()
     else:
         class CISolver():
@@ -433,6 +478,10 @@ def FCI(mf, kernel=kernel, energy=energy):
                 if fcivec is None:
                     fcivec = self.c
                 return entropy(indices, fcivec, norb, nparticle)
+            def energy_decomp(self, h1=h1, g2=g2, fcivec=None, norb=norb, nparticle=nparticle):
+                if fcivec is None:
+                    fcivec = self.c
+                return energy_decomp(h1, g2, fcivec, norb, nparticle)
         cisolver = CISolver()
     return cisolver
 
