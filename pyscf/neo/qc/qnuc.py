@@ -5,7 +5,7 @@ import numpy
 from pyscf import lib
 from pyscf import scf, ao2mo
 import scipy
-from scipy.optimize import minimize
+from scipy.optimize import minimize, NonlinearConstraint
 from pyscf import neo
 import itertools
 import math
@@ -66,14 +66,41 @@ def dump_neo_qc_info(self, log):
     log.note("Hilbert-subspace-particle-conserving dimension: %g",fci_exc_tot)
     return
 
-def get_qubit_qnuc(mf_nuc):
+def cas_selection(mf_nuc, cas_orb, cas_tol=1e-10):
+    '''returns list of nuclear MO coefficient matrices 
+    that are modified according to selection criteria 
+    contained in the cas_orb array
+    '''
+    nuc_coeff = []
+    cas_len = len(cas_orb)
+    for i in range(len(mf_nuc)):
+        count = 0
+        for j in range(mf_nuc[i].mo_coeff.shape[1]):
+            cc = 0
+            for k in range(mf_nuc[i].mo_coeff.shape[0]):
+                if k in cas_orb and abs(mf_nuc[i].mo_coeff[k,j]) >= cas_tol:
+                    cc+=1
+            if cc == cas_len:
+                if count==0:
+                    coeff_mat = mf_nuc[i].mo_coeff[:,j]
+                elif count==1:
+                    column = mf_nuc[i].mo_coeff[:,j]
+                    coeff_mat = numpy.stack((coeff_mat, column),axis=1)
+                else:
+                    column = mf_nuc[i].mo_coeff[:,j]
+                    coeff_mat = numpy.insert(coeff_mat, count, column, axis=1)
+                count += 1
+        nuc_coeff.append(coeff_mat)
+    return nuc_coeff
+
+def get_qubit_qnuc(nuc_coeff):
     '''returns (1) list of number of qubits associated with each quantum nucleus
     (2) total number of quantum nuclear qubits
     '''
     n_qubit_p = []
     n_qubit_p_tot = 0
-    for i in range(len(mf_nuc)):
-        n_qubit_p.append(mf_nuc[i].mo_coeff.shape[1])
+    for i in range(len(nuc_coeff)):
+        n_qubit_p.append(nuc_coeff[i].shape[1])
         n_qubit_p_tot += n_qubit_p[i]
     return n_qubit_p, n_qubit_p_tot
 
@@ -176,7 +203,7 @@ def vN_entropy(vector, str_id, n_qubit_e, n_qubit_p, tol=1e-15):
     if len(str_id) == n_ptyp:
         e_rho, c_rho = numpy.linalg.eigh(rho.todense())
         for i in range(len(e_rho)):
-            if abs(e_rho[i]) > tol:
+            if e_rho[i] > tol:
                 S_vN -= e_rho[i]*numpy.log(e_rho[i])
     # trace over subspace
     else:
@@ -281,7 +308,7 @@ def number_operator(n_qubit_tot, n_qubit_e, n_qubit_p, create, destroy, str_kind
     Num_op_list = []
     if str_kind == 'composite':
         for pid in range(len(n_qubit_p)+1):
-            for p in range(n_qubit_tot):
+            for p in range(len(create[pid])):
                 Num_op += create[pid][p] @ destroy[pid][p]
         Num_op_return = Num_op
     elif str_kind == 'electron':
@@ -296,7 +323,7 @@ def number_operator(n_qubit_tot, n_qubit_e, n_qubit_p, create, destroy, str_kind
 
     return Num_op_return
 
-def position_operator(mf_nuc, n_qubit_p, create, destroy, bool_c_shift):
+def position_operator(mf_nuc, nuc_coeff, n_qubit_p, create, destroy, bool_c_shift):
     ''' output r_op is a num_nuc x 3 matrix of matrices
     r_op[0,0]: second quantized r_x operator for quantum nucleus 0
     r_op[0,1]: second quantized r_y operator for quantum nucleus 0
@@ -305,7 +332,7 @@ def position_operator(mf_nuc, n_qubit_p, create, destroy, bool_c_shift):
     r_op = numpy.zeros((len(mf_nuc), 3),dtype=object)
     rmo = numpy.zeros((len(mf_nuc), 3),dtype=object)
     for i in range(len(mf_nuc)):
-        mo_coeff = mf_nuc[i].mo_coeff
+        mo_coeff = nuc_coeff[i]
         if not bool_c_shift:
             int1p_r = mf_nuc[i].mol.intor_symmetric('int1e_r', comp=3)
         else:
@@ -326,7 +353,7 @@ def position_operator(mf_nuc, n_qubit_p, create, destroy, bool_c_shift):
                 r_op[k,2] += rmo[k,2][p,q]*op1
     return r_op
 
-def momentum_operator(mf_nuc, n_qubit_p, create, destroy):
+def momentum_operator(mf_nuc, nuc_coeff, n_qubit_p, create, destroy):
     '''output mom_op is a num_nuc x 3 matrix of matrices
     mom_op[0,0]: second quantized p_x operator for quantum nucleus 0
     mom_op[0,1]: second quantized p_y operator for quantum nucleus 0
@@ -338,7 +365,7 @@ def momentum_operator(mf_nuc, n_qubit_p, create, destroy):
     mom_op = numpy.zeros((len(mf_nuc), 3),dtype=object)
     mom_mo = numpy.zeros((len(mf_nuc), 3),dtype=object)
     for i in range(len(mf_nuc)):
-        mo_coeff = mf_nuc[i].mo_coeff
+        mo_coeff = nuc_coeff[i]
         int1p_mom = -1.0j*mf_nuc[i].mol.intor('int1e_ipovlp', comp=3).transpose(0,2,1)
         mom_mo[i,0] = mo_coeff.conj().T @ int1p_mom[0] @ mo_coeff
         mom_mo[i,1] = mo_coeff.conj().T @ int1p_mom[1] @ mo_coeff
@@ -353,12 +380,12 @@ def momentum_operator(mf_nuc, n_qubit_p, create, destroy):
                 mom_op[k,2] += mom_mo[k,2][p,q]*op1
     return mom_op
 
-def t1_op_p(mf_nuc, create, destroy):
+def t1_op_p(nuc_coeff, create, destroy):
     nocc_so = 1 # distinguishable so always 1 occupied quantum nuclear orbital
     tau = []
     tau_dag = []
-    for k in range(len(mf_nuc)):
-        nvirt_so = mf_nuc[k].mo_coeff.shape[1] - nocc_so
+    for k in range(len(nuc_coeff)):
+        nvirt_so = nuc_coeff[k].shape[1] - nocc_so
         tmp = []
         tmp_dag = []
         for i in range(nocc_so):
@@ -372,10 +399,10 @@ def t1_op_p(mf_nuc, create, destroy):
         tau_dag.append(tmp_dag)
     return tau, tau_dag
 
-def t2_op_ep(nocc_so_e, nvirt_so_e, mf_nuc, create, destroy, t1_e, t1_p):
+def t2_op_ep(nocc_so_e, nvirt_so_e, num_p, create, destroy, t1_e, t1_p):
     tau = []
     tau_dag = []
-    for k in range(len(mf_nuc)):
+    for k in range(num_p):
         for i in range(len(t1_e)):
             for j in range(len(t1_p[k])):
                 t2 = t1_e[i] @ t1_p[k][j]
@@ -384,14 +411,14 @@ def t2_op_ep(nocc_so_e, nvirt_so_e, mf_nuc, create, destroy, t1_e, t1_p):
                 tau_dag.append(t2_dag)
     return tau, tau_dag
 
-def t2_op_pp(mf_nuc, create, destroy, t1_p):
+def t2_op_pp(num_p, create, destroy, t1_p):
     tau = []
     tau_dag = []
-    for k in range(len(mf_nuc)):
+    for k in range(num_p):
         k_len = len(t1_p[k])
         tmp_k = []
         tmp_k_dag = []
-        for l in range(k+1,len(mf_nuc)):
+        for l in range(k+1, num_p):
             l_len = len(t1_p[l])
             tmp_l = []
             tmp_l_dag = []
@@ -407,7 +434,7 @@ def t2_op_pp(mf_nuc, create, destroy, t1_p):
         tau_dag.append(tmp_k_dag)
     return tau, tau_dag
 
-def t3_op_ep(nocc_so_e, nvirt_so_e, mf_nuc, create, destroy, t2_e, t1_p):
+def t3_op_2e1p(nocc_so_e, nvirt_so_e, create, destroy, t2_e, t1_p):
     tau = []
     tau_dag = []
     for i in range(len(t2_e)):
@@ -419,7 +446,20 @@ def t3_op_ep(nocc_so_e, nvirt_so_e, mf_nuc, create, destroy, t2_e, t1_p):
                 tau_dag.append(t3_dag)
     return tau, tau_dag
 
-def t4_op_ep(nocc_so_e, nvirt_so_e, mf_nuc, create, destroy, t2_e, t2_p):
+def t3_op_1e1p1p(nocc_so_e, nvirt_so_e, create, destroy, t1_e, t2_p):
+    tau = []
+    tau_dag = []
+    for i in range(len(t1_e)):
+        for k in range(len(t2_p)):
+            for l in range(len(t2_p[k])):
+                for j in range(len(t2_p[k][l])):
+                    t3 = t1_e[i] @ t2_p[k][l][j]
+                    t3_dag = t3.conj().T
+                    tau.append(t3)
+                    tau_dag.append(t3_dag)
+    return tau, tau_dag
+
+def t4_op_ep(nocc_so_e, nvirt_so_e, create, destroy, t2_e, t2_p):
     tau = []
     tau_dag = []
     for i in range(len(t2_e)):
@@ -432,14 +472,15 @@ def t4_op_ep(nocc_so_e, nvirt_so_e, mf_nuc, create, destroy, t2_e, t2_p):
                     tau_dag.append(t4_dag)
     return tau, tau_dag
 
-def ucc_op_list_neo(nocc_so_e, nvirt_so_e, create, destroy, mf_nuc, ucc_level):
+def ucc_op_list_neo(nocc_so_e, nvirt_so_e, create, destroy, nuc_coeff, ucc_level):
     '''Pure quantum nuclear operators return nested lists that are indexed
     according to quantum nuclear identity.
     Example: t1_op_p returns list[k][z] where k is nucleus, z is operator
              t2_op_pp returns list [k][l][z] where k,l is nuclear combo, z is operator
     Pure electron operators and mixed ep operators return single list of operators
     '''
-    if (ucc_level > (nocc_so_e + len(mf_nuc))):
+    num_p = len(nuc_coeff)
+    if (ucc_level > (nocc_so_e + num_p)):
         raise NotImplementedError("Requested UCC excitation level exceeds number of "
                                   "particles")
 
@@ -450,33 +491,38 @@ def ucc_op_list_neo(nocc_so_e, nvirt_so_e, create, destroy, mf_nuc, ucc_level):
     tau_dag = t1_e_dag + t2_e_dag
 
     # nested list for 1 particle nuclear excitations
-    t1_p, t1_p_dag =  t1_op_p(mf_nuc, create, destroy)
+    t1_p, t1_p_dag =  t1_op_p(nuc_coeff, create, destroy)
     for k in range(len(t1_p)):
         tau += t1_p[k]
         tau_dag += t1_p_dag[k]
 
     # mixed ep term
-    t2_ep, t2_ep_dag = t2_op_ep(nocc_so_e, nvirt_so_e, mf_nuc, create, destroy, t1_e, t1_p)
+    t2_ep, t2_ep_dag = t2_op_ep(nocc_so_e, nvirt_so_e, num_p, create, destroy, t1_e, t1_p)
     tau += t2_ep
     tau_dag += t2_ep_dag
 
     # nested list for qnuc-qnuc interaction if more than one nucleus
-    if (len(mf_nuc) > 1):
-        t2_pp, t2_pp_dag =  t2_op_pp(mf_nuc, create, destroy, t1_p)
+    if (num_p > 1):
+        t2_pp, t2_pp_dag =  t2_op_pp(num_p, create, destroy, t1_p)
         for k in range(len(t2_pp)):
             for l in range(len(t2_pp[k])):
                 tau += t2_pp[k][l]
                 tau_dag += t2_pp_dag[k][l]
 
-    # t2_e*t1_p
+    # two types of 3 particle excitations
     if ucc_level > 2:
-        t3_ep, t3_ep_dag = t3_op_ep(nocc_so_e, nvirt_so_e, mf_nuc, create, destroy, t2_e, t1_p)
-        tau += t3_ep
-        tau_dag += t3_ep_dag
+        # t2_e*t1_p
+        t3_2e1p, t3_2e1p_dag = t3_op_2e1p(nocc_so_e, nvirt_so_e, create, destroy, t2_e, t1_p)
+        tau += t3_2e1p
+        tau_dag += t3_2e1p_dag
+        # t1_e*t1_p1*t1_p2
+        t3_1e1p1p, t3_1e1p1p_dag = t3_op_1e1p1p(nocc_so_e, nvirt_so_e, create, destroy, t1_e, t2_pp)
+        tau += t3_1e1p1p
+        tau_dag += t3_1e1p1p_dag
 
     # t2_e*t1_p1*t1_p2
     if ucc_level > 3:
-        t4_ep, t4_ep_dag = t4_op_ep(nocc_so_e, nvirt_so_e, mf_nuc, create, destroy, t2_e, t2_pp)
+        t4_ep, t4_ep_dag = t4_op_ep(nocc_so_e, nvirt_so_e, create, destroy, t2_e, t2_pp)
         tau += t4_ep
         tau_dag += t4_ep_dag
     return tau, tau_dag
@@ -496,7 +542,7 @@ def HF_state_cneo(n_occ_e, n_qubit_e, nocc_p, n_qubit_p):
         psi_HF_tot = numpy.kron(psi_HF_tot,psi_HF_p[k])
     return psi_HF_tot
 
-def qnuc_nn(mf):
+def qnuc_nn(mf, nuc_coeff):
     mf_nuc = mf.mf_nuc
     eri_nn_mo = []
     for i in range(len(mf_nuc)):
@@ -506,8 +552,8 @@ def qnuc_nn(mf):
             mf1 = mf_nuc[i]
             mf2 = mf_nuc[j]
             eri_nn = mf._eri_nn[i][j]
-            coeff1 = mf1.mo_coeff
-            coeff2 = mf2.mo_coeff
+            coeff1 = nuc_coeff[i]
+            coeff2 = nuc_coeff[j]
             num_i = coeff1.shape[1]
             num_j = coeff2.shape[1]
             charge = mf.mol.atom_charge(mf1.mol.atom_index) * mf.mol.atom_charge(mf2.mol.atom_index)
@@ -516,12 +562,12 @@ def qnuc_nn(mf):
             eri_nn_mo[i][j] = c_ij
     return eri_nn_mo
 
-def qnuc_ne(mf, mf_nuc, moa_e, mob_e):
+def qnuc_ne(mf, mf_nuc, nuc_coeff, moa_e, mob_e):
     eri_ne_mo = []
     num_e = moa_e.shape[1]
     for i in range(len(mf_nuc)):
         charge = -1.0*mf.mol.atom_charge(mf_nuc[i].mol.atom_index)
-        coeff_n = mf_nuc[i].mo_coeff
+        coeff_n = nuc_coeff[i]
         num_n = coeff_n.shape[1]
         eri_ne = mf._eri_ne[i]
         c_ne_a = charge*ao2mo.incore.general(eri_ne, (coeff_n, coeff_n, moa_e, moa_e),compact=False)\
@@ -532,13 +578,13 @@ def qnuc_ne(mf, mf_nuc, moa_e, mob_e):
         eri_ne_mo.append(c_ne)
     return eri_ne_mo
 
-def Ham_neo(mf, moa, mob, ea, eb, create, destroy, n_qubit_e, tol=1e-12):
+def Ham_neo(mf, nuc_coeff, moa, mob, ea, eb, create, destroy, n_qubit_e, n_qubit_p, n_qubit_tot, tol=1e-12):
 
     mf_elec = mf.mf_elec
     mf_nuc = mf.mf_nuc
-    n_qubit_tot = n_qubit_e
-    n_qubit_p, n_qubit_p_tot = get_qubit_qnuc(mf_nuc)
-    n_qubit_tot += n_qubit_p_tot
+    #n_qubit_tot = n_qubit_e
+    #n_qubit_p, n_qubit_p_tot = get_qubit_qnuc(mf_nuc)
+    #n_qubit_tot += n_qubit_p_tot
 
     if len(mf_nuc)>0:
         hao = mf_elec.hcore_static # need static (true) hcore
@@ -550,17 +596,17 @@ def Ham_neo(mf, moa, mob, ea, eb, create, destroy, n_qubit_e, tol=1e-12):
 
     # electron-qnuc interaction
     motota, mototb, motot = qc_lib.mo_to_spinor(moa, mob, ea, eb)
-    eri_ne_mo = qnuc_ne(mf, mf_nuc, motota, mototb)
+    eri_ne_mo = qnuc_ne(mf, mf_nuc, nuc_coeff, motota, mototb)
 
     # quantum nn interaction if there is more than 1 nucleus
     if (len(mf_nuc) > 1):
-        eri_nn_mo = qnuc_nn(mf)
+        eri_nn_mo = qnuc_nn(mf, nuc_coeff)
 
     # list of core hamiltonians for quantum nuclei
     hmo_p = []
     for i in range(len(mf_nuc)):
         hao_p = mf_nuc[i].hcore_static # need static (true) hcore
-        hmo_tmp_p = mf_nuc[i].mo_coeff.transpose() @ hao_p @ mf_nuc[i].mo_coeff
+        hmo_tmp_p = nuc_coeff[i].transpose() @ hao_p @ nuc_coeff[i]
         hmo_p.append(hmo_tmp_p)
 
     h_dim = 2**n_qubit_tot
@@ -647,10 +693,10 @@ def constrained_ucc_energy(t, tau, tau_dag, nt_amp, psi_HF, num_nuc, r_op):
         r_x = numpy.real(UCC_psi.conj().T @ r_op[k,0] @ UCC_psi).item()
         r_y = numpy.real(UCC_psi.conj().T @ r_op[k,1] @ UCC_psi).item()
         r_z = numpy.real(UCC_psi.conj().T @ r_op[k,2] @ UCC_psi).item()
-        E_add += abs(r_x) + abs(r_y) +  abs(r_z)
+        E_add += abs(r_x) + abs(r_y) + abs(r_z)
     return E_add
 
-def JW_array_cneo(n_qubit_e, mf_nuc, op_id):
+def JW_array_cneo(n_qubit_e, n_qubit_p, n_qubit_p_tot, op_id):
     '''Output: Nested list of operators according to --> list[pid][k]
     pid = particle identification, electrons are first (0)
     k = element of a set of creation/annihilation operators associated with pid
@@ -658,7 +704,6 @@ def JW_array_cneo(n_qubit_e, mf_nuc, op_id):
           k \in {a_1^\dagger, a_2^\dagger, ...}
     '''
     tot_list = []
-    n_qubit_p, n_qubit_p_tot = get_qubit_qnuc(mf_nuc)
 
     # Pauli Matrices
     II = sparse.csr_matrix(numpy.array([[1.0, 0.0],[0.0, 1.0]]))
@@ -703,7 +748,7 @@ def JW_array_cneo(n_qubit_e, mf_nuc, op_id):
     #Z = II; #test setting Z to identity for protons
     mat0 = qc_lib.kron_I(n_qubit_e)
     n_qubit_previous = 0
-    for k in range(len(mf_nuc)): # k loop over distinguishable nuclei
+    for k in range(len(n_qubit_p)): # k loop over distinguishable nuclei
         op_list = []
         n_qubit_after = n_qubit_p_tot - n_qubit_previous - n_qubit_p[k]
         mat_tmp = copy.deepcopy(mat0)
@@ -738,7 +783,7 @@ def JW_array_cneo(n_qubit_e, mf_nuc, op_id):
 
 class QC_NEO_BASE(lib.StreamObject):
 
-    def __init__(self, mf, c_shift=False):
+    def __init__(self, mf, cas_orb, c_shift=False):
         # these are fixed, not inputs
         self.verbose = mf.verbose
         self.mf = mf
@@ -758,8 +803,10 @@ class QC_NEO_BASE(lib.StreamObject):
         self.r_op = None
         self.psi_hf = None
         self.nocc_so_e = None
+        self.nuc_coeff = None
         # input
         self.c_shift = c_shift
+        self.cas_orb = cas_orb
 
         if not isinstance(mf, neo.HF):
             raise NotImplementedError('NEO QC Protocol must take NEO mf object')
@@ -782,6 +829,7 @@ class QC_NEO_BASE(lib.StreamObject):
         mf = self.mf
         mf_nuc = mf.mf_nuc
         mf_elec = mf.mf_elec
+        cas_orb = self.cas_orb
 
         # parse electronic mf object
         moa, mob, ea, eb, na, nb, noa, nob = parse_mf_elec(mf_elec)
@@ -798,29 +846,39 @@ class QC_NEO_BASE(lib.StreamObject):
         ntot_so_e = nocc_so_e + nvirt_so_e
         nocc_p = len(mf_nuc)
 
+        # "cas" procedure, select all MOs with specified dominant coefficients
+        if cas_orb is None:
+            nuc_coeff = []
+            for i in range(len(mf_nuc)):
+                nuc_coeff.append(mf_nuc[i].mo_coeff)
+        else:
+            nuc_coeff = cas_selection(mf_nuc, cas_orb)
+
         n_qubit_e = ntot_so_e
         n_qubit_tot = n_qubit_e
+        n_qubit_p_tot = 0
         n_qubit_p = []
         for i in range(len(mf_nuc)):
-            n_qubit_p.append(mf_nuc[i].mo_coeff.shape[1])
+            n_qubit_p.append(nuc_coeff[i].shape[1])
             n_qubit_tot += n_qubit_p[i]
+            n_qubit_p_tot += n_qubit_p[i]
 
         if n_qubit_tot > 14:
             log.warn("Number of qubits is %g, recommended max is 14", n_qubit_tot)
 
         # form creation/annihilation lists
-        create = JW_array_cneo(ntot_so_e, mf_nuc, "creation")
-        destroy = JW_array_cneo(ntot_so_e, mf_nuc, "annihilation")
+        create = JW_array_cneo(ntot_so_e, n_qubit_p, n_qubit_p_tot, "creation")
+        destroy = JW_array_cneo(ntot_so_e, n_qubit_p, n_qubit_p_tot, "annihilation")
 
         # construct Hamiltonian
-        Hamiltonian = Ham_neo(mf, moa, mob, ea, eb, create, destroy, n_qubit_e)
+        Hamiltonian = Ham_neo(mf, nuc_coeff, moa, mob, ea, eb, create, destroy, n_qubit_e, n_qubit_p, n_qubit_tot)
 
         etot  = numpy.hstack((ea,eb))
         Num_op_e = number_operator(n_qubit_tot, n_qubit_e, n_qubit_p, create, destroy, 'electron')
         Num_op_p = number_operator(n_qubit_tot, n_qubit_e, n_qubit_p, create, destroy, 'proton')
         S2_op, Sz_op, a_id, b_id  = qc_lib.S_squared_operator(n_qubit_e, s_ab, s_ba,
                                                               etot.argsort(), create, destroy)
-        pos_op = position_operator(mf_nuc, n_qubit_p, create, destroy, c_shift)
+        pos_op = position_operator(mf_nuc, nuc_coeff, n_qubit_p, create, destroy, c_shift)
         psi_HF = HF_state_cneo(nocc_so_e, n_qubit_e, nocc_p, n_qubit_p)
 
         self.mf_nuc = mf_nuc
@@ -839,6 +897,7 @@ class QC_NEO_BASE(lib.StreamObject):
         self.r_op = pos_op
         self.psi_hf = psi_HF
         self.nocc_so_e = nocc_so_e
+        self.nuc_coeff = nuc_coeff
 
         log.timer("Construction of QC components: ", time_qc_components)
         return
@@ -861,8 +920,8 @@ class QC_FCI_NEO(QC_NEO_BASE):
     FCI Energy: -1.057564106860389  
     '''
 
-    def __init__(self, mf):
-        QC_NEO_BASE.__init__(self, mf, c_shift=False)
+    def __init__(self, mf, cas_orb=None):
+        QC_NEO_BASE.__init__(self, mf, cas_orb, c_shift=False)
         self.e = None
         self.c = None
         self.num = None
@@ -957,15 +1016,15 @@ class QC_CFCI_NEO(QC_NEO_BASE):
     Constrained FCI Energy: -1.096596826382109  
     '''
 
-    def __init__(self, mf):
-        QC_NEO_BASE.__init__(self, mf, c_shift=False)
+    def __init__(self, mf, cas_orb=None):
+        QC_NEO_BASE.__init__(self, mf, cas_orb, c_shift=False)
         self.e = None
         self.c = None
         self.num = None
         self.s2 = None
         self.f = None
 
-    def kernel(self):
+    def kernel(self, lm_guess='hf', f=None):
         log = logger.new_logger(self.mf, self.verbose)
         time_kernel = logger.process_clock()
 
@@ -984,13 +1043,18 @@ class QC_CFCI_NEO(QC_NEO_BASE):
 
         ham_kern = self.hamiltonian
         ham_dim = ham_kern.shape[0]
-        if isinstance(mf, neo.CDFT):
-            f = copy.deepcopy(mf.f[mf_nuc[0].mol.atom_index])
-            for i in range(1,len(mf_nuc)):
-                ia = mf_nuc[i].mol.atom_index
-                f = numpy.hstack((f, mf.f[ia]))
-        else:
-            f = numpy.zeros(len(mf_nuc)*3)
+        if f is None:
+            if isinstance(mf, neo.CDFT) and lm_guess=='hf':
+                f = copy.deepcopy(mf.f[mf_nuc[0].mol.atom_index])
+                for i in range(1,len(mf_nuc)):
+                    ia = mf_nuc[i].mol.atom_index
+                    f = numpy.hstack((f, mf.f[ia]))
+            elif lm_guess=='random':
+                f = 0.1*(2.0*numpy.random.rand(len(mf_nuc)*3) - 1.0)
+            elif lm_guess=='zero':
+                f = numpy.zeros(len(mf_nuc)*3)
+            else:
+                f = numpy.zeros(len(mf_nuc)*3)
 
         log.note("\nLagrange multiplier starting guess: ")
         for i in range(len(mf_nuc)):
@@ -999,6 +1063,7 @@ class QC_CFCI_NEO(QC_NEO_BASE):
 
         step_fac = 0.1
         options_dic = {'factor':step_fac,'maxfev':1000}
+        #options_dic = {}
         opt = scipy.optimize.root(fci_constrained, f, args=(ham_kern, mf_nuc, nocc_so_e, num_op_e,
                                   num_op_p, s2_op, r_op), method = 'hybr', options=options_dic)
         log.note("\nopt.success: %s", opt.success)
@@ -1086,14 +1151,14 @@ class QC_UCC_NEO(QC_NEO_BASE):
     UCC Energy: -1.057505919249053  
     '''
 
-    def __init__(self, mf):
-        QC_NEO_BASE.__init__(self, mf, c_shift=False)
+    def __init__(self, mf, cas_orb=None):
+        QC_NEO_BASE.__init__(self, mf, cas_orb, c_shift=False)
         self.e = None
         self.c = None
         self.num = None
         self.s2 = None
 
-    def kernel(self, ucc_level=2):
+    def kernel(self, ucc_level=2, adv_init=False, conv_tol=None, method_str='BFGS'):
         log = logger.new_logger(self.mf, self.verbose)
         time_kernel = logger.process_clock()
 
@@ -1107,20 +1172,44 @@ class QC_UCC_NEO(QC_NEO_BASE):
         S2_op = self.s2_op
         nocc_so_e = self.nocc_so_e
         mf_nuc = self.mf_nuc
+        nuc_coeff = self.nuc_coeff
         create = self.create
         destroy = self.destroy
         n_qubit_e = self.n_qubit_e
         nvirt_so_e = n_qubit_e - nocc_so_e
 
         tau, tau_dag = ucc_op_list_neo(nocc_so_e, nvirt_so_e, create, destroy,
-                                       mf_nuc, ucc_level)
+                                       nuc_coeff, ucc_level)
         nt_amp = len(tau)
         t_amp = numpy.zeros(nt_amp)
 
+        if adv_init: 
+            t1_e, t1_e_dag = t1_op_e(nocc_so_e, nvirt_so_e, create, destroy)
+            t2_e, t2_e_dag = t2_op_e(nocc_so_e, nvirt_so_e, create, destroy)
+            tau_e = t1_e + t2_e
+            tau_dag_e = t1_e_dag + t2_e_dag
+            nt_amp_e = len(tau_e)
+            t_amp_e = numpy.zeros(nt_amp_e)
+            res_e = minimize(lambda z: qc_lib.UCC_energy(z, ham_kern, tau_e, tau_dag_e, nt_amp_e,
+                           psi_HF), t_amp_e, tol=conv_tol, method='BFGS')
+            theta_e = res_e.x
+            log.note("\nAdvanced cluster amplitude initialization")
+            log.note("\nres_e.success: %s", res_e.success)
+            log.note("res_e.message: %s \n", res_e.message)
+            if res_e.success:
+                for i in range(len(theta_e)):
+                    t_amp[i] = theta_e[i]
+
+        if method_str=='SLSQP':
+            maxiter = 1000
+            opt_dic = {'maxiter': maxiter}
+        else:
+            opt_dic = None
         qc_lib.dump_ucc_level(log, ucc_level)
         log.note("number of cluster amplitudes: %g", nt_amp)
         res = minimize(lambda z: qc_lib.UCC_energy(z, ham_kern, tau, tau_dag, nt_amp,
-                                            psi_HF), t_amp, tol=1e-7, method= 'BFGS')
+                                            psi_HF), t_amp, tol=conv_tol, options=opt_dic,\
+                                            method=method_str)
         theta = res.x
         E_UCC = res.fun
         log.note("\nres.success: %s", res.success)
@@ -1190,14 +1279,14 @@ class QC_CUCC_NEO(QC_NEO_BASE):
     Constrained UCC Energy: -1.096545337919290  
     '''
 
-    def __init__(self, mf):
-        QC_NEO_BASE.__init__(self, mf, c_shift=False)
+    def __init__(self, mf, cas_orb=None):
+        QC_NEO_BASE.__init__(self, mf, cas_orb, c_shift=False)
         self.e = None
         self.c = None
         self.num = None
         self.s2 = None
 
-    def kernel(self, ucc_level=2):
+    def kernel(self, ucc_level=2, adv_init=False, conv_tol=None, method_str='SLSQP'):
         log = logger.new_logger(self.mf, self.verbose)
         time_kernel = logger.process_clock()
 
@@ -1211,6 +1300,7 @@ class QC_CUCC_NEO(QC_NEO_BASE):
         S2_op = self.s2_op
         nocc_so_e = self.nocc_so_e
         mf_nuc = self.mf_nuc
+        nuc_coeff = self.nuc_coeff
         create = self.create
         destroy = self.destroy
         n_qubit_e = self.n_qubit_e
@@ -1218,21 +1308,52 @@ class QC_CUCC_NEO(QC_NEO_BASE):
         nvirt_so_e = n_qubit_e - nocc_so_e
 
         tau, tau_dag = ucc_op_list_neo(nocc_so_e, nvirt_so_e, create, destroy,
-                                       mf_nuc, ucc_level)
+                                       nuc_coeff, ucc_level)
         nt_amp = len(tau)
         t_amp = numpy.zeros(nt_amp)
+
+        if adv_init: 
+            t1_e, t1_e_dag = t1_op_e(nocc_so_e, nvirt_so_e, create, destroy)
+            t2_e, t2_e_dag = t2_op_e(nocc_so_e, nvirt_so_e, create, destroy)
+            tau_e = t1_e + t2_e
+            tau_dag_e = t1_e_dag + t2_e_dag
+            nt_amp_e = len(tau_e)
+            t_amp_e = numpy.zeros(nt_amp_e)
+            res_e = minimize(lambda z: qc_lib.UCC_energy(z, ham_kern, tau_e, tau_dag_e, nt_amp_e,
+                           psi_HF), t_amp_e, tol=1e-7, method='BFGS')
+            theta_e = res_e.x
+            log.note("\nAdvanced cluster amplitude initialization")
+            log.note("\nres_e.success: %s", res_e.success)
+            log.note("res_e.message: %s \n", res_e.message)
+            if res_e.success:
+                for i in range(len(theta_e)):
+                    t_amp[i] = theta_e[i]
 
         qc_lib.dump_ucc_level(log, ucc_level, True)
         log.note("number of cluster amplitudes: %g", nt_amp)
 
-        con_dic = {'type':'eq','fun':constrained_ucc_energy, 'args':[tau, tau_dag,
-                   nt_amp, psi_HF, len(mf_nuc), r_op]}
-        res = minimize(lambda z: qc_lib.UCC_energy(z, ham_kern, tau, tau_dag, nt_amp,
-                       psi_HF), t_amp, constraints=con_dic, tol=1e-7, method='SLSQP')
+        if method_str=='SLSQP':
+            maxiter = 2000
+            opt_dic = {'maxiter': maxiter}
+            con_dic = {'type':'eq','fun':constrained_ucc_energy, 'args':[tau, tau_dag,
+                       nt_amp, psi_HF, len(mf_nuc), r_op]}
+            res = minimize(lambda z: qc_lib.UCC_energy(z, ham_kern, tau, tau_dag, nt_amp,
+                           psi_HF), t_amp, constraints=con_dic, tol=conv_tol, options=opt_dic,\
+                           method=method_str)
+        #elif method_str=='trust-constr':
+        #    maxiter = 2000
+        #    opt_dic = {'maxiter': maxiter, 'verbose':3}
+        #    eq_const = lambda z: constrained_ucc_energy(z, tau, tau_dag, nt_amp, psi_HF, len(mf_nuc), r_op)
+        #    nlc = NonlinearConstraint(eq_const, 0, 0)
+        #    res = minimize(lambda z: qc_lib.UCC_energy(z, ham_kern, tau, tau_dag, nt_amp,
+        #                   psi_HF), t_amp, constraints=nlc, tol=conv_tol, options=opt_dic,\
+        #                   method=method_str)
         theta = res.x
         E_UCC = res.fun
         log.note("\nres.success: %s", res.success)
         log.note("res.message: %s \n", res.message)
+        #if method_str=='trust-constr':
+        #    log.note("res.constr_violation: %s \n", res.constr_violation)
         if res.success:
             psi_UCC = qc_lib.construct_UCC_wf(nt_amp, theta, tau, tau_dag, psi_HF)
             E_UCC = numpy.real(psi_UCC.conj().T @ ham_kern @ psi_UCC).item()

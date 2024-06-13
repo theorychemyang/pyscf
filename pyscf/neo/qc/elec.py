@@ -434,7 +434,7 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
         qc_lib.dump_ucc_level(log, ucc_level)
         log.note("number of cluster amplitudes: %g", nt_amp)
         res = minimize(lambda z: qc_lib.UCC_energy(z, ham_kern, tau, tau_dag, nt_amp,
-                                            psi_HF), t_amp, tol=1e-7, method= 'BFGS')
+                                            psi_HF), t_amp, tol=None, method= 'BFGS')
         theta = res.x
         E_UCC = res.fun
         log.note("\nres.success: %s", res.success)
