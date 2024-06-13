@@ -22,7 +22,7 @@ def get_vepc_elec(mf_grad):
     mol = mf_grad.mol
     ni = mf.mf_elec._numint
     grids = mf.mf_elec.grids
-    nao = mol.elec.nao_nr()
+    nao = mol.elec.nao
     ao_loc = mol.elec.ao_loc_nr()
     ao_deriv = 1
     vmat_elec = numpy.zeros((3,nao,nao))
@@ -45,7 +45,7 @@ def get_vepc_nuc(mf_grad, mol, dm):
     mf = mf_grad.base
     ni = mf.mf_elec._numint
     grids = mf.mf_elec.grids
-    nao = mol.nao_nr()
+    nao = mol.nao
     ao_loc = mol.ao_loc_nr()
     # add electron epc grad
     ao_deriv = 1

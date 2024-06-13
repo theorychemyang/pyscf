@@ -196,7 +196,7 @@ class KS(HF):
 
     def get_veff_nuc_epc(self, mol, dm, dm_last=None, vhf_last=None, hermi=1):
         '''Add EPC contribution to nuclear veff'''
-        nao = mol.nao_nr()
+        nao = mol.nao
         ao_loc = mol.ao_loc_nr()
         nnuc = 0
         excsum = 0
@@ -231,7 +231,7 @@ class KS(HF):
 
     def get_veff_elec_epc(self, mol, dm, dm_last=None, vhf_last=None, hermi=1):
         '''Add EPC contribution to electronic veff'''
-        nao = mol.nao_nr()
+        nao = mol.nao
         ao_loc = mol.ao_loc_nr()
         vmat = numpy.zeros((nao, nao))
         grids = self.mf_elec.grids

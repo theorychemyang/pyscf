@@ -75,7 +75,7 @@ def _build_eri_ne(mol_elec, mol_nuc):
         cput0 = (logger.process_clock(), logger.perf_counter())
     eri_ne = None
     if not mol_elec.super_mol.direct_vee and (mol_elec.super_mol.incore_anyway or
-        _is_mem_enough(mol_elec.nao_nr(), mol_nuc.nao_nr(), mol_elec.super_mol.max_memory)):
+        _is_mem_enough(mol_elec.nao, mol_nuc.nao, mol_elec.super_mol.max_memory)):
         atm, bas, env = gto.conc_env(mol_nuc._atm, mol_nuc._bas, mol_nuc._env,
                                      mol_elec._atm, mol_elec._bas, mol_elec._env)
         intor_name = 'int2e_sph'
@@ -101,7 +101,7 @@ def _build_eri_nn(mol_nuc1, mol_nuc2):
         cput0 = (logger.process_clock(), logger.perf_counter())
     eri_nn = None
     if not mol_nuc1.super_mol.direct_vee and (mol_nuc1.super_mol.incore_anyway or
-        _is_mem_enough(mol_nuc1.nao_nr(), mol_nuc2.nao_nr(), mol_nuc1.super_mol.max_memory)):
+        _is_mem_enough(mol_nuc1.nao, mol_nuc2.nao, mol_nuc1.super_mol.max_memory)):
         atm, bas, env = gto.conc_env(mol_nuc1._atm, mol_nuc1._bas, mol_nuc1._env,
                                      mol_nuc2._atm, mol_nuc2._bas, mol_nuc2._env)
         intor_name = 'int2e_sph'
@@ -130,12 +130,12 @@ def get_j_e_dm_n(idx_nuc, dm_n, mol_elec=None, mol_nuc=None, eri_ne=None):
         if eri_ne[idx_nuc] is None:
             eri_ne[idx_nuc] = _build_eri_ne(mol_elec, mol_nuc)
         if eri_ne[idx_nuc] is not None:
-            return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_n, nao_v=mol_elec.nao_nr(),
+            return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_n, nao_v=mol_elec.nao,
                                         eri_dot_dm=False)
     if not mol_elec.super_mol.direct_vee:
         warnings.warn('Direct Vee is used for e-n ERIs, might be slow. '
                       +f'PYSCF_MAX_MEMORY is set to {mol_elec.super_mol.max_memory} MB, '
-                      +f'required memory: {mol_elec.nao_nr()**2*mol_nuc.nao_nr()**2*2/1e6=:.2f} MB')
+                      +f'required memory: {mol_elec.nao**2*mol_nuc.nao**2*2/1e6=:.2f} MB')
     return -charge * scf.jk.get_jk((mol_elec, mol_elec, mol_nuc, mol_nuc),
                                    dm_n, scripts='ijkl,lk->ij',
                                    intor='int2e', aosym='s4')
@@ -148,12 +148,12 @@ def get_j_n_dm_e(idx_nuc, dm_e, mol_elec=None, mol_nuc=None, eri_ne=None):
         if eri_ne[idx_nuc] is None:
             eri_ne[idx_nuc] = _build_eri_ne(mol_elec, mol_nuc)
         if eri_ne[idx_nuc] is not None:
-            return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_e, nao_v=mol_nuc.nao_nr(),
+            return -charge * dot_eri_dm(eri_ne[idx_nuc], dm_e, nao_v=mol_nuc.nao,
                                         eri_dot_dm=True)
     if not mol_elec.super_mol.direct_vee:
         warnings.warn('Direct Vee is used for e-n ERIs, might be slow. '
                       +f'PYSCF_MAX_MEMORY is set to {mol_elec.super_mol.max_memory} MB, '
-                      +f'required memory: {mol_elec.nao_nr()**2*mol_nuc.nao_nr()**2*2/1e6=:.2f} MB')
+                      +f'required memory: {mol_elec.nao**2*mol_nuc.nao**2*2/1e6=:.2f} MB')
     return -charge * scf.jk.get_jk((mol_nuc, mol_nuc, mol_elec, mol_elec),
                                    dm_e, scripts='ijkl,lk->ij',
                                    intor='int2e', aosym='s4')
@@ -169,21 +169,21 @@ def get_j_nn(idx1, idx2, dm_n2, mol_nuc1=None, mol_nuc2=None, eri_nn=None):
                 eri_nn[idx1][idx2] = _build_eri_nn(mol_nuc1, mol_nuc2)
             if eri_nn[idx1][idx2] is not None:
                 return charge * dot_eri_dm(eri_nn[idx1][idx2], dm_n2,
-                                           nao_v=mol_nuc1.nao_nr(),
+                                           nao_v=mol_nuc1.nao,
                                            eri_dot_dm=True)
         elif idx1 > idx2:
             if eri_nn[idx2][idx1] is None:
                 eri_nn[idx2][idx1] = _build_eri_nn(mol_nuc2, mol_nuc1)
             if eri_nn[idx2][idx1] is not None:
                 return charge * dot_eri_dm(eri_nn[idx2][idx1], dm_n2,
-                                           nao_v=mol_nuc1.nao_nr(),
+                                           nao_v=mol_nuc1.nao,
                                            eri_dot_dm=False)
         elif idx1 == idx2:
             return 0.0
     if not mol_nuc1.super_mol.direct_vee:
         warnings.warn('Direct Vee is used for n-n ERIs, might be slow. '
                       +f'PYSCF_MAX_MEMORY is set to {mol_nuc1.super_mol.max_memory} MB, '
-                      +f'required memory: {mol_nuc1.nao_nr()**2*mol_nuc2.nao_nr()**2*2/1e6=:.2f} MB')
+                      +f'required memory: {mol_nuc1.nao**2*mol_nuc2.nao**2*2/1e6=:.2f} MB')
     return charge * scf.jk.get_jk((mol_nuc1, mol_nuc1, mol_nuc2, mol_nuc2),
                                   dm_n2, scripts='ijkl,lk->ij',
                                   intor='int2e', aosym='s4')
@@ -345,7 +345,7 @@ def get_init_guess_nuc(mf, mol):
     '''
     # TODO: SCF atom guess for quantum nuclei?
     h1n = mf.get_hcore(mol)
-    s1n = mol.intor_symmetric('int1e_ovlp')
+    s1n = mf.get_ovlp(mol)
     mo_energy, mo_coeff = mf.eig(h1n, s1n)
     mo_occ = mf.get_occ(mo_energy, mo_coeff)
     return mf.make_rdm1(mo_coeff, mo_occ)
@@ -421,7 +421,7 @@ def get_hcore_positron(mol, mf_positron, mol_elec=None, dm_elec=None,
     return h
 
 def get_veff_nuc_bare(mol):
-    return numpy.zeros((mol.nao_nr(), mol.nao_nr()))
+    return numpy.zeros((mol.nao, mol.nao))
 
 def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1, diis=None,
              diis_start_cycle=None, level_shift_factor=None, damp_factor=None,
@@ -760,6 +760,10 @@ def init_guess_nuc_by_calculation(mf_nuc, mol):
                       symmetry=mol.symmetry, symmetry_subgroup=mol.symmetry_subgroup,
                       cart=mol.cart, magmom=mol.magmom)
         mol_tmp.nuc[0].index = mol.nuc[i].index
+        if hasattr(mol.nuc[i], 'intor_symmetric_original'):
+            mol_tmp.nuc[0].nao = mol.nuc[i].nao
+            mol_tmp.nuc[0].intor_symmetric_original = mol.nuc[i].intor_symmetric_original
+            mol_tmp.nuc[0].intor_symmetric = mol.nuc[i].intor_symmetric
         dm_nuc[i] = get_init_guess_nuc(mf_nuc[i], mol_tmp.nuc[0])
         mf_nuc[i].hcore_static = None # clear the true hcore cache
     return dm_nuc
@@ -1503,3 +1507,152 @@ class HF(scf.hf.SCF):
         return self
 
     as_scanner = as_scanner
+
+if __name__ == '__main__':
+    # Example on how to construct special NEO-HF calculations that
+    # use only one px orbital:
+    # Get reference calculation
+    mol0 = neo.M(atom='H 0 0 0; H+ 0.75 0 0', basis='6-31G', nuc_basis='1s1p')
+    #mf0 = neo.HF(mol0)
+    mf0 = neo.CDFT(mol0)
+    mf0.mf_elec.xc = 'HF'
+    mf0.scf()
+
+    mol = mol0.copy()
+    # First need to change nao
+    # s, px, py, pz -> s, px
+    # nao 4 -> 2
+    indices_want = [0, 1] # e.g., can be [0, 2] for s, py
+    indices_want.sort()
+    assert sorted(indices_want) == indices_want
+    for i in indices_want:
+        assert i < mol0.nuc[0].nao
+    new_nao = len(indices_want)
+    assert new_nao <= mol0.nuc[0].nao
+    mol.nuc[0].nao = new_nao
+    mol.nuc[1].nao = new_nao
+    print(f'{mol0.nuc[0].nao=}')
+    print(f'{mol.nuc[0].nao=}')
+
+    # Next, change 1-body integrals (h1 and s) by overriding mol.intor_symmetric
+    ovlp_0 = mol0.nuc[0].intor_symmetric('int1e_ovlp')
+    ovlp_0_new = numpy.zeros((new_nao,new_nao))
+    kin_0 = mol0.nuc[0].intor_symmetric('int1e_kin')
+    kin_0_new = numpy.zeros((new_nao,new_nao))
+    nuc_0 = mol0.nuc[0].intor_symmetric('int1e_nuc')
+    nuc_0_new = numpy.zeros((new_nao,new_nao))
+    r_0 = mol0.nuc[0].intor_symmetric('int1e_r')
+    r_0_new = numpy.zeros((3,new_nao,new_nao))
+
+    for i in range(new_nao):
+        for j in range(new_nao):
+            ovlp_0_new[i, j] = ovlp_0[indices_want[i], indices_want[j]]
+            kin_0_new[i, j] = kin_0[indices_want[i], indices_want[j]]
+            nuc_0_new[i, j] = nuc_0[indices_want[i], indices_want[j]]
+            r_0_new[:, i, j] = r_0[:, indices_want[i], indices_want[j]]
+
+    def intor_symmetric_0(self, intor, comp=None, grids=None):
+        if intor == 'int1e_ovlp':
+            return ovlp_0_new
+        elif intor == 'int1e_kin':
+            return kin_0_new
+        elif intor == 'int1e_nuc':
+            return nuc_0_new
+        elif intor == 'int1e_r':
+            return r_0_new
+        return self.intor_symmetric_original(intor, comp, grids)
+
+    mol.nuc[0].intor_symmetric_original = mol.nuc[0].intor_symmetric
+    import types
+    mol.nuc[0].intor_symmetric = types.MethodType(intor_symmetric_0, mol.nuc[0])
+
+    ovlp_1 = mol0.nuc[1].intor_symmetric('int1e_ovlp')
+    ovlp_1_new = numpy.zeros((new_nao,new_nao))
+    kin_1 = mol0.nuc[1].intor_symmetric('int1e_kin')
+    kin_1_new = numpy.zeros((new_nao,new_nao))
+    nuc_1 = mol0.nuc[1].intor_symmetric('int1e_nuc')
+    nuc_1_new = numpy.zeros((new_nao,new_nao))
+    r_1 = mol0.nuc[1].intor_symmetric('int1e_r')
+    r_1_new = numpy.zeros((3,new_nao,new_nao))
+
+    for i in range(new_nao):
+        for j in range(new_nao):
+            ovlp_1_new[i, j] = ovlp_1[indices_want[i], indices_want[j]]
+            kin_1_new[i, j] = kin_1[indices_want[i], indices_want[j]]
+            nuc_1_new[i, j] = nuc_1[indices_want[i], indices_want[j]]
+            r_1_new[:, i, j] = r_1[:, indices_want[i], indices_want[j]]
+
+    def intor_symmetric_1(self, intor, comp=None, grids=None):
+        if intor == 'int1e_ovlp':
+            return ovlp_1_new
+        elif intor == 'int1e_kin':
+            return kin_1_new
+        elif intor == 'int1e_nuc':
+            return nuc_1_new
+        elif intor == 'int1e_r':
+            return r_1_new
+        return self.intor_symmetric_original(intor, comp, grids)
+
+    mol.nuc[1].intor_symmetric_original = mol.nuc[1].intor_symmetric
+    mol.nuc[1].intor_symmetric = types.MethodType(intor_symmetric_1, mol.nuc[1])
+
+    # Electronic 1-body integrals can be changed as well if desired
+
+    # Finally, provide AO-space integrals
+    #mf = neo.HF(mol)
+    mf = neo.CDFT(mol)
+    mf.mf_elec.xc = 'HF'
+    # Modify nucleus-electron integrals
+    _eri_ne_0 = mf0._eri_ne[0]
+    npair_0 = mol0.nuc[0].nao * (mol0.nuc[0].nao + 1) // 2
+    assert _eri_ne_0.shape[0] == npair_0
+    npair_0_new = mol.nuc[0].nao * (mol.nuc[0].nao + 1) // 2
+    _eri_ne_0_new = numpy.zeros((npair_0_new,_eri_ne_0.shape[1]))
+
+    _eri_ne_1 = mf0._eri_ne[1]
+    npair_1 = mol0.nuc[1].nao * (mol0.nuc[1].nao + 1) // 2
+    assert _eri_ne_1.shape[0] == npair_1
+    npair_1_new = mol.nuc[1].nao * (mol.nuc[1].nao + 1) // 2
+    _eri_ne_1_new = numpy.zeros((npair_1_new,_eri_ne_1.shape[1]))
+
+    for i in range(new_nao):
+        for j in range(i+1):
+            idx_new = i * (i + 1) // 2 + j
+            assert indices_want[j] <= indices_want[i]
+            idx_old = indices_want[i] * (indices_want[i] + 1) // 2 + indices_want[j]
+            _eri_ne_0_new[idx_new,:] = _eri_ne_0[idx_old,:]
+            _eri_ne_1_new[idx_new,:] = _eri_ne_1[idx_old,:]
+
+    mf._eri_ne[0] = _eri_ne_0_new
+    mf._eri_ne[1] = _eri_ne_1_new
+
+    # Modify nucleus-nucleus integrals
+    _eri_nn = mf0._eri_nn[0][1]
+    assert _eri_nn.shape[0] == npair_0
+    assert _eri_nn.shape[1] == npair_1
+    _eri_nn_new = numpy.zeros((npair_0_new,npair_1_new))
+
+    for i in range(new_nao):
+        for j in range(i+1):
+            idx_new1 = i * (i + 1) // 2 + j
+            assert indices_want[j] <= indices_want[i]
+            idx_old1 = indices_want[i] * (indices_want[i] + 1) // 2 + indices_want[j]
+            for k in range(new_nao):
+                for l in range(k+1):
+                    idx_new2 = k * (k + 1) // 2 + l
+                    assert indices_want[l] <= indices_want[k]
+                    idx_old2 = indices_want[k] * (indices_want[k] + 1) // 2 + indices_want[l]
+                    _eri_nn_new[idx_new1,idx_new2] = _eri_nn[idx_old1,idx_old2]
+
+    mf._eri_nn[0][1] = _eri_nn_new
+
+    # Electronic 2-body integrals can be changed as well if desired
+
+    # Initial guess:
+    # If the electronic basis and integrals are changed as well, probably only
+    # hcore guess is reliable (in terms producing a density matrix of correct size)
+    # mf.init_guess = 'hcore'
+
+    mf.scf()
+    print(f'{mf0.mf_nuc[0].mo_coeff=}')
+    print(f'{mf.mf_nuc[0].mo_coeff=}')
