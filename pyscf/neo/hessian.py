@@ -817,7 +817,7 @@ class Hessian(lib.StreamObject):
             ecp_atoms = set(mol_n._ecpbas[:,gto.ATOM_OF])
         else:
             ecp_atoms = ()
-        nao = mol_n.nao_nr()
+        nao = mol_n.nao
         ia = mol_n.atom_index
         charge = mol.atom_charge(ia)
         def hcore_deriv(iatm, jatm):

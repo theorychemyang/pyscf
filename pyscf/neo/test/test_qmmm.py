@@ -25,13 +25,16 @@ from pyscf.qmmm.mm_mole import create_mm_mol
 
 
 def setUpModule():
-    global mol, mol_1e6, mol_dft, mm_coords, mm_charges, mm_radii, mm_mol
+    global mol, mol_1e6, mol_dft, mm_coords, mm_charges, mm_radii, mm_mol, \
+           mm_mol_point, mm_mol_small_radius, mol_point, mol_small_radius
     mm_coords = [(1.369, 0.146,-0.395),
                  (1.894, 0.486, 0.335),
                  (0.451, 0.165,-0.083)]
     mm_charges = [-1.040, 0.520, 0.520]
     mm_radii = [0.63, 0.32, 0.32]
     mm_mol = create_mm_mol(mm_coords, mm_charges, mm_radii)
+    mm_mol_point = create_mm_mol(mm_coords, mm_charges)
+    mm_mol_small_radius = create_mm_mol(mm_coords, mm_charges, [1e-8]*3)
     atom='''O       -1.464   0.099   0.300
             H       -1.956   0.624  -0.340
             H       -1.797  -0.799   0.206'''
@@ -40,9 +43,14 @@ def setUpModule():
     mol_1e6 = neo.M(atom=atom, basis='631G', nuc_basis='1e6',
                     quantum_nuc=['H'], mm_mol=mm_mol)
     mol_dft = gto.M(atom=atom, basis='631G')
+    mol_point = neo.M(atom=atom, basis='631G', nuc_basis='pb4d',
+                      quantum_nuc=['H'], mm_mol=mm_mol_point)
+    mol_small_radius = neo.M(atom=atom, basis='631G', nuc_basis='pb4d',
+                             quantum_nuc=['H'], mm_mol=mm_mol_small_radius)
 
 def tearDownModule():
-    global mol, mol_1e6, mol_dft, mm_coords, mm_charges, mm_radii, mm_mol
+    global mol, mol_1e6, mol_dft, mm_coords, mm_charges, mm_radii, mm_mol, \
+           mm_mol_point, mm_mol_small_radius, mol_point, mol_small_radius
 
 class KnowValues(unittest.TestCase):
     def test(self):
@@ -154,6 +162,19 @@ class KnowValues(unittest.TestCase):
         g_mm2 = g.grad_mm()
         numpy.testing.assert_array_almost_equal(g_qm0, g_qm2)
         self.assertAlmostEqual(numpy.linalg.norm(g_mm2), 0.0, 6)
+
+    def test_point_and_small_radius_gaussian(self):
+        mf_point = neo.CDFT(mol_point)
+        mf_point.mf_elec.xc = 'PBE0'
+        mf_small_radius = neo.CDFT(mol_small_radius)
+        mf_small_radius.mf_elec.xc = 'PBE0'
+        self.assertAlmostEqual(mf_point.kernel(), mf_small_radius.kernel())
+
+        g_point = mf_point.Gradients()
+        g_small_radius = mf_small_radius.Gradients()
+        numpy.testing.assert_array_almost_equal(g_point.grad(), g_small_radius.grad())
+        numpy.testing.assert_array_almost_equal(g_point.grad_mm(), g_small_radius.grad_mm())
+
 
 if __name__ == "__main__":
     print("Full Tests for CNEO-QMMM.")
