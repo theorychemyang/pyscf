@@ -140,12 +140,17 @@ class _SmearingSCF:
             if self.mu0 is None:
                 mu_a, occa = _smearing_optimize(f_occ, mo_es[0], nocc[0], sigma)
                 mu_b, occb = _smearing_optimize(f_occ, mo_es[1], nocc[1], sigma)
-                mu = [mu_a, mu_b]
-                mo_occs = [occa, occb]
             else:
-                mu = self.mu0
-                mo_occs = f_occ(mu[0], mo_es[0], sigma)
-                mo_occs = f_occ(mu[1], mo_es[1], sigma)
+                if numpy.isscalar(self.mu0):
+                    mu_a = mu_b = self.mu0
+                elif len(self.mu0) == 2:
+                    mu_a, mu_b = self.mu0
+                else:
+                    raise TypeError(f'Unsupported mu0: {self.mu0}')
+                occa = f_occ(mu_a, mo_es[0], sigma)
+                occb = f_occ(mu_b, mo_es[1], sigma)
+            mu = [mu_a, mu_b]
+            mo_occs = [occa, occb]
             self.entropy  = self._get_entropy(mo_es[0], mo_occs[0], mu[0])
             self.entropy += self._get_entropy(mo_es[1], mo_occs[1], mu[1])
             fermi = (_get_fermi(mo_es[0], nocc[0]), _get_fermi(mo_es[1], nocc[1]))
@@ -163,7 +168,7 @@ class _SmearingSCF:
             if is_rohf:
                 mo_occs = mo_occs[0] + mo_occs[1]
         else: # all orbitals treated with the same fermi level
-            nocc = nelectron = self.mol.tot_electrons()
+            nocc = nelectron = self.mol.nelectron
             if is_uhf:
                 mo_es = numpy.hstack(mo_energy)
             else:
@@ -176,6 +181,7 @@ class _SmearingSCF:
             else:
                 # If mu0 is given, fix mu instead of electron number. XXX -Chong Sun
                 mu = self.mu0
+                assert numpy.isscalar(mu)
                 mo_occs = f_occ(mu, mo_es, sigma)
             self.entropy = self._get_entropy(mo_es, mo_occs, mu)
             if is_rhf:
@@ -406,7 +412,8 @@ def dynamic_level_shift_(mf, factor=1.):
     old_get_fock = mf.get_fock
     mf._last_e = None
     def get_fock(h1e, s1e, vhf, dm, cycle=-1, diis=None,
-                 diis_start_cycle=None, level_shift_factor=None, damp_factor=None):
+                 diis_start_cycle=None, level_shift_factor=None, damp_factor=None,
+                 fock_last=None):
         if cycle > 0 or diis is not None:
             if 'exc' in mf.scf_summary:  # DFT
                 e_tot = mf.scf_summary['e1'] + mf.scf_summary['coul'] + mf.scf_summary['exc']
@@ -417,7 +424,7 @@ def dynamic_level_shift_(mf, factor=1.):
                 logger.info(mf, 'Set level shift to %g', level_shift_factor)
             mf._last_e = e_tot
         return old_get_fock(h1e, s1e, vhf, dm, cycle, diis, diis_start_cycle,
-                            level_shift_factor, damp_factor)
+                            level_shift_factor, damp_factor, fock_last=fock_last)
     mf.get_fock = get_fock
     return mf
 dynamic_level_shift = dynamic_level_shift_

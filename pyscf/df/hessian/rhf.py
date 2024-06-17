@@ -475,15 +475,11 @@ def _load_dim0(dat, p0, p1):
 class Hessian(rhf_hess.Hessian):
     '''Non-relativistic restricted Hartree-Fock hessian'''
     def __init__(self, mf):
-        self.auxbasis_response = 1
         rhf_hess.Hessian.__init__(self, mf)
 
+    auxbasis_response = 1
     partial_hess_elec = partial_hess_elec
     make_h1 = make_h1
-
-    def to_gpu(self):
-        from gpu4pyscf.df.hessian.rhf import Hessian
-        return lib.to_gpu(self.view(Hessian))
 
 #TODO: Insert into DF class
 

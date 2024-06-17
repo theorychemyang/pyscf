@@ -188,6 +188,11 @@ class QMMMSCF(QMMM):
             nuc += q2*(charges/r).sum()
         return nuc
 
+    def to_gpu(self):
+        obj = self.undo_qmmm().to_gpu()
+        obj = qmmm_for_scf(obj, self.mm_mol)
+        return lib.to_gpu(self, obj)
+
     def nuc_grad_method(self):
         scf_grad = super().nuc_grad_method()
         return qmmm_grad_for_scf(scf_grad)
@@ -206,6 +211,8 @@ class QMMMPostSCF(QMMM):
         obj = lib.view(self, lib.drop_class(self.__class__, QMMM))
         obj._scf = self._scf.undo_qmmm()
         return obj
+
+    to_gpu = QMMMSCF.to_gpu
 
 
 def add_mm_charges_grad(scf_grad, atoms_or_coords, charges, radii=None, unit=None):
@@ -341,22 +348,33 @@ class QMMMGrad:
 
         coords = mm_mol.atom_coords()
         charges = mm_mol.atom_charges()
-        expnts = mm_mol.get_zetas()
-
-        intor = 'int3c2e_ip2'
-        nao = mol.nao
-        max_memory = self.max_memory - lib.current_memory()[0]
-        blksize = int(min(max_memory*1e6/8/nao**2/3, 200))
-        blksize = max(blksize, 1)
-        cintopt = gto.moleintor.make_cintopt(mol._atm, mol._bas,
-                                             mol._env, intor)
-
         g = numpy.empty_like(coords)
-        for i0, i1 in lib.prange(0, charges.size, blksize):
-            fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
-            j3c = df.incore.aux_e2(mol, fakemol, intor, aosym='s1',
-                                   comp=3, cintopt=cintopt)
-            g[i0:i1] = numpy.einsum('ipqk,qp->ik', j3c * charges[i0:i1], dm).T
+        if mm_mol.charge_model == 'gaussian':
+            expnts = mm_mol.get_zetas()
+
+            intor = 'int3c2e_ip2'
+            nao = mol.nao
+            max_memory = self.max_memory - lib.current_memory()[0]
+            blksize = int(min(max_memory*1e6/8/nao**2/3, 200))
+            blksize = max(blksize, 1)
+            cintopt = gto.moleintor.make_cintopt(mol._atm, mol._bas,
+                                                 mol._env, intor)
+
+            for i0, i1 in lib.prange(0, charges.size, blksize):
+                fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
+                j3c = df.incore.aux_e2(mol, fakemol, intor, aosym='s1',
+                                       comp=3, cintopt=cintopt)
+                g[i0:i1] = numpy.einsum('ipqk,qp->ik', j3c * charges[i0:i1], dm).T
+        else:
+            # From examples/qmmm/30-force_on_mm_particles.py
+            # The interaction between electron density and MM particles
+            # d/dR <i| (1/|r-R|) |j> = <i| d/dR (1/|r-R|) |j> = <i| -d/dr (1/|r-R|) |j>
+            #   = <d/dr i| (1/|r-R|) |j> + <i| (1/|r-R|) |d/dr j>
+            for i, q in enumerate(charges):
+                with mol.with_rinv_origin(coords[i]):
+                    v = mol.intor('int1e_iprinv')
+                g[i] = (numpy.einsum('ij,xji->x', dm, v) +
+                        numpy.einsum('ij,xij->x', dm, v.conj())) * -q
         return g
 
     contract_hcore_mm = grad_hcore_mm # for backward compatibility
@@ -395,6 +413,11 @@ class QMMMGrad:
             r = lib.norm(r1-coords, axis=1)
             g_mm += q1 * numpy.einsum('i,ix,i->ix', charges, r1-coords, 1/r**3)
         return g_mm
+
+    def to_gpu(self):
+        obj = self.undo_qmmm().to_gpu()
+        obj = qmmm_grad_for_scf(obj)
+        return lib.to_gpu(self, obj)
 
 _QMMMGrad = QMMMGrad
 

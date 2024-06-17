@@ -107,6 +107,8 @@ def gen_occslst(orb_list, nelec):
         return res
     occslst = gen_occs_iter(orb_list, nelec)
     return numpy.asarray(occslst, dtype=numpy.int32).view(OIndexList)
+# Add this symbol for backward compatibility. Should remove in the future.
+_gen_occslst = gen_occslst
 
 def _strs2occslst(strs, norb):
     na = len(strs)
@@ -343,12 +345,13 @@ def addr2str(norb, nelec, addr):
     '''Convert CI determinant address to string'''
     if norb >= 64:
         raise NotImplementedError('norb >= 64')
-    assert num_strings(norb, nelec) > addr
+    max_addr = num_strings(norb, nelec)
+    assert max_addr > addr
 
-    if addr < 2**31:
+    if max_addr < 2**31:
         return addrs2str(norb, nelec, [addr])[0]
-
-    return _addr2str(norb, nelec, addr)
+    else:
+        return _addr2str(norb, nelec, addr)
 
 def _addr2str(norb, nelec, addr):
     if addr == 0 or nelec == norb or nelec == 0:

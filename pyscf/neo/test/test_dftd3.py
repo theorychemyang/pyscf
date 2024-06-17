@@ -25,5 +25,5 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(results['freq_wavenumber'][-3], 1572.843, 2)
 
 if __name__ == "__main__":
-    print("Full Tests for neo.hess")
+    print("Full Tests for dftd")
     unittest.main()

@@ -415,17 +415,17 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(xc1.sum(), 19.977512805950784, 7)
         self.assertAlmostEqual(abs(ref[1] - xc1).max(), 0, 9)
 
-    @unittest.skip(dft.libxc.max_deriv_order('pbe,') <= 3)
+    @unittest.skipIf(dft.libxc.max_deriv_order('pbe,') <= 3, 'libxc order')
     def test_libxc_gga_deriv4(self):
         rho1 = rho[:,:4].copy()
         xc1 = dft.libxc.eval_xc_eff('PBE', rho1, deriv=4)
-        self.assertAlmostEqual(xc1.sum(), -920.135878252819, 4)
+        self.assertAlmostEqual(xc1.sum(), -1141.356286780069, 1)
 
         rho1 = rho[1,:4].copy()
         xc1 = dft.libxc.eval_xc_eff('PBE', rho1, deriv=4)
-        self.assertAlmostEqual(xc1.sum(), -869.6617638095072, 4)
+        self.assertAlmostEqual(xc1.sum(), -615.116081052867, 1)
 
-    @unittest.skip(not hasattr(dft, 'xcfun'))
+    @unittest.skipIf(not hasattr(dft, 'xcfun'), 'xcfun order')
     def test_xcfun_lda_deriv3(self):
         rho1 = rho[:,0].copy()
         ref = eval_xc_eff('LDA,', rho1, 3, dft.xcfun)
@@ -457,7 +457,7 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(xc1.sum(), -2.7477984980958627, 9)
         self.assertAlmostEqual(abs(ref[1] - xc1).max(), 0, 9)
 
-    @unittest.skip(not hasattr(dft, 'xcfun'))
+    @unittest.skipIf(not hasattr(dft, 'xcfun'), 'xcfun order')
     def test_xcfun_gga_deriv3(self):
         rho1 = rho[:,:4].copy()
         ref = eval_xc_eff('PBE', rho1, 3, dft.xcfun)
@@ -489,7 +489,7 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(xc1.sum(), -3.0715856471099032, 9)
         self.assertAlmostEqual(abs(ref[1] - xc1).max(), 0, 9)
 
-    @unittest.skip(not hasattr(dft, 'xcfun'))
+    @unittest.skipIf(not hasattr(dft, 'xcfun'), 'xcfun order')
     def test_xcfun_mgga_deriv3(self):
         rho1 = rho
         ref = eval_xc_eff('M06', rho1, 3, dft.xcfun)
@@ -521,15 +521,51 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(xc1.sum(), 19.977512805950784, 9)
         self.assertAlmostEqual(abs(ref[1] - xc1).max(), 0, 9)
 
-    @unittest.skip(not (hasattr(dft, 'xcfun') and dft.xcfun.MAX_DERIV_ORDER > 3))
+    @unittest.skipIf(not (hasattr(dft, 'xcfun') and dft.xcfun.MAX_DERIV_ORDER > 3), 'xcfun order')
     def test_xcfun_gga_deriv4(self):
         rho1 = rho[:,:4].copy()
         xc1 = dft.xcfun.eval_xc_eff('PBE', rho1, deriv=4)
-        self.assertAlmostEqual(xc1.sum(), -920.135878252819, 9)
+        self.assertAlmostEqual(xc1.sum(), -1141.356286780069, 9)
 
         rho1 = rho[1,:4].copy()
         xc1 = dft.xcfun.eval_xc_eff('PBE', rho1, deriv=4)
-        self.assertAlmostEqual(xc1.sum(), -869.6617638095072, 9)
+        self.assertAlmostEqual(xc1.sum(), -615.116081052867, 9)
+
+    @unittest.skipIf(not (hasattr(dft, 'xcfun') and dft.xcfun.MAX_DERIV_ORDER > 3), 'xcfun order')
+    def test_xcfun_gga_deriv4_finite_diff(self):
+        xctype = 'GGA'
+        deriv = 4
+        nvar = 4
+        delta = 1e-6
+
+        spin = 1
+        rhop = rho[:,:nvar].copy()
+        xcp = dft.xcfun.eval_xc1('pbe,', rhop, spin, deriv=deriv)
+        lxc = xc_deriv.transform_xc(rhop, xcp, xctype, spin,4)
+        for s in (0, 1):
+            for t in range(nvar):
+                rhop = rho[:,:nvar].copy()
+                rhop[s,t] += delta * .5
+                xcp = dft.xcfun.eval_xc1('pbe,', rhop, spin, deriv=deriv-1)
+                kxc0 = xc_deriv.transform_xc(rhop, xcp, xctype, spin, deriv-1)
+                rhop[s,t] -= delta
+                xcp = dft.xcfun.eval_xc1('pbe,', rhop, spin, deriv=deriv-1)
+                kxc1 = xc_deriv.transform_xc(rhop, xcp, xctype, spin, deriv-1)
+                self.assertAlmostEqual(abs((kxc0-kxc1)/delta - lxc[s,t]).max(), 0, 7)
+
+        spin = 0
+        rhop = rho[0,:nvar].copy()
+        xcp = dft.xcfun.eval_xc1('b88,', rhop, spin, deriv=deriv)
+        lxc = xc_deriv.transform_xc(rhop, xcp, xctype, spin,4)
+        for t in range(nvar):
+            rhop = rho[0,:nvar].copy()
+            rhop[t] += delta * .5
+            xcp = dft.xcfun.eval_xc1('b88,', rhop, spin, deriv=deriv-1)
+            kxc0 = xc_deriv.transform_xc(rhop, xcp, xctype, spin, deriv-1)
+            rhop[t] -= delta
+            xcp = dft.xcfun.eval_xc1('b88,', rhop, spin, deriv=deriv-1)
+            kxc1 = xc_deriv.transform_xc(rhop, xcp, xctype, spin, deriv-1)
+            self.assertAlmostEqual(abs((kxc0-kxc1)/delta - lxc[t]).max(), 0, 7)
 
 if __name__ == "__main__":
     print("Test xc_deriv")

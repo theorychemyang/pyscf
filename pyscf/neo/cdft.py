@@ -37,7 +37,7 @@ class CDFT(KS):
             mf = self.mf_nuc[i]
             mf.nuclei_expect_position = mf.mol.atom_coord(mf.mol.atom_index)
             # the position matrix with its origin shifted to nuclear expectation position
-            s1e = mf.get_ovlp(mf.mol)
+            s1e = mf.get_ovlp()
             mf.int1e_r = mf.mol.intor_symmetric('int1e_r', comp=3) \
                          - numpy.asarray([mf.nuclei_expect_position[i] * s1e for i in range(3)])
 
@@ -53,7 +53,7 @@ class CDFT(KS):
         ia = mf.mol.atom_index
         self.f[ia] = f
         if s1e is None:
-            s1e = mf.get_ovlp(mf.mol)
+            s1e = mf.get_ovlp()
         return position_analysis(mf, fock0 + get_fock_add_cdft(self.f[ia], mf.int1e_r),
                                  s1e, mf.int1e_r)
 
@@ -66,7 +66,7 @@ class CDFT(KS):
             mf = self.mf_nuc[i]
             mf.nuclei_expect_position = mf.mol.atom_coord(mf.mol.atom_index)
             # the position matrix with its origin shifted to nuclear expectation position
-            s1e = mf.get_ovlp(mf.mol)
+            s1e = mf.get_ovlp()
             mf.int1e_r = mf.mol.intor_symmetric('int1e_r', comp=3) \
                          - numpy.asarray([mf.nuclei_expect_position[i] * s1e for i in range(3)])
         return self
