@@ -216,6 +216,7 @@ class KS(HF):
             ao_nuc = eval_ao(mol, coords)
             rho_nuc = eval_rho(mol, ao_nuc, dm)
             rho_nuc[rho_nuc<0.] = 0.
+            rho_elec[rho_elec<0.] = 0.
             exc, vxc = eval_xc_nuc(self.epc, rho_elec, rho_nuc)
             den = rho_nuc * weight
             nnuc += den.sum()
@@ -251,6 +252,7 @@ class KS(HF):
                     ao_nuc = eval_ao(self.mol.nuc[i], coords)
                     rho_nuc = eval_rho(self.mol.nuc[i], ao_nuc, self.dm_nuc[i])
                     rho_nuc[rho_nuc<0.] = 0.
+                    rho_elec[rho_elec<0.] = 0.
                     vxc_i = eval_xc_elec(self.epc, rho_elec, rho_nuc)
                     wv = weight * vxc_i
                     # times 0.5 because vmat + vmat.T
