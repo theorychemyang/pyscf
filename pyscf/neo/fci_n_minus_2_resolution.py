@@ -23,7 +23,16 @@ def contract(h1, h2, fcivec, norb, nparticle, dd_index=None, d_index=None):
         d_index = []
         for i in range(ndim):
             if nparticle[i] > 0:
-                d_index.append(cistring.gen_des_str_index(range(norb[i]), nparticle[i]))
+                try:
+                    d_index_ = cistring.gen_des_str_index(range(norb[i]), nparticle[i])
+                except NotImplementedError:
+                    if nparticle[i] == 1:
+                        d_index_ = numpy.zeros((norb[i], 1, 4), dtype=numpy.int32)
+                        d_index_[:,:,-1] = 1
+                        d_index_[:,:,1] = numpy.arange(norb[i], dtype=numpy.int32).reshape(-1,1)
+                    else:
+                        raise NotImplementedError('64 orbitals or more and not 1 occupation')
+                d_index.append(d_index_)
             else:
                 d_index.append(None)
     ndim = len(norb)
@@ -150,7 +159,7 @@ def contract(h1, h2, fcivec, norb, nparticle, dd_index=None, d_index=None):
                 done[k][l] = done[l][k] = True
     return fcinew.reshape(fcivec.shape)
 
-def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None):
+def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1):
     h2 = [[None] * len(norb) for _ in range(len(norb))]
     for i in range(len(norb)):
         for j in range(len(norb)):
@@ -160,33 +169,37 @@ def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None):
                 else:
                     h2[i][j] = g2[i][j]
 
+    def hop(c):
+        hc = contract(h1, h2, c, norb, nparticle)
+        return hc.reshape(-1)
+    if hdiag is None:
+        hdiag = make_hdiag(h1, g2, norb, nparticle)
     if ci0 is None:
         print('N-2 resolution method')
         dim = []
         for i in range(len(norb)):
             dim.append(cistring.num_strings(norb[i], nparticle[i]))
         print(f'FCI vector shape: {dim}', flush=True)
-        ci0 = numpy.zeros(tuple(dim))
-        print(f'FCI dimension: {ci0.size}', flush=True)
-        ci0[tuple(0 for _ in range(ci0.ndim))] = 1
+        print(f'FCI dimension: {hdiag.size}', flush=True)
+        addrs = numpy.argpartition(hdiag, nroots-1)[:nroots]
+        ci0 = []
+        for addr in addrs:
+            print(f'{hdiag[addr]=}', flush=True)
+            ci0_ = numpy.zeros(hdiag.size)
+            ci0_[addr] = 1
+            ci0.append(ci0_)
 
-    def hop(c):
-        hc = contract(h1, h2, c, norb, nparticle)
-        return hc.reshape(-1)
-    if hdiag is None:
-        hdiag = make_hdiag(h1, g2, norb, nparticle)
-        print(f'{hdiag[:4]=}', flush=True)
     precond = lambda x, e, *args: x/(hdiag-e+1e-4)
     t0 = time.time()
     converged, e, c = lib.davidson1(lambda xs: [hop(x) for x in xs],
-                                    ci0.reshape(-1), precond, max_cycle=100,
-                                    max_memory=32000, verbose=10)
+                                    ci0, precond, max_cycle=100,
+                                    max_memory=256000, nroots=nroots, verbose=10)
     print(f'davidson: {time.time() - t0} seconds', flush=True)
     if converged[0]:
         print('FCI Davidson converged!')
     else:
         print('FCI Davidson did not converge according to current setting.')
-    return e[0]+ecore, c[0]
+    return e+ecore, c
 
 def energy(h1, g2, fcivec, norb, nparticle, ecore=0):
     h2 = [[None] * len(norb) for _ in range(len(norb))]
@@ -200,8 +213,72 @@ def energy(h1, g2, fcivec, norb, nparticle, ecore=0):
     ci1 = contract(h1, h2, fcivec, norb, nparticle)
     return numpy.dot(fcivec, ci1) + ecore
 
-def FCI(mf, kernel=kernel, energy=energy):
-    return _FCI(mf, kernel=kernel, energy=energy)
+def integrals(mf):
+    from functools import reduce
+    mol = mf.mol
+    nelec = mol.elec.nelec
+    h1e_a = None
+    if nelec[0] > 0:
+        h1e_a = reduce(numpy.dot, (mf.mf_elec.mo_coeff[0].T, mf.mf_elec.hcore_static, mf.mf_elec.mo_coeff[0]))
+    h1e_b = None
+    if nelec[1] > 0:
+        h1e_b = reduce(numpy.dot, (mf.mf_elec.mo_coeff[1].T, mf.mf_elec.hcore_static, mf.mf_elec.mo_coeff[1]))
+    h1 = [h1e_a, h1e_b]
+    for i in range(mol.nuc_num):
+        h1n = reduce(numpy.dot, (mf.mf_nuc[i].mo_coeff.T, mf.mf_nuc[i].hcore_static, mf.mf_nuc[i].mo_coeff))
+        h1.append(h1n)
+
+    g2 = [[None] * (2+mol.nuc_num) for _ in range(2+mol.nuc_num)]
+    if nelec[0] > 1:
+        eri_ee_aa = ao2mo.kernel(mf.mf_elec._eri,
+                                 (mf.mf_elec.mo_coeff[0], mf.mf_elec.mo_coeff[0],
+                                  mf.mf_elec.mo_coeff[0], mf.mf_elec.mo_coeff[0]),
+                                 compact=False)
+        g2[0][0] = eri_ee_aa
+    if nelec[1] > 1:
+        eri_ee_bb = ao2mo.kernel(mf.mf_elec._eri,
+                                 (mf.mf_elec.mo_coeff[1], mf.mf_elec.mo_coeff[1],
+                                  mf.mf_elec.mo_coeff[1], mf.mf_elec.mo_coeff[1]),
+                                 compact=False)
+        g2[1][1] = eri_ee_bb
+    if nelec[0] > 0 and nelec[1] > 0:
+        eri_ee_ab = ao2mo.kernel(mf.mf_elec._eri,
+                                 (mf.mf_elec.mo_coeff[0], mf.mf_elec.mo_coeff[0],
+                                  mf.mf_elec.mo_coeff[1], mf.mf_elec.mo_coeff[1]),
+                                 compact=False)
+        g2[0][1] = eri_ee_ab
+
+    for i in range(mol.nuc_num):
+        ia = mol.nuc[i].atom_index
+        charge = mol.atom_charge(ia)
+        if nelec[0] > 0:
+            eri_ne = -charge * ao2mo.kernel(mf._eri_ne[i],
+                                            (mf.mf_nuc[i].mo_coeff, mf.mf_nuc[i].mo_coeff,
+                                             mf.mf_elec.mo_coeff[0], mf.mf_elec.mo_coeff[0]),
+                                            compact=False)
+            g2[i+2][0] = eri_ne
+        if nelec[1] > 0:
+            eri_ne = -charge * ao2mo.kernel(mf._eri_ne[i],
+                                            (mf.mf_nuc[i].mo_coeff, mf.mf_nuc[i].mo_coeff,
+                                             mf.mf_elec.mo_coeff[1], mf.mf_elec.mo_coeff[1]),
+                                            compact=False)
+            g2[i+2][1] = eri_ne
+
+    for i in range(mol.nuc_num):
+        ia = mol.nuc[i].atom_index
+        charge_i = mol.atom_charge(ia)
+        for j in range(i):
+            ja = mol.nuc[j].atom_index
+            charge = charge_i * mol.atom_charge(ja)
+            eri_nn = charge * ao2mo.kernel(mf._eri_nn[j][i],
+                                           (mf.mf_nuc[j].mo_coeff, mf.mf_nuc[j].mo_coeff,
+                                            mf.mf_nuc[i].mo_coeff, mf.mf_nuc[i].mo_coeff),
+                                           compact=False)
+            g2[j+2][i+2] = eri_nn
+    return h1, g2
+
+def FCI(mf, kernel=kernel, integrals=integrals, energy=energy):
+    return _FCI(mf, kernel=kernel, integrals=integrals, energy=energy)
 
 
 if __name__ == '__main__':
