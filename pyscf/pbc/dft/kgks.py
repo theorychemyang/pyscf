@@ -35,6 +35,7 @@ from pyscf.pbc.dft import krks
 from pyscf.pbc.dft import rks
 from pyscf.pbc.dft import multigrid
 from pyscf.pbc.dft.numint2c import KNumInt2C
+from pyscf.dft import gks as mol_ks
 from pyscf import __config__
 
 def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
@@ -58,7 +59,7 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
     t0 = (logger.process_clock(), logger.perf_counter())
 
     ni = ks._numint
-    if ks.nlc or ni.libxc.is_nlc(ks.xc):
+    if ks.do_nlc():
         raise NotImplementedError(f'NLC functional {ks.xc} + {ks.nlc}')
 
     hybrid = ni.libxc.is_hybrid_xc(ks.xc)
@@ -117,6 +118,8 @@ class KGKS(rks.KohnShamDFT, kghf.KGHF):
     '''GKS class adapted for PBCs with k-point sampling.
     '''
 
+    collinear = mol_ks.GKS.collinear
+    spin_samples = mol_ks.GKS.spin_samples
     get_veff = get_veff
     energy_elec = krks.energy_elec
     get_rho = krks.get_rho

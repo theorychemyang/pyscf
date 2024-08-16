@@ -42,7 +42,7 @@ def partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     mol = hessobj.mol
     mf = hessobj.base
     ni = mf._numint
-    if mf.nlc or ni.libxc.is_nlc(mf.xc):
+    if mf.do_nlc():
         raise NotImplementedError('RKS Hessian for NLC functional')
 
     if mo_energy is None: mo_energy = mf.mo_energy
@@ -593,3 +593,4 @@ class Hessian(rhf_hess.HessianBase):
 
 from pyscf import dft
 dft.rks.RKS.Hessian = dft.rks_symm.RKS.Hessian = lib.class_as_method(Hessian)
+dft.roks.ROKS.Hessian = dft.rks_symm.ROKS.Hessian = lib.invalid_method('Hessian')

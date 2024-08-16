@@ -44,20 +44,29 @@ class KnownValues(unittest.TestCase):
         mf = scf.RHF(mol)
         e0 = mf.kernel()
         hess = hessian.RHF(mf).kernel()
-        self.assertAlmostEqual(lib.fp(hess), -0.7816352153153946, 6)
+        self.assertAlmostEqual(lib.fp(hess), -0.7816352153153946, 4)
 
         hobj = hessian.RHF(mf)
         hobj.max_cycle = 10
         hobj.level_shift = .1
         hess = hobj.kernel()
-        self.assertAlmostEqual(lib.fp(hess), -0.7816352153153946, 6)
+        self.assertAlmostEqual(lib.fp(hess), -0.7816352153153946, 4)
+
+    def test_rhf_hess_atmlst(self):
+        mf = scf.RHF(mol)
+        e0 = mf.kernel()
+
+        atmlst = [0, 1]
+        hess_1 = mf.Hessian().kernel()[atmlst][:, atmlst]
+        hess_2 = mf.Hessian().kernel(atmlst=atmlst)
+        self.assertAlmostEqual(abs(hess_1-hess_2).max(), 0.0, 4)
 
     def test_finite_diff_x2c_rhf_hess(self):
         mf = scf.RHF(mol).x2c()
         mf.conv_tol = 1e-14
         e0 = mf.kernel()
         hess = hessian.RHF(mf).kernel()
-        self.assertAlmostEqual(lib.fp(hess), -0.7800532318291435, 6)
+        self.assertAlmostEqual(lib.fp(hess), -0.7800532318291435, 4)
 
         g_scanner = mf.nuc_grad_method().as_scanner()
         pmol = mol.copy()

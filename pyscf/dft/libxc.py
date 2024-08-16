@@ -30,7 +30,7 @@ import numpy
 from functools import lru_cache
 from pyscf import lib
 from pyscf.dft.xc.utils import remove_dup, format_xc_code
-from pyscf.dft import xc_deriv, dft_parser
+from pyscf.dft import xc_deriv
 from pyscf import __config__
 
 _itrf = lib.load_library('libxc_itrf')
@@ -922,9 +922,6 @@ def is_gga(xc_code):
 
 @lru_cache(100)
 def is_nlc(xc_code):
-    enable_nlc = dft_parser.parse_dft(xc_code)[1]
-    if enable_nlc is False:
-        return False
     # identify nlc by xc_code itself if enable_nlc is None
     if isinstance(xc_code, str):
         if xc_code.isdigit():
@@ -1100,7 +1097,13 @@ def parse_xc(description):
     elif not isinstance(description, str): #isinstance(description, (tuple,list)):
         return parse_xc('%s,%s' % tuple(description))
 
-    if (description.upper() in ('B3P86', 'B3LYP', 'X3LYP') and
+    description = description.upper()
+    if '-D3' in description or '-D4' in description:
+        from pyscf.scf.dispersion import parse_dft
+        description, _, _ = parse_dft(description)
+        description = description.upper()
+
+    if (description in ('B3P86', 'B3LYP', 'X3LYP') and
         not getattr(parse_xc, 'b3lyp5_warned', False) and
         not hasattr(__config__, 'B3LYP_WITH_VWN5')):
         parse_xc.b3lyp5_warned = True
@@ -1109,8 +1112,6 @@ def parse_xc(description):
                       'and the same as the B3LYP functional in Gaussian. '
                       'To restore the VWN5 definition, you can put the setting '
                       '"B3LYP_WITH_VWN5 = True" in pyscf_conf.py')
-
-    description = dft_parser.parse_dft(description)[0]
 
     def assign_omega(omega, hyb_or_sr, lr=0):
         if hyb[2] == omega or omega == 0:
@@ -1135,7 +1136,7 @@ def parse_xc(description):
                 fac, key = token.split('*')
                 if fac[0].isalpha():
                     fac, key = key, fac
-                fac = sign * float(fac)
+                fac = sign * float(fac.replace('E_', 'E-'))
             else:
                 fac, key = sign, token
 
@@ -1276,7 +1277,8 @@ _NAME_WITH_DASH = {'SR-HF'    : 'SR_HF',
                    'LRC-WPBE' : 'LRC_WPBE',
                    'LRC-WPBEH': 'LRC_WPBEH',
                    'LC-VV10'  : 'LC_VV10',
-                   'CAM-B3LYP': 'CAM_B3LYP'}
+                   'CAM-B3LYP': 'CAM_B3LYP',
+                   'E-'       : 'E_'} # For scientific notation
 
 
 def eval_xc(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=None):
@@ -1608,13 +1610,17 @@ def eval_xc1(xc_code, rho, spin=0, deriv=1, omega=None):
     '''
     out = _eval_xc(xc_code, rho, spin, deriv=deriv, omega=omega)
     xctype = xc_type(xc_code)
+    idx = _libxc_to_xcfun_indices(xctype, spin, deriv)
+    return out[idx]
+
+def _libxc_to_xcfun_indices(xctype, spin=0, deriv=1):
     if deriv <= 1:
-        return out
+        return slice(None)
     elif xctype == 'LDA' or xctype == 'HF':
-        return out
+        return slice(None)
     elif xctype == 'GGA':
         if spin == 0:
-            return out
+            return slice(None)
         else:
             idx = [numpy.arange(6)] # up to deriv=1
             for i in range(2, deriv+1):
@@ -1626,7 +1632,7 @@ def eval_xc1(xc_code, rho, spin=0, deriv=1, omega=None):
             idx = [numpy.arange(8)] # up to deriv=1
         for i in range(2, deriv+1):
             idx.append(_MGGA_SORT[(spin, i)])
-    return out[numpy.hstack(idx)]
+    return numpy.hstack(idx)
 
 def _eval_xc(xc_code, rho, spin=0, deriv=1, omega=None):
     assert deriv <= max_deriv_order(xc_code)
@@ -1761,19 +1767,43 @@ def define_xc_(ni, description, xctype='LDA', hyb=0, rsh=(0,0,0)):
     48.8525211046668
     '''
     if isinstance(description, str):
-        ni.eval_xc = lambda xc_code, rho, *args, **kwargs: \
-                eval_xc(description, rho, *args, **kwargs)
+        def _eval_xc(xc_code, rho, *args, **kwargs):
+            return eval_xc(description, rho, *args, **kwargs)
+        ni.eval_xc = _eval_xc
         ni.hybrid_coeff = lambda *args, **kwargs: hybrid_coeff(description)
         ni.rsh_coeff = lambda *args: rsh_coeff(description)
         ni._xc_type = lambda *args: xc_type(description)
 
     elif callable(description):
-        ni.eval_xc = description
+        ni.eval_xc = _eval_xc = description
         ni.hybrid_coeff = lambda *args, **kwargs: hyb
         ni.rsh_coeff = lambda *args, **kwargs: rsh
         ni._xc_type = lambda *args: xctype
+
     else:
         raise ValueError('Unknown description %s' % description)
+
+    def _eval_xc1(xc_code, rho, spin=0, deriv=1, omega=None):
+        libxc_out = _eval_xc(xc_code, rho, spin, deriv=deriv, omega=omega)
+        nvar, xlen = xc_deriv._XC_NVAR[xctype, spin]
+        outlen = lib.comb(xlen+deriv, deriv)
+        exc, vxc, fxc, kxc = libxc_out[:4]
+        out = [exc]
+        if vxc is not None:
+            out.extend([x for x in vxc if x is not None])
+        if fxc is not None:
+            out.extend([fxc[i] for i in [0, 1, 2, 6, 4, 9]])
+        if kxc is not None:
+            out.extend([x for x in kxc if x is not None])
+        if spin == 1:
+            # Returns of eval_xc are structured as [grid_id,deriv_component]
+            # for each term in libxc_out. Change the shape to [deriv_comp, grid_id]
+            out = [x.T for x in out]
+        out = numpy.vstack(out)[:outlen]
+        assert len(out) == outlen
+        idx = _libxc_to_xcfun_indices(xctype, spin, deriv)
+        return out[idx]
+    ni.eval_xc1 = _eval_xc1
     return ni
 
 def define_xc(ni, description, xctype='LDA', hyb=0, rsh=(0,0,0)):

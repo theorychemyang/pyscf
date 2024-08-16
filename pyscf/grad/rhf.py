@@ -420,7 +420,7 @@ class GradientsBase(lib.StreamObject):
         self.de = de + self.grad_nuc(atmlst=atmlst)
         if self.mol.symmetry:
             self.de = self.symmetrize(self.de, atmlst)
-        if self.base.disp is not None:
+        if self.base.do_disp():
             self.de += self.get_dispersion()
         logger.timer(self, 'SCF gradients', *cput0)
         self._finalize()
@@ -478,3 +478,4 @@ Grad = Gradients
 from pyscf import scf
 # Inject to RHF class
 scf.hf.RHF.Gradients = lib.class_as_method(Gradients)
+scf.rohf.ROHF.Gradients = lib.invalid_method('Gradients')

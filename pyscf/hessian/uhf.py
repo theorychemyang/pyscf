@@ -159,9 +159,12 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     ip1ip2_opt = _make_vhfopt(mol, dm0, 'ip1ip2', 'int2e_ip1ip2')
     ipvip1_opt = _make_vhfopt(mol, dm0, 'ipvip1', 'int2e_ipvip1ipvip2')
     aoslices = mol.aoslice_by_atom()
-    e1 = numpy.zeros((mol.natm,mol.natm,3,3))  # (A,B,dR_A,dR_B)
-    ej = numpy.zeros((mol.natm,mol.natm,3,3))
-    ek = numpy.zeros((mol.natm,mol.natm,3,3))
+
+    natm = len(atmlst)
+    e1 = numpy.zeros((natm, natm, 3, 3))  # (A,B,dR_A,dR_B)
+    ej = numpy.zeros((natm, natm, 3, 3))
+    ek = numpy.zeros((natm, natm, 3, 3))
+
     for i0, ia in enumerate(atmlst):
         shl0, shl1, p0, p1 = aoslices[ia]
         shls_slice = (shl0, shl1) + (0, mol.nbas)*3
@@ -307,8 +310,9 @@ def solve_mo1(mf, mo_energy, mo_coeff, mo_occ, h1ao_or_chkfile,
 
         h1vo = (numpy.vstack(h1voa), numpy.vstack(h1vob))
         s1vo = (numpy.vstack(s1voa), numpy.vstack(s1vob))
+        tol = mf.conv_tol_cpscf * (ia1 - ia0)
         mo1, e1 = ucphf.solve(fx, mo_energy, mo_occ, h1vo, s1vo, verbose=verbose,
-                              max_cycle=max_cycle, level_shift=level_shift)
+                              max_cycle=max_cycle, level_shift=level_shift, tol=tol)
         mo1a = numpy.einsum('pq,xqi->xpi', mo_coeff[0], mo1[0]).reshape(-1,3,nao,nocca)
         mo1b = numpy.einsum('pq,xqi->xpi', mo_coeff[1], mo1[1]).reshape(-1,3,nao,noccb)
         e1a = e1[0].reshape(-1,3,nocca,nocca)

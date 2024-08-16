@@ -35,7 +35,6 @@ from pyscf.pbc.scf import hf as pbchf
 from pyscf import lib
 from pyscf.scf import hf as mol_hf
 from pyscf.lib import logger
-from pyscf.pbc.gto import ecp
 from pyscf.pbc.scf import addons
 from pyscf.pbc.scf import chkfile  # noqa
 from pyscf.pbc import tools
@@ -79,6 +78,7 @@ def get_hcore(mf, cell=None, kpts=None):
     else:
         nuc = lib.asarray(mf.with_df.get_nuc(kpts))
     if len(cell._ecpbas) > 0:
+        from pyscf.pbc.gto import ecp
         nuc += lib.asarray(ecp.ecp_int(cell, kpts))
     t = lib.asarray(cell.pbc_intor('int1e_kin', 1, 1, kpts))
     return nuc + t
@@ -611,10 +611,22 @@ class KSCF(pbchf.SCF):
     def from_chk(self, chk=None, project=None, kpts=None):
         return self.init_guess_by_chkfile(chk, project, kpts)
 
-    def dump_chk(self, envs):
-        if self.chkfile:
-            mol_hf.SCF.dump_chk(self, envs)
-            with h5py.File(self.chkfile, 'a') as fh5:
+    def dump_chk(self, envs_or_file):
+        '''Serialize the SCF object and save it to the specified chkfile.
+
+        Args:
+            envs_or_file:
+                If this argument is a file path, the serialized SCF object is
+                saved to the file specified by this argument.
+                If this attribute is a dict (created by locals()), the necessary
+                variables are saved to the file specified by the attribute mf.chkfile.
+        '''
+        mol_hf.SCF.dump_chk(self, envs_or_file)
+        if isinstance(envs_or_file, str):
+            with lib.H5FileWrap(envs_or_file, 'a') as fh5:
+                fh5['scf/kpts'] = self.kpts
+        elif self.chkfile:
+            with lib.H5FileWrap(self.chkfile, 'a') as fh5:
                 fh5['scf/kpts'] = self.kpts
         return self
 

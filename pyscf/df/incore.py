@@ -28,7 +28,9 @@ from pyscf import __config__
 
 
 MAX_MEMORY = getattr(__config__, 'df_outcore_max_memory', 2000)  # 2GB
-LINEAR_DEP_THR = getattr(__config__, 'df_df_DF_lindep', 1e-12)
+# LINEAR_DEP_THR cannot be below 1e-7,
+# see qchem default setting in https://manual.q-chem.com/5.4/sec_Basis_Customization.html
+LINEAR_DEP_THR = getattr(__config__, 'df_df_DF_lindep', 1e-7)
 
 
 # This function is aliased for backward compatibility.
@@ -179,10 +181,11 @@ def cholesky_eri(mol, auxbasis='weigend+etb', auxmol=None,
         p0, p1 = p1, p1 + nrow
         if decompose_j2c == 'cd':
             if ints.flags.c_contiguous:
-                ints = lib.transpose(ints, out=bufs2).T
-                bufs1, bufs2 = bufs2, bufs1
-            dat = scipy.linalg.solve_triangular(low, ints, lower=True,
-                                                overwrite_b=True, check_finite=False)
+                trsm, = scipy.linalg.get_blas_funcs(('trsm',), (low, ints))
+                dat = trsm(1.0, low, ints.T, lower=True, trans_a = 1, side = 1, overwrite_b=True).T
+            else:
+                dat = scipy.linalg.solve_triangular(low, ints, lower=True,
+                                                   overwrite_b=True, check_finite=False)
             if dat.flags.f_contiguous:
                 dat = lib.transpose(dat.T, out=bufs2)
             cderi[:,p0:p1] = dat

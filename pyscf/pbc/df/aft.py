@@ -180,7 +180,7 @@ def _int_nuc_vloc(mydf, nuccell, kpts, intor='int3c2e', aosym='s2', comp=1):
     raise DeprecationWarning
 
 def get_pp(mydf, kpts=None):
-    '''Get the periodic pseudotential nuc-el AO matrix, with G=0 removed.
+    '''Get the periodic pseudopotential nuc-el AO matrix, with G=0 removed.
 
     Kwargs:
         mesh: custom mesh grids. By default mesh is determined by the
@@ -538,7 +538,7 @@ class AFTDFMixin:
         else:
             rsh_df = self._rsh_df[key] = self.copy().reset()
             if hasattr(self, '_dataname'):
-                rsh_df._dataname = f'{self._dataname}/lr/{key}'
+                rsh_df._dataname = f'{self._dataname}-lr/{key}'
             logger.info(self, 'Create RSH-DF object %s for omega=%s', rsh_df, omega)
 
         cell = self.cell
@@ -703,7 +703,7 @@ class AFTDF(lib.StreamObject, AFTDFMixin):
         cell = self.cell
         if cell.dimension == 2 and cell.low_dim_ft_type != 'inf_vacuum':
             raise RuntimeError('ERIs of PBC-2D systems are not positive '
-                               'definite. Current API only supports postive '
+                               'definite. Current API only supports positive '
                                'definite ERIs.')
 
         if blksize is None:

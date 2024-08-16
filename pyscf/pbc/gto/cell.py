@@ -497,7 +497,7 @@ def error_for_ke_cutoff(cell, ke_cutoff, omega=None):
 def get_bounding_sphere(cell, rcut):
     '''Finds all the lattice points within a sphere of radius rcut.
 
-    Defines a parallelipiped given by -N_x <= n_x <= N_x, with x in [1,3]
+    Defines a parallelepiped given by -N_x <= n_x <= N_x, with x in [1,3]
     See Martin p. 85
 
     Args:
@@ -1331,7 +1331,6 @@ class Cell(mole.MoleBase):
         if symmorphic is not None:
             self.symmorphic = symmorphic
 
-        dump_input = dump_input and not self._built and self.verbose > logger.NOTE
         mole.MoleBase.build(self, dump_input, parse_arg, *args, **kwargs)
 
         exp_min = np.array([self.bas_exp(ib).min() for ib in range(self.nbas)])
@@ -1536,7 +1535,7 @@ class Cell(mole.MoleBase):
         rcut_guess = estimate_rcut(self, self.precision)
         if self.rcut > rcut_guess*1.5:
             msg = ('.nimgs is a deprecated attribute.  It is replaced by .rcut '
-                   'attribute for lattic sum cutoff radius.  The given nimgs '
+                   'attribute for lattice sum cutoff radius.  The given nimgs '
                    '%s is far over the estimated cutoff radius %s. ' %
                    (x, rcut_guess))
             warnings.warn(msg)

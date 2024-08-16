@@ -136,9 +136,12 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     ip1ip2_opt = _make_vhfopt(mol, dm0, 'ip1ip2', 'int2e_ip1ip2')
     ipvip1_opt = _make_vhfopt(mol, dm0, 'ipvip1', 'int2e_ipvip1ipvip2')
     aoslices = mol.aoslice_by_atom()
-    e1 = numpy.zeros((mol.natm,mol.natm,3,3))
-    ej = numpy.zeros((mol.natm,mol.natm,3,3))
-    ek = numpy.zeros((mol.natm,mol.natm,3,3))
+
+    natm = len(atmlst)
+    e1 = numpy.zeros((natm, natm, 3, 3))
+    ej = numpy.zeros((natm, natm, 3, 3))
+    ek = numpy.zeros((natm, natm, 3, 3))
+
     for i0, ia in enumerate(atmlst):
         shl0, shl1, p0, p1 = aoslices[ia]
         shls_slice = (shl0, shl1) + (0, mol.nbas)*3
@@ -159,24 +162,24 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
         vk1 = vk1.reshape(3,3,nao,nao)
         t1 = log.timer_debug1('contracting int2e_ipvip1 for atom %d'%ia, *t1)
 
-        ej[i0,i0] += numpy.einsum('xypq,pq->xy', vj1_diag[:,:,p0:p1], dm0[p0:p1])*2
-        ek[i0,i0] += numpy.einsum('xypq,pq->xy', vk1_diag[:,:,p0:p1], dm0[p0:p1])
-        e1[i0,i0] -= numpy.einsum('xypq,pq->xy', s1aa[:,:,p0:p1], dme0[p0:p1])*2
+        ej[i0, i0] += numpy.einsum('xypq,pq->xy', vj1_diag[:,:,p0:p1], dm0[p0:p1])*2
+        ek[i0, i0] += numpy.einsum('xypq,pq->xy', vk1_diag[:,:,p0:p1], dm0[p0:p1])
+        e1[i0, i0] -= numpy.einsum('xypq,pq->xy', s1aa[:,:,p0:p1], dme0[p0:p1])*2
 
         for j0, ja in enumerate(atmlst[:i0+1]):
             q0, q1 = aoslices[ja][2:]
             # *2 for +c.c.
-            ej[i0,j0] += numpy.einsum('xypq,pq->xy', vj1[:,:,q0:q1], dm0[q0:q1])*4
-            ek[i0,j0] += numpy.einsum('xypq,pq->xy', vk1[:,:,q0:q1], dm0[q0:q1])
-            e1[i0,j0] -= numpy.einsum('xypq,pq->xy', s1ab[:,:,p0:p1,q0:q1], dme0[p0:p1,q0:q1])*2
+            ej[i0, j0] += numpy.einsum('xypq,pq->xy', vj1[:,:,q0:q1], dm0[q0:q1])*4
+            ek[i0, j0] += numpy.einsum('xypq,pq->xy', vk1[:,:,q0:q1], dm0[q0:q1])
+            e1[i0, j0] -= numpy.einsum('xypq,pq->xy', s1ab[:,:,p0:p1,q0:q1], dme0[p0:p1,q0:q1])*2
 
             h1ao = hcore_deriv(ia, ja)
-            e1[i0,j0] += numpy.einsum('xypq,pq->xy', h1ao, dm0)
+            e1[i0, j0] += numpy.einsum('xypq,pq->xy', h1ao, dm0)
 
         for j0 in range(i0):
-            e1[j0,i0] = e1[i0,j0].T
-            ej[j0,i0] = ej[i0,j0].T
-            ek[j0,i0] = ek[i0,j0].T
+            e1[j0, i0] = e1[i0, j0].T
+            ej[j0, i0] = ej[i0, j0].T
+            ek[j0, i0] = ek[i0, j0].T
 
     log.timer('RHF partial hessian', *time0)
     return e1, ej, ek
@@ -344,9 +347,10 @@ def solve_mo1(mf, mo_energy, mo_coeff, mo_occ, h1ao_or_chkfile,
 
         h1vo = numpy.vstack(h1vo)
         s1vo = numpy.vstack(s1vo)
+        tol = mf.conv_tol_cpscf * (ia1 - ia0)
         mo1, e1 = cphf.solve(fx, mo_energy, mo_occ, h1vo, s1vo,
                              verbose=verbose,
-                             max_cycle=max_cycle, level_shift=level_shift)
+                             max_cycle=max_cycle, level_shift=level_shift, tol=tol)
         mo1 = numpy.einsum('pq,xqi->xpi', mo_coeff, mo1).reshape(-1,3,nao,nocc)
         e1 = e1.reshape(-1,3,nocc,nocc)
 
@@ -593,7 +597,7 @@ class HessianBase(lib.StreamObject):
 
         de = self.hess_elec(mo_energy, mo_coeff, mo_occ, atmlst=atmlst)
         self.de = de + self.hess_nuc(self.mol, atmlst=atmlst)
-        if self.base.disp is not None:
+        if self.base.do_disp():
             self.de += self.get_dispersion()
         return self.de
     hess = kernel
@@ -618,6 +622,7 @@ class Hessian(HessianBase):
 # Inject to RHF class
 from pyscf import scf
 scf.hf.RHF.Hessian = lib.class_as_method(Hessian)
+scf.rohf.ROHF.Hessian = lib.invalid_method('Hessian')
 
 
 if __name__ == '__main__':
