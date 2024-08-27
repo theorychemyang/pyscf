@@ -771,6 +771,58 @@ def gen_vind_uks(mf):
         return v1vo_e, v1vo_n, rfn
     return fx
 
+def dipole_grad(hessobj, mo1e=None):
+    'Gradients for molecular dipole moment with CNEO'
+    mol = hessobj.mol
+    mf = hessobj.base
+    mf_e = mf.mf_elec
+    natm = mol.natm
+    de = numpy.zeros((natm, 3, 3))
+    for i in range(natm): # contribution from nuclei
+        de[i] = numpy.eye(3) * mol.atom_charge(i) 
+
+    if mo1e is None:
+        h1ao_e, h1ao_n = hessobj.make_h1()
+        mo1e, _, _, _ = hessobj.solve_mo1(h1ao_e, h1ao_n, verbose=mf.verbose)
+    elif isinstance(mo1e, str):
+        mo1e = lib.chkfile.load(mo1e, 'scf_mo1')
+        mo1e = numpy.array([mo1e[k] for k in mo1e])  
+
+    # contribution from electrons
+    nao_e = mol.elec.nao
+    h2ao = numpy.zeros((natm, 3, 3, nao_e, nao_e))
+    int1e_irp = mol.elec.intor("int1e_irp").reshape(3, 3, nao_e, nao_e).swapaxes(0, 1)
+    for a in range(natm):
+        _, _, a1, a2 = mol.elec.aoslice_by_atom()[a]
+        h2ao[a, :, :, :, a1:a2] = int1e_irp[:, :, :, a1:a2]
+    h2ao += h2ao.swapaxes(-1, -2)
+
+    de += numpy.einsum("Axtuv, uv -> Axt", h2ao, mf.dm_elec) 
+
+    int1e_r = mol.elec.intor_symmetric("int1e_r")
+    dm1e = numpy.einsum('Axui, vi -> Axuv', numpy.array(mo1e), mf_e.mo_coeff[:, mf_e.mo_occ > 0])
+
+    de -= 4 * numpy.einsum('Axuv, tuv -> Axt', dm1e, int1e_r)
+    #mo1_grad = numpy.einsum("up, uv, Axvi -> Axpi", mf_e.mo_coeff, mf_e.get_ovlp(), mo1e)
+    #h1_dip = numpy.einsum("tuv, up, vi-> tpi", int1e_r, mf_e.mo_coeff, mf_e.mo_coeff[:, mf_e.mo_occ > 0])
+    #de -= 4 * numpy.einsum("tpi, Axpi -> Axt", h1_dip, mo1_grad)
+    
+
+    '''
+    # contributions from quantum nuclei
+    for i in range(mol.nuc_num):
+        ia = mol.nuc[i].atom_index
+        nao_n = mol.nuc[i].nao
+        int1n_irp = mol.nuc[i].intor("int1e_irp").reshape(3, 3, nao_n, nao_n)
+        de[ia] -= numpy.einsum("xtuv, uv -> xt", int1n_irp, mf.dm_nuc[i]) * 2
+        
+        mf_n = mf.mf_nuc[i]
+        dm1n = numpy.einsum('Axui, vi -> Axuv', numpy.array(mo1n[i]), mf_n.mo_coeff[:, mf_n.mo_occ > 0])
+        int1n_r = mol.nuc[i].intor_symmetric("int1e_r")
+        de += 4 * numpy.einsum('Axuv, tuv -> Axt', dm1n, int1n_r)
+    '''
+    
+    return de
 
 class Hessian(lib.StreamObject):
     '''
@@ -797,6 +849,7 @@ class Hessian(lib.StreamObject):
         self.chkfile = scf_method.chkfile
         self.max_memory = self.mol.max_memory
         self.grid_response = None
+        self.mo1e = None
 
         self.atmlst = range(self.mol.natm)
         self.de = numpy.zeros((0,0,3,3))  # (A,B,dR_A,dR_B)
@@ -901,6 +954,7 @@ class Hessian(lib.StreamObject):
         mo1e, e1e, mo1n, _ = self.solve_mo1(h1ao_e, h1ao_n, atmlst=atmlst,
                                             max_memory=self.max_memory,
                                             verbose=log)
+        self.mo1e = mo1e
         t1 = log.timer_debug1('solving MO1', *t1)
         de = self.hess_elec(mo1e, e1e, h1ao_e, max_memory=self.max_memory,
                             verbose=log)
@@ -914,12 +968,38 @@ class Hessian(lib.StreamObject):
     hess = kernel
 
     def harmonic_analysis(self, mol, hess, exclude_trans=True, exclude_rot=True,
-                          imaginary_freq=True, mass=None):
+                          imaginary_freq=True, mass=None, intensity=True):
         if mass is None:
             mass = mol.mass
-        return harmonic_analysis(mol, hess, exclude_trans=exclude_trans,
+        
+        results = harmonic_analysis(mol, hess, exclude_trans=exclude_trans,
                                  exclude_rot=exclude_rot, imaginary_freq=imaginary_freq,
                                  mass=mass)
+        if intensity is True:
+            'unit: (Debye/Angstrom)^2/amu'
+
+            modes = results["norm_mode"].reshape(-1, mol.natm * 3)
+            indices = numpy.asarray(range(mol.natm))
+
+            im = numpy.repeat(mass[indices]**-0.5, 3)
+            modes = numpy.einsum('in,n->in', modes, im) # Un-mass-weight eigenvectors
+
+            dipole_de = dipole_grad(self, self.mo1e).reshape(-1, 3)
+            de_q = numpy.einsum('nt, in->it', dipole_de, modes) # dipole gradients w.r.t normal coordinates
+
+
+            # Conversion factor from atomic units to (D/Angstrom)^2/amu.
+            # 1 (D/Angstrom)^2/amu = 42.255 km/mol
+            # import qcelemental as qcel
+            # conv = qcel.constants.conversion_factor("(e^2 * bohr^2)/(bohr^2 * atomic_unit_of_mass)", "debye^2 / (angstrom^2 * amu)")
+            # or
+            # from ase import units
+            # conv = (1.0 / units.Debye)**2 * units._amu / units._me
+            conv = 42055.45033345739
+            ir_inten = numpy.einsum("qt, qt -> q", de_q, de_q) * conv * 1e-3 * numpy.pi / 3
+            results['intensity'] = ir_inten
+
+        return results
 
     def thermo(self, model, freq, temperature=298.15, pressure=101325):
         '''Copy from pyscf.hessian.thermo.thermo only to change the definition of mass.
