@@ -976,13 +976,13 @@ class Hessian(lib.StreamObject):
                                  exclude_rot=exclude_rot, imaginary_freq=imaginary_freq,
                                  mass=mass)
         if intensity is True:
-            'unit: (Debye/Angstrom)^2/amu'
+            'unit: km/mol'
 
             modes = results["norm_mode"].reshape(-1, mol.natm * 3)
             indices = numpy.asarray(range(mol.natm))
 
-            im = numpy.repeat(mass[indices]**-0.5, 3)
-            modes = numpy.einsum('in,n->in', modes, im) # Un-mass-weight eigenvectors
+            #im = numpy.repeat(mass[indices]**-0.5, 3)
+            #modes = numpy.einsum('in,n->in', modes, im) # Un-mass-weight eigenvectors
 
             dipole_de = dipole_grad(self, self.mo1e).reshape(-1, 3)
             de_q = numpy.einsum('nt, in->it', dipole_de, modes) # dipole gradients w.r.t normal coordinates
@@ -995,9 +995,22 @@ class Hessian(lib.StreamObject):
             # or
             # from ase import units
             # conv = (1.0 / units.Debye)**2 * units._amu / units._me
-            conv = 42055.45033345739
-            ir_inten = numpy.einsum("qt, qt -> q", de_q, de_q) * conv * 1e-3 * numpy.pi / 3
-            results['intensity'] = ir_inten
+            # conv = 42055.45033345739
+            # ir_inten = numpy.einsum("qt, qt -> q", de_q, de_q) * conv * 1e-3 * numpy.pi / 3
+
+            # from atomic units to km/mol
+            # Ref: J Comput Chem 23: 895–910, 2002, Eq. 13-14
+            from scipy.constants import physical_constants
+            alpha = physical_constants["fine-structure constant"][0]
+            amu = physical_constants["atomic mass constant"][0]
+            m_e = physical_constants["electron mass"][0]
+            N_A = physical_constants["Avogadro constant"][0]
+            a_0 = physical_constants["Bohr radius"][0]
+
+            unit_kmmol = alpha**2 * (1e-3 / amu) * m_e * N_A * numpy.pi * a_0 / 3
+            ir_inten = numpy.einsum("qt, qt -> q", de_q, de_q) * unit_kmmol
+
+            results['intensity'] = ir_inten 
 
         return results
 
