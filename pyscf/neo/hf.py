@@ -61,10 +61,10 @@ def dot_eri_dm(eri, dms, nao_v=None, eri_dot_dm=True):
 
     for i in range(n_dm):
         lib.hermi_triu(vj[i], 1, inplace=True)
-    if n_dm == 1:
+    if len(dms_shape) == 2:
         vj = vj.reshape((nao_v,nao_v))
     else:
-        vj = vj.reshape((n_dm,nao_v,nao_v))
+        vj = vj.reshape((n_dm,nao_v,nao_v)) # should preserve the shape even when n_dm=1
     return vj
 
 def _is_mem_enough(nao1, nao2, max_memory):
