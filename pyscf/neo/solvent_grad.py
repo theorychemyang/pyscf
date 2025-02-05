@@ -12,7 +12,7 @@ from pyscf.solvent import ddcosmo
 from pyscf.symm import sph
 from pyscf.lib import logger
 from pyscf.dft import gen_grid, numint
-from pyscf.solvent.ddcosmo_grad import make_L1, make_e_psi1, make_fi1, make_phi1
+from pyscf.solvent.grad.ddcosmo_grad import make_L1, make_e_psi1, make_fi1, make_phi1
 from pyscf.neo.solvent import make_psi
 from pyscf.grad.rhf import _write
 from pyscf.solvent._attach_solvent import _Solvation
