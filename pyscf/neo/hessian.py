@@ -783,25 +783,30 @@ def dipole_grad(hessobj, mo1e=None):
 
     if mo1e is None:
         h1ao_e, h1ao_n = hessobj.make_h1()
-        mo1e, _, _, _ = hessobj.solve_mo1(h1ao_e, h1ao_n, verbose=mf.verbose)
+        mo1e = hessobj.solve_mo1(h1ao_e, h1ao_n, verbose=mf.verbose)[0]
     elif isinstance(mo1e, str):
         mo1e = lib.chkfile.load(mo1e, 'scf_mo1')
         mo1e = numpy.array([mo1e[k] for k in mo1e])  
 
     # contribution from electrons
     nao_e = mol.elec.nao
-    h2ao = numpy.zeros((natm, 3, 3, nao_e, nao_e))
-    int1e_irp = mol.elec.intor("int1e_irp").reshape(3, 3, nao_e, nao_e).swapaxes(0, 1)
+
+    charges = mol.atom_charges()
+    coords  = mol.atom_coords()
+    charge_center = numpy.einsum('i,ix->x', charges, coords) / charges.sum()
+    
+    with mol.with_common_orig(charge_center): 
+        int1e_irp = - mol.elec.intor("int1e_irp", comp=9)
+        int1e_r = mol.elec.intor_symmetric("int1e_r", comp=3)
+
     for a in range(natm):
-        _, _, a1, a2 = mol.elec.aoslice_by_atom()[a]
-        h2ao[a, :, :, :, a1:a2] = int1e_irp[:, :, :, a1:a2]
-    h2ao += h2ao.swapaxes(-1, -2)
+        p0, p1 = mol.elec.aoslice_by_atom()[a, 2:]
+        h2ao = numpy.zeros((9, nao_e, nao_e))
+        h2ao[:,:,p0:p1] += int1e_irp[:,:,p0:p1] # nable is on ket in int1e_irp
+        h2ao[:,p0:p1] += int1e_irp[:,:,p0:p1].transpose(0, 2, 1)
+        de[a] -= numpy.einsum('xuv, uv->x',h2ao, mf.dm_elec).reshape(3, 3)
 
-    de += numpy.einsum("Axtuv, uv -> Axt", h2ao, mf.dm_elec) 
-
-    int1e_r = mol.elec.intor_symmetric("int1e_r")
     dm1e = numpy.einsum('Axui, vi -> Axuv', numpy.array(mo1e), mf_e.mo_coeff[:, mf_e.mo_occ > 0])
-
     de -= 4 * numpy.einsum('Axuv, tuv -> Axt', dm1e, int1e_r)
     #mo1_grad = numpy.einsum("up, uv, Axvi -> Axpi", mf_e.mo_coeff, mf_e.get_ovlp(), mo1e)
     #h1_dip = numpy.einsum("tuv, up, vi-> tpi", int1e_r, mf_e.mo_coeff, mf_e.mo_coeff[:, mf_e.mo_occ > 0])
