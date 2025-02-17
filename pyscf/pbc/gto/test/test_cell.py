@@ -17,6 +17,7 @@
 #
 
 import unittest
+import tempfile
 import ctypes
 import numpy
 import numpy as np
@@ -114,6 +115,20 @@ class KnownValues(unittest.TestCase):
         #rcut = max([cell.bas_rcut(ib, 1e-9) for ib in range(cell.nbas)])
         #self.assertEqual(cell.get_lattice_Ls(rcut=rcut).shape, (1499, 3))
 
+    def test_fractional_coordinates(self):
+        cell = pgto.M(atom = '''
+        C 0 0 0
+        C .25 .25 .25''',
+        unit='B', basis = 'gth-dzvp', pseudo = 'gth-pade',
+        fractional=True,
+        a = '''
+        0.000000000  3.370137329  3.370137329
+        3.370137329  0.000000000  3.370137329
+        3.370137329  3.370137329  0.000000000''')
+        #[[0.         0.         0.        ]
+        #  [1.68506866 1.68506866 1.68506866]]
+        self.assertAlmostEqual(lib.fp(cell.atom_coords()), -2.2916494573514545, 14)
+
     def test_ewald(self):
         cell = pgto.Cell()
         cell.unit = 'B'
@@ -177,7 +192,8 @@ class KnownValues(unittest.TestCase):
         cell.atom = 'He 0 0 0; He 0 1 1'
         cell.unit = 'B'
         cell.mesh = [9,9,60]
-        cell.verbose = 0
+        cell.verbose = 5
+        cell.output = '/dev/null'
         cell.dimension = 2
         cell.low_dim_ft_type = 'inf_vacuum'
         cell.rcut = 3.6
@@ -191,7 +207,8 @@ class KnownValues(unittest.TestCase):
         cell.atom = 'He 0 0 0; He 0 1 1'
         cell.unit = 'B'
         cell.mesh = [9,60,60]
-        cell.verbose = 0
+        cell.verbose = 5
+        cell.output = '/dev/null'
         cell.dimension = 1
         cell.low_dim_ft_type = 'inf_vacuum'
         cell.rcut = 3.6
@@ -204,7 +221,8 @@ class KnownValues(unittest.TestCase):
         cell.atom = 'He 0 0 0; He 0 1 1'
         cell.unit = 'B'
         cell.mesh = [60] * 3
-        cell.verbose = 0
+        cell.verbose = 5
+        cell.output = '/dev/null'
         cell.dimension = 0
         cell.low_dim_ft_type = 'inf_vacuum'
         cell.build()
@@ -217,7 +235,8 @@ class KnownValues(unittest.TestCase):
         cell.atom = 'He 0 0 0; He 0 1 1'
         cell.unit = 'B'
         cell.mesh = [9,9,60]
-        cell.verbose = 0
+        cell.verbose = 5
+        cell.output = '/dev/null'
         cell.dimension = 2
         cell.rcut = 3.6
         cell.build()
@@ -530,6 +549,22 @@ class KnownValues(unittest.TestCase):
         cell = pgto.M(a=np.eye(3)*4)
         Ls = pbctools.get_lattice_Ls(cell)
         self.assertEqual(abs(Ls-np.zeros([1,3])).max(), 0)
+
+    def test_fromstring(self):
+        ref = cl.atom_coords().copy()
+        cell = pgto.Cell()
+        cell.fromstring(cl.tostring('poscar'), 'vasp')
+        r0 = cell.atom_coords()
+        self.assertAlmostEqual(abs(ref - r0).max(), 0, 12)
+
+    def test_fromfile(self):
+        ref = cl.atom_coords().copy()
+        with tempfile.NamedTemporaryFile() as f:
+            cl.tofile(f.name, 'xyz')
+            cell = pgto.Cell()
+            cell.fromfile(f.name, 'xyz')
+            r1 = cell.atom_coords()
+            self.assertAlmostEqual(abs(ref - r1).max(), 0, 12)
 
 if __name__ == '__main__':
     print("Full Tests for pbc.gto.cell")

@@ -277,7 +277,7 @@ def energy_elec(mf, dm=None, h1e=None, vhf=None):
 get_veff = uhf.get_veff
 
 def analyze(mf, verbose=logger.DEBUG, with_meta_lowdin=WITH_META_LOWDIN,
-            **kwargs):
+            origin=None, **kwargs):
     '''Analyze the given SCF object:  print orbital energies, occupancies;
     print orbital coefficients; Mulliken population analysis
     '''
@@ -319,7 +319,7 @@ def analyze(mf, verbose=logger.DEBUG, with_meta_lowdin=WITH_META_LOWDIN,
         pop_and_charge = mf.mulliken_meta(mf.mol, dm, s=ovlp_ao, verbose=log)
     else:
         pop_and_charge = mf.mulliken_pop(mf.mol, dm, s=ovlp_ao, verbose=log)
-    dip = mf.dip_moment(mf.mol, dm, verbose=log)
+    dip = mf.dip_moment(mf.mol, dm, origin=origin, verbose=log)
     return pop_and_charge, dip
 
 mulliken_pop = hf.mulliken_pop
@@ -419,7 +419,7 @@ employing the updated GWH rule from doi:10.1021/ja00480a005.''')
 This is the Gaussian fit version as described in doi:10.1063/5.0004046.''')
         if isinstance(sap_basis, str):
             atoms = [coord[0] for coord in mol._atom]
-            sapbas = dict()
+            sapbas = {}
             for atom in set(atoms):
                 single_element_bs = load(sap_basis, atom)
                 if isinstance(single_element_bs, dict):
@@ -428,7 +428,7 @@ This is the Gaussian fit version as described in doi:10.1063/5.0004046.''')
                     sapbas[atom] = numpy.asarray(single_element_bs[0][1:], dtype=float)
             logger.note(self, f'Found SAP basis {sap_basis.split("/")[-1]}')
         elif isinstance(sap_basis, dict):
-            sapbas = dict()
+            sapbas = {}
             for key in sap_basis:
                 sapbas[key] = numpy.asarray(sap_basis[key][0][1:], dtype=float)
         else:
