@@ -258,11 +258,7 @@ class SCF_GradScanner(lib.GradScanner):
 
         self.reset(mol)
         mf_scanner = self.base
-        if 'dm0' in kwargs:
-            dm0 = kwargs.pop('dm0')
-            e_tot = mf_scanner(mol, dm0=dm0)
-        else:
-            e_tot = mf_scanner(mol)
+        e_tot = mf_scanner(mol)
 
         if isinstance(mf_scanner, hf.KohnShamDFT):
             if getattr(self, 'grids', None):
