@@ -75,8 +75,9 @@ def solve_nos1(fvind, mo_energy, mo_occ, h1,
         if level_shift != 0:
             v -= mo1 * level_shift
         v *= e_ai
-        return v.reshape(-1, nov)
-    mo1 = lib.krylov(vind_vo, mo1base.reshape(-1, nov),
+        return v.reshape(-1, nov).ravel()
+    # TODO: remove ravel. See https://github.com/pyscf/pyscf/issues/2702
+    mo1 = lib.krylov(vind_vo, mo1base.reshape(-1, nov).ravel(),
                      tol=tol, max_cycle=max_cycle, hermi=hermi, verbose=log)
     log.timer('krylov solver in CPHF', *t0)
 
@@ -132,8 +133,8 @@ def solve_withs1(fvind, mo_energy, mo_occ, h1, s1,
     nov = nocca * nmoa + noccb * nmob
 
     def vind_vo(mo1):
+        mo1 = mo1.reshape(-1, nov)
         nd = mo1.shape[0]
-        mo1 = mo1.reshape(nd, nov)
         v = fvind(mo1).reshape(nd, nov)
         if level_shift != 0:
             v -= mo1 * level_shift
@@ -143,8 +144,9 @@ def solve_withs1(fvind, mo_energy, mo_occ, h1, s1,
         v1b[:,viridxb] *= eai_b
         v1a[:,occidxa] = 0
         v1b[:,occidxb] = 0
-        return v.reshape(nd, nov)
-    mo1 = lib.krylov(vind_vo, mo1base.reshape(-1, nov),
+        return v.reshape(nd, nov).ravel()
+    # TODO: remove ravel. See https://github.com/pyscf/pyscf/issues/2702
+    mo1 = lib.krylov(vind_vo, mo1base.reshape(-1, nov).ravel(),
                      tol=tol, max_cycle=max_cycle, hermi=hermi, verbose=log)
     mo1 = mo1.reshape(mo1base.shape)
     mo1_a = mo1[:,:nmoa*nocca].reshape(nset,nmoa,nocca)

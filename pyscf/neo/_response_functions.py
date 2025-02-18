@@ -10,67 +10,45 @@ from pyscf import lib, neo
 from pyscf.scf import _response_functions  # noqa
 
 
-def _gen_neo_response(mf, hermi=0, max_memory=None):
+def _gen_neo_response(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=None):
     '''Generate a function to compute the product of (C)NEO response function
     and electronic/nuclear density matrices.
     '''
     assert isinstance(mf, neo.HF)
-    mol = mf.mol
+    if mf.epc is not None:
+        raise NotImplementedError('Response with EPC kernel is not available.')
+    if mo_coeff is None: mo_coeff = mf.mo_coeff
+    if mo_occ is None: mo_occ = mf.mo_occ
+
     if max_memory is None:
         mem_now = lib.current_memory()[0]
         max_memory = max(2000, mf.max_memory*.8-mem_now)
 
-    def vind(dm1e_symm, dm1e_partial, dm1n_partial):
+    def vind(dm1):
         '''
-        Input:
-        dm1e_symm can be of shape (...,nao,nao) for RHF/RKS or
-        (2,...,nao,nao) for UHF/UKS.
-        dm1e_partial is of shape (...,nao,nao) regardless of RKS/UKS, because
-        it is total density instead of spin densities.
-        dm1n_partial must be a list, even if there is only one quantum nucleus.
-        Each element is of shape (...,nao,nao)
+        Args:
+            dm1: dictionary of density matrices, same format as make_rdm1
+                For 'e', can be RHF (...,nao,nao) or UHF (2,...,nao,nao)
+                For 'nX', RHF (...,nao,nao)
 
-        The reason we have two dm1e's (symm and partial) is that, for e-e
-        response, the product is symmetric, but for e-n (and n-n), it is not.
-
-        Output:
-        v1e is of the same shape as dm1e_*, for e-e and e-n parts.
-        v1n is a list and of the same shape as dm1n_partial, for n-e and n-n parts.
-        Note that quantum nuclei do not have self-interaction so there should not
-        be a symm part for n-n, nor does it require dm1n_symm.
+        Returns:
+            dictionary of potentials, same format as input dm1
         '''
+        v1 = {}
+        # intra-component response (except quantum nuclei)
+        for t in mf.components.keys():
+            if not t.startswith('n'):
+                vresp = mf.components[t].gen_response(hermi=hermi,
+                                                      max_memory=max_memory)
+                v1[t] = vresp(dm1[t])
 
-        # electron-electron response
-        vresp_e = mf.mf_elec.gen_response(hermi=hermi, max_memory=max_memory)
-        v1e = vresp_e(dm1e_symm)
+        # Process each interaction
+        for (t1, t2), interaction in mf.interactions.items():
+            vint = interaction.get_vint(dm1)
+            v1[t1] = v1.get(t1, 0) + vint[t1]
+            v1[t2] = v1.get(t2, 0) + vint[t2]
 
-        # effect of nuclear density matrix change on electronic Fock
-        # this effect is insensitive to electronic spin
-        if dm1e_symm.size > dm1e_partial.size:
-            # this means we have unrestricted dm1e_symm,
-            # and v1e has two components
-            for i in range(mol.nuc_num):
-                v1en = mf.get_j_e_dm_n(i, dm1n_partial[i]) * 2.0
-                v1e[0] += v1en
-                v1e[1] += v1en
-        else:
-            for i in range(mol.nuc_num):
-                v1e += mf.get_j_e_dm_n(i, dm1n_partial[i]) * 2.0
-
-        v1n = [None] * mol.nuc_num
-        for i in range(mol.nuc_num):
-            # effect of electronic density matrix change on nuclear Fock
-            # this effect is insensitive to electronic spin, because
-            # dm1e_partial is already summed over spin (total density)
-            # note that here 2.0 is still used instead of 4.0 even if it is RKS,
-            # because if RHF/RKS is used, dm1e_partial will be doubled before
-            # it is passed to this function
-            v1n[i] = mf.get_j_n_dm_e(i, dm1e_partial) * 2.0
-            # effect of other nuclear density matrix change on nuclear Fock
-            for j in range(mol.nuc_num):
-                if j != i:
-                    v1n[i] += mf.get_j_nn(i, j, dm1n_partial[j]) * 2.0
-        return v1e, v1n
+        return v1
 
     return vind
 

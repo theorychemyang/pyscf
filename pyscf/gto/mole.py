@@ -1258,8 +1258,8 @@ def dumps(mol):
     exclude_keys = {'output', 'stdout', '_keys', '_ctx_lock',
                     # Constructing in function loads
                     'symm_orb', 'irrep_id', 'irrep_name',
-                    # (C)NEO mole attributes
-                    'quantum_nuc', 'mass', 'elec', 'nuc'}
+                    # Multicomponent and its QMMM
+                    'components', 'mm_mol'}
     moldic = dict(mol.__dict__)
     for k in exclude_keys:
         if k in moldic:

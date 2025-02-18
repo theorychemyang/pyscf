@@ -219,13 +219,13 @@ def integrals(mf):
     nelec = mol.elec.nelec
     h1e_a = None
     if nelec[0] > 0:
-        h1e_a = reduce(numpy.dot, (mf.mf_elec.mo_coeff[0].T, mf.mf_elec.hcore_static, mf.mf_elec.mo_coeff[0]))
+        h1e_a = reduce(numpy.dot, (mf.mf_elec.mo_coeff[0].T, mf.mf_elec.get_hcore(), mf.mf_elec.mo_coeff[0]))
     h1e_b = None
     if nelec[1] > 0:
-        h1e_b = reduce(numpy.dot, (mf.mf_elec.mo_coeff[1].T, mf.mf_elec.hcore_static, mf.mf_elec.mo_coeff[1]))
+        h1e_b = reduce(numpy.dot, (mf.mf_elec.mo_coeff[1].T, mf.mf_elec.get_hcore(), mf.mf_elec.mo_coeff[1]))
     h1 = [h1e_a, h1e_b]
     for i in range(mol.nuc_num):
-        h1n = reduce(numpy.dot, (mf.mf_nuc[i].mo_coeff.T, mf.mf_nuc[i].hcore_static, mf.mf_nuc[i].mo_coeff))
+        h1n = reduce(numpy.dot, (mf.mf_nuc[i].mo_coeff.T, mf.mf_nuc[i].get_hcore(), mf.mf_nuc[i].mo_coeff))
         h1.append(h1n)
 
     g2 = [[None] * (2+mol.nuc_num) for _ in range(2+mol.nuc_num)]

@@ -2375,7 +2375,7 @@ class RHF(SCF):
                 self._eri = mol.intor('int2e', aosym='s8')
                 if mol.verbose >= logger.DEBUG:
                     logger.timer(mol, 'Incore e-e ERI', *cput0)
-                    logger.debug(mol, f'Memory usage: {self._eri.nbytes/1024**2:.3f} MB')
+                    logger.debug(mol, f'    Memory usage: {self._eri.nbytes/1024**2:.3f} MB')
             vj, vk = dot_eri_dm(self._eri, dm, hermi, with_j, with_k)
         else:
             if not mol.direct_vee and not omega:
