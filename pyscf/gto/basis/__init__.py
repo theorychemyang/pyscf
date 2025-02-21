@@ -158,6 +158,8 @@ ALIAS = {
     'def2tzvppd' : 'def2-tzvppd.dat',
     'def2tzvpp'  : 'def2-tzvpp.dat' ,
     'def2tzvp'   : 'def2-tzvp.dat'  ,
+    'def2mtzvpp' : 'def2-mtzvpp.dat',
+    'def2mtzvp'  : 'def2-mtzvp.dat' ,
     'def2qzvpd'  : 'def2-qzvpd.dat' ,
     'def2qzvppd' : 'def2-qzvppd.dat',
     'def2qzvpp'  : 'def2-qzvpp.dat' ,
@@ -183,6 +185,12 @@ ALIAS = {
     'def2qzvpri'     : 'def2-qzvp-ri.dat'    ,
     'def2qzvppri'    : 'def2-qzvpp-ri.dat'   ,
     'def2qzvppdri'   : 'def2-qzvppd-ri.dat'  ,
+    'madef2svpp'   : 'ma-def2-svpp.dat'  ,
+    'madef2svp'    : 'ma-def2-svp.dat'   ,
+    'madef2tzvpp'  : 'ma-def2-tzvpp.dat' ,
+    'madef2tzvp'   : 'ma-def2-tzvp.dat'  ,
+    'madef2qzvpp'  : 'ma-def2-qzvpp.dat' ,
+    'madef2qzvp'   : 'ma-def2-qzvp.dat'  ,
     'tzv'        : 'tzv.dat'        ,
     'weigend'     : 'def2-universal-jfit.dat',
     'weigend+etb' : 'def2-universal-jfit.dat',
@@ -413,6 +421,11 @@ PP_ALIAS = {
     'gthhfrev'   : 'gth-hf-rev.dat' ,
 }
 
+SAP_ALIAS = {
+    'sapgraspsmall'   : 'sap_grasp_small.dat',
+    'sapgrasplarge'   : 'sap_grasp_large.dat',
+}
+
 def _is_pople_basis(basis):
     return (basis.startswith('631') or
             basis.startswith('321') or
@@ -531,7 +544,6 @@ def _convert_contraction(contr_string):
 def _truncate(basis, contr_scheme, symb, split_name):
     # keep only first n_keep contractions for each l
     contr_b = []
-    b_index = 0
     for l, n_keep in enumerate(contr_scheme):
         n_saved = 0
         if n_keep > 0:
@@ -604,6 +616,8 @@ def load(filename_or_basisname, symb, optimize=OPTIMIZE_CONTRACTION):
         basis_dir = _GTH_BASIS_DIR
     elif _is_pople_basis(name):
         basmod = _parse_pople_basis(name, symb)
+    elif name in SAP_ALIAS:
+        basmod = SAP_ALIAS[name]
     else:
         try:
             return parse_nwchem.parse(filename_or_basisname, symb,
@@ -641,8 +655,7 @@ def load(filename_or_basisname, symb, optimize=OPTIMIZE_CONTRACTION):
                     filename_or_basisname, elements=symb)
             except KeyError:
                 raise BasisNotFoundError(filename_or_basisname)
-            else:
-                return bse._orbital_basis(bse_obj)[0]
+            return bse._orbital_basis(bse_obj)[0][symb]
 
         raise BasisNotFoundError(f'Unknown basis format or basis name for {filename_or_basisname}')
 
@@ -695,8 +708,7 @@ def load_ecp(filename_or_basisname, symb):
                 filename_or_basisname, elements=symb)
         except KeyError:
             raise BasisNotFoundError(filename_or_basisname)
-        else:
-            return bse._ecp_basis(bse_obj)[0]
+        return bse._ecp_basis(bse_obj)[0][symb]
 
     raise BasisNotFoundError('Unknown ECP format or ECP name')
 

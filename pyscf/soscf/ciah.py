@@ -16,8 +16,6 @@
 # Author: Qiming Sun <osirpt.sun@gmail.com>
 #
 
-import sys
-
 import numpy
 import scipy.linalg
 from pyscf import lib
@@ -77,10 +75,7 @@ class CIAHOptimizerMixin:
 
 def rotate_orb_cc(iah, u0, conv_tol_grad=None, verbose=logger.NOTE):
     t2m = (logger.process_clock(), logger.perf_counter())
-    if isinstance(verbose, logger.Logger):
-        log = verbose
-    else:
-        log = logger.Logger(sys.stdout, verbose)
+    log = logger.new_logger(verbose=verbose)
 
     if conv_tol_grad is None:
         conv_tol_grad = iah.conv_tol_grad
@@ -163,7 +158,7 @@ def rotate_orb_cc(iah, u0, conv_tol_grad=None, verbose=logger.NOTE):
 
                 elif (ikf > 2 and # avoid frequent keyframe
                       (ikf >= max(iah.kf_interval, iah.kf_interval-numpy.log(norm_dr+1e-9)) or
-                       # Insert keyframe if the keyframe and the esitimated g_orb are too different
+                       # Insert keyframe if the keyframe and the estimated g_orb are too different
                        norm_gorb < norm_gkf/kf_trust_region)):
                     ikf = 0
                     ukf = iah.extract_rotation(dr, ukf)
@@ -211,10 +206,7 @@ def rotate_orb_cc(iah, u0, conv_tol_grad=None, verbose=logger.NOTE):
 def davidson_cc(h_op, g_op, precond, x0, tol=1e-10, xs=[], ax=[],
                 max_cycle=30, lindep=1e-14, dot=numpy.dot, verbose=logger.WARN):
 
-    if isinstance(verbose, logger.Logger):
-        log = verbose
-    else:
-        log = logger.Logger(sys.stdout, verbose)
+    log = logger.new_logger(verbose=verbose)
 
     toloose = numpy.sqrt(tol)
     # the first trial vector is (1,0,0,...), which is not included in xs

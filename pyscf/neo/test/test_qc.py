@@ -43,8 +43,7 @@ class KnownValues(unittest.TestCase):
     def test_qc3(self):
         mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G', 
                     quantum_nuc = [1], nuc_basis = '2s1p', cart=True, spin=0)
-        mf = neo.CDFT(mol)
-        mf.mf_elec.xc = 'HF'
+        mf = neo.CDFT(mol, xc='HF')
         mf.scf()
         qc_mf = qc.CUCC(mf)
         e, c, n, s2 = qc_mf.kernel()

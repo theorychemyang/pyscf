@@ -258,11 +258,7 @@ class SCF_GradScanner(lib.GradScanner):
 
         self.reset(mol)
         mf_scanner = self.base
-        if 'dm0' in kwargs:
-            dm0 = kwargs.pop('dm0')
-            e_tot = mf_scanner(mol, dm0=dm0)
-        else:
-            e_tot = mf_scanner(mol)
+        e_tot = mf_scanner(mol)
 
         if isinstance(mf_scanner, hf.KohnShamDFT):
             if getattr(self, 'grids', None):
@@ -420,7 +416,7 @@ class GradientsBase(lib.StreamObject):
         self.de = de + self.grad_nuc(atmlst=atmlst)
         if self.mol.symmetry:
             self.de = self.symmetrize(self.de, atmlst)
-        if self.base.disp is not None:
+        if self.base.do_disp():
             self.de += self.get_dispersion()
         logger.timer(self, 'SCF gradients', *cput0)
         self._finalize()
@@ -478,3 +474,4 @@ Grad = Gradients
 from pyscf import scf
 # Inject to RHF class
 scf.hf.RHF.Gradients = lib.class_as_method(Gradients)
+scf.rohf.ROHF.Gradients = lib.invalid_method('Gradients')

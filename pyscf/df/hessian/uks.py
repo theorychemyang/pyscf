@@ -42,7 +42,7 @@ def partial_hess_elec(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
     mol = hessobj.mol
     mf = hessobj.base
     ni = mf._numint
-    if mf.nlc or ni.libxc.is_nlc(mf.xc):
+    if mf.do_nlc():
         raise NotImplementedError('RKS Hessian for NLC functional')
 
     if mo_energy is None: mo_energy = mf.mo_energy
@@ -121,14 +121,7 @@ def make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=None):
                 vk1a, vk1b = vk1
                 h1aoa[ia] -= (alpha - hyb) * vk1a
                 h1aob[ia] -= (alpha - hyb) * vk1b
-
-    if chkfile is None:
-        return h1aoa, h1aob
-    else:
-        for ia in atmlst:
-            lib.chkfile.save(chkfile, 'scf_f1ao/0/%d'%ia, h1aoa[ia])
-            lib.chkfile.save(chkfile, 'scf_f1ao/1/%d'%ia, h1aob[ia])
-        return chkfile
+    return h1aoa, h1aob
 
 
 class Hessian(uks_hess.Hessian):

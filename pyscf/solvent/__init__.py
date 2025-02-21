@@ -13,6 +13,8 @@
 # limitations under the License.
 
 from pyscf.solvent import ddcosmo
+from pyscf.solvent import pcm
+from pyscf.solvent import smd
 
 def ddCOSMO(method_or_mol, solvent_obj=None, dm=None):
     '''Initialize ddCOSMO model.
@@ -126,7 +128,6 @@ def PCM(method_or_mol, solvent_obj=None, dm=None):
     from pyscf import gto
     from pyscf import scf, mcscf
     from pyscf import tdscf
-    from pyscf.solvent import pcm
 
     if isinstance(method_or_mol, gto.mole.Mole):
         return pcm.PCM(method_or_mol)
@@ -143,3 +144,26 @@ def PCM(method_or_mol, solvent_obj=None, dm=None):
         return pcm.pcm_for_post_scf(method_or_mol, solvent_obj, dm)
 
 PCM = PCM
+
+def SMD(method_or_mol, solvent_obj=None, dm=None):
+    '''Initialize PCM model.
+
+    Examples:
+
+    >>> mf = PCM(scf.RHF(mol))
+    >>> mf.kernel()
+    >>> sol = PCM(mol)
+    >>> mc = PCM(CASCI(mf, 6, 6), sol)
+    >>> mc.kernel()
+    '''
+    from pyscf import gto
+    from pyscf import scf
+
+    if isinstance(method_or_mol, gto.mole.Mole):
+        return smd.SMD(method_or_mol)
+    elif isinstance(method_or_mol, scf.hf.SCF):
+        return smd.smd_for_scf(method_or_mol, solvent_obj, dm)
+    else:
+        raise NotImplementedError
+
+SMD = SMD

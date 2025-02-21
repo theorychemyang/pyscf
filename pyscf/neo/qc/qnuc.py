@@ -540,10 +540,7 @@ def Ham_neo(mf, moa, mob, ea, eb, create, destroy, n_qubit_e, tol=1e-12):
     n_qubit_p, n_qubit_p_tot = get_qubit_qnuc(mf_nuc)
     n_qubit_tot += n_qubit_p_tot
 
-    if len(mf_nuc)>0:
-        hao = mf_elec.hcore_static # need static (true) hcore
-    else:
-        hao = mf_elec.get_hcore()
+    hao = mf_elec.get_hcore()
     eri_ao = mf_elec._eri
     Ham_ee = Ham_elec(mf, moa, mob, ea, eb, eri_ao, hao, create, destroy, n_qubit_e)
     E_nuc = mf_elec.energy_nuc()
@@ -559,7 +556,7 @@ def Ham_neo(mf, moa, mob, ea, eb, create, destroy, n_qubit_e, tol=1e-12):
     # list of core hamiltonians for quantum nuclei
     hmo_p = []
     for i in range(len(mf_nuc)):
-        hao_p = mf_nuc[i].hcore_static # need static (true) hcore
+        hao_p = mf_nuc[i].get_hcore()
         hmo_tmp_p = mf_nuc[i].mo_coeff.transpose() @ hao_p @ mf_nuc[i].mo_coeff
         hmo_p.append(hmo_tmp_p)
 
@@ -787,7 +784,7 @@ class QC_NEO_BASE(lib.StreamObject):
         moa, mob, ea, eb, na, nb, noa, nob = parse_mf_elec(mf_elec)
 
         # mixed alpha/beta overlap
-        s1e = mf.get_ovlp()
+        s1e = mf_elec.get_ovlp()
         s_ab = moa.conj().T @ s1e @ mob
         s_ba = mob.conj().T @ s1e @ moa
 

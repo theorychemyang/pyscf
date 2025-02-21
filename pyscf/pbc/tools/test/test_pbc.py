@@ -138,9 +138,6 @@ C  15.16687337 15.16687337 15.16687337
         self.assertAlmostEqual(abs(S - S.T.conj()).max(), 0, 13)
         self.assertAlmostEqual(w.min(), 0.0007176363230, 8)
 
-        Ls = tools.get_lattice_Ls(cl1, rcut=0)
-        self.assertEqual(Ls.shape, (1,3))
-
     def test_super_cell(self):
         numpy.random.seed(2)
         cl1 = pbcgto.M(a = numpy.random.random((3,3))*3,

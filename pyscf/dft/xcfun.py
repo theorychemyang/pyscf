@@ -28,7 +28,7 @@ import math
 import numpy
 from pyscf import lib
 from pyscf.dft.xc.utils import remove_dup, format_xc_code
-from pyscf.dft import xc_deriv, dft_parser
+from pyscf.dft import xc_deriv
 from pyscf import __config__
 
 _itrf = lib.load_library('libxcfun_itrf')
@@ -36,9 +36,60 @@ _itrf = lib.load_library('libxcfun_itrf')
 _itrf.xcfun_splash.restype = ctypes.c_char_p
 _itrf.xcfun_version.restype = ctypes.c_char_p
 _itrf.XCFUN_eval_xc.restype = ctypes.c_int
+_itrf.xcfun_enumerate_parameters.restype = ctypes.c_char_p
+_itrf.XCFUN_xc_type.restype = ctypes.c_int
+_itrf.xcfun_describe_short.restype = ctypes.c_char_p
+_itrf.xcfun_describe_short.argtype = [ctypes.c_char_p]
+_itrf.xcfun_describe_long.restype = ctypes.c_char_p
+_itrf.xcfun_describe_long.argtype = [ctypes.c_char_p]
 
 __version__ = _itrf.xcfun_version().decode("UTF-8")
 __reference__ = _itrf.xcfun_splash().decode("UTF-8")
+
+def print_XC_CODES():
+    '''
+    Dump the built-in xcfun XC_CODES in a readable format.
+    '''
+    lda_ids = []
+    gga_ids = []
+    mgga_ids = []
+    xc_codes = {}
+
+    print('XC = XC_CODES = {')
+    for i in range(78):
+        name = _itrf.xcfun_enumerate_parameters(ctypes.c_int(i))
+        sdescr = _itrf.xcfun_describe_short(name)
+        #ldescr = _itrf.xcfun_describe_long(ctypes.c_int(i))
+        if sdescr is not None:
+            name = name.decode('UTF-8')
+            key = f"'{name}'"
+            sdescr = sdescr.decode('UTF-8')
+            print(f'{key:<16s}: {i:2d},  #{sdescr}')
+            xc_codes[name] = i
+
+        fntype = _itrf.XCFUN_xc_type(ctypes.c_int(i))
+        if fntype == 0:
+            lda_ids.append(i)
+        elif fntype == 1:
+            gga_ids.append(i)
+        elif fntype == 2:
+            mgga_ids.append(i)
+
+    alias = {
+        'SLATER': 'SLATERX',
+        'LDA'   : 'SLATERX',
+        'VWN'   : 'VWN5C',
+        'VWN5'  : 'VWN5C',
+        'B88'   : 'BECKEX',
+        'LYP'   : 'LYPC',
+    }
+    for k, v in alias.items():
+        key = f"'{k}'"
+        print(f'{key:<16s}: {xc_codes[v]:2d},  # {v}')
+    print('}')
+    print('LDA_IDS = %s' % lda_ids)
+    print('GGA_IDS = %s' % gga_ids)
+    print('MGGA_IDS = %s' % mgga_ids)
 
 XC = XC_CODES = {
 'SLATERX'       :  0,  #Slater LDA exchange
@@ -318,9 +369,6 @@ XC_CODES.update([(key, 5000+i) for i, key in enumerate(VV10_XC)])
 VV10_XC.update([(5000+i, VV10_XC[key]) for i, key in enumerate(VV10_XC)])
 
 def is_nlc(xc_code):
-    enable_nlc = dft_parser.parse_dft(xc_code)[1]
-    if enable_nlc is False:
-        return False
     fn_facs = parse_xc(xc_code)[1]
     return any(xid >= 5000 for xid, c in fn_facs)
 
@@ -423,7 +471,11 @@ def parse_xc(description):
     elif not isinstance(description, str): #isinstance(description, (tuple,list)):
         return parse_xc('%s,%s' % tuple(description))
 
-    description = dft_parser.parse_dft(description)[0]
+    description = description.upper()
+    if '-D3' in description or '-D4' in description:
+        from pyscf.scf.dispersion import parse_dft
+        description, _, _ = parse_dft(description)
+        description = description.upper()
 
     def assign_omega(omega, hyb_or_sr, lr=0):
         if hyb[2] == omega or omega == 0:
@@ -448,7 +500,7 @@ def parse_xc(description):
                 fac, key = token.split('*')
                 if fac[0].isalpha():
                     fac, key = key, fac
-                fac = sign * float(fac.replace('_', '-'))
+                fac = sign * float(fac.replace('E_', 'E-'))
             else:
                 fac, key = sign, token
 
@@ -832,7 +884,7 @@ XC_D0000003 = 119
 
 def eval_xc(xc_code, rho, spin=0, relativity=0, deriv=1, omega=None, verbose=None):
     r'''Interface to call xcfun library to evaluate XC functional, potential
-    and functional derivatives. Return deriviates following libxc convention.
+    and functional derivatives. Return derivatives following libxc convention.
 
     See also :func:`pyscf.dft.libxc.eval_xc`
     '''

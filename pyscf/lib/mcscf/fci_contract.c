@@ -21,6 +21,11 @@
 #include <string.h>
 #include <math.h>
 #include <assert.h>
+
+#ifdef HAVE_FFS
+#include <strings.h>
+#endif
+
 //#include <omp.h>
 #include "config.h"
 #include "vhf/fblas.h"
@@ -59,7 +64,7 @@
  */
 
 /* 
- * For given stra_id, spread alpah-strings (which can propagate to stra_id)
+ * For given stra_id, spread alpha-strings (which can propagate to stra_id)
  * into t1[:nstrb,nnorb] 
  *    str1-of-alpha -> create/annihilate -> str0-of-alpha
  * ci0[:nstra,:nstrb] is contiguous in beta-strings
@@ -603,7 +608,9 @@ void FCImake_hdiag(double *hdiag, double *h1e, double *jdiag, double *kdiag,
 
 static int first1(uint64_t r)
 {
-#ifdef HAVE_FFS
+#if defined(__builtin_ffsll)
+        return __builtin_ffsll(r) - 1;
+#elif defined(HAVE_FFS)
         return ffsll(r) - 1;
 #else
         int n = 0;
@@ -1003,7 +1010,7 @@ void FCIcontract_2e_cyl_sym(double *eris, double *ci0, double *ci1,
                                         strb_ir = IRREP_OF(strb_l, strb_g);
                                         mb = nbs[strb_ir];
                                 }
-                                if (nas[intera_ir] > 0 && nas[interb_ir] > 0 &&
+                                if (nas[intera_ir] > 0 && nbs[interb_ir] > 0 &&
                                     (ma > 0 || mb > 0)) {
 // clinka for intera*ai -> stra.
 pick_link_by_irrep(clinka, linka+linka_loc[intera_ir], nas[intera_ir], nlinka, ai_ir);

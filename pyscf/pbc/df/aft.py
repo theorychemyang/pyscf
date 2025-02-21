@@ -180,7 +180,7 @@ def _int_nuc_vloc(mydf, nuccell, kpts, intor='int3c2e', aosym='s2', comp=1):
     raise DeprecationWarning
 
 def get_pp(mydf, kpts=None):
-    '''Get the periodic pseudotential nuc-el AO matrix, with G=0 removed.
+    '''Get the periodic pseudopotential nuc-el AO matrix, with G=0 removed.
 
     Kwargs:
         mesh: custom mesh grids. By default mesh is determined by the
@@ -215,12 +215,10 @@ def get_nuc(mydf, kpts=None):
 
 
 def weighted_coulG(mydf, kpt=np.zeros(3), exx=False, mesh=None, omega=None):
-    '''Weighted regular Coulomb kernel, applying cell.omega by default'''
+    '''Weighted regular Coulomb kernel'''
     cell = mydf.cell
     if mesh is None:
         mesh = mydf.mesh
-    if omega is None:
-        omega = cell.omega
     Gv, Gvbase, kws = cell.get_Gv_weights(mesh)
     coulG = tools.get_coulG(cell, kpt, exx, mydf, mesh, Gv, omega=omega)
     coulG *= kws
@@ -329,7 +327,8 @@ class _IntPPBuilder(Int3cBuilder):
             else:
                 lib.logger.warn(cell, 'cell.pseudo was specified but its elements %s '
                                 'were not found in the system.', cell._pseudo.keys())
-            vpploc = [0] * nkpts
+            nao = cell.nao
+            vpploc = np.zeros((nkpts, nao, nao))
             return vpploc
 
         rcut = self._estimate_rcut_3c1e(rs_cell, fake_cells)
@@ -538,7 +537,7 @@ class AFTDFMixin:
         else:
             rsh_df = self._rsh_df[key] = self.copy().reset()
             if hasattr(self, '_dataname'):
-                rsh_df._dataname = f'{self._dataname}/lr/{key}'
+                rsh_df._dataname = f'{self._dataname}-lr/{key}'
             logger.info(self, 'Create RSH-DF object %s for omega=%s', rsh_df, omega)
 
         cell = self.cell
@@ -571,6 +570,9 @@ class AFTDF(lib.StreamObject, AFTDFMixin):
         'cell', 'mesh', 'kpts', 'time_reversal_symmetry', 'blockdim',
     }
 
+    # to mimic molecular DF object
+    blockdim = getattr(__config__, 'pbc_df_df_DF_blockdim', 240)
+
     def __init__(self, cell, kpts=np.zeros((1,3))):
         self.cell = cell
         self.stdout = cell.stdout
@@ -579,9 +581,6 @@ class AFTDF(lib.StreamObject, AFTDFMixin):
         self.mesh = cell.mesh
         self.kpts = kpts
         self.time_reversal_symmetry = True
-
-        # to mimic molecular DF object
-        self.blockdim = getattr(__config__, 'pbc_df_df_DF_blockdim', 240)
 
         # The following attributes are not input options.
         self._rsh_df = {}  # Range separated Coulomb DF objects
@@ -703,7 +702,7 @@ class AFTDF(lib.StreamObject, AFTDFMixin):
         cell = self.cell
         if cell.dimension == 2 and cell.low_dim_ft_type != 'inf_vacuum':
             raise RuntimeError('ERIs of PBC-2D systems are not positive '
-                               'definite. Current API only supports postive '
+                               'definite. Current API only supports positive '
                                'definite ERIs.')
 
         if blksize is None:

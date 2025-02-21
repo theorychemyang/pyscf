@@ -35,7 +35,7 @@ from pyscf.lib import logger
 from pyscf import ao2mo
 from pyscf.hessian import rhf as rhf_hess
 from pyscf.hessian import uhf as uhf_hess
-from pyscf.df.hessian.rhf import _load_dim0
+from pyscf.df.hessian.rhf import _load_dim0, _pinv
 from pyscf.df.grad.rhf import (_int3c_wrapper, _gen_metric_solver,
                                LINEAR_DEP_THRESHOLD)
 
@@ -197,7 +197,7 @@ def _partial_hess_ejk(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None,
         rhok0b_P__ = lib.einsum('plj,li->pij', rhok0b_Pl_, moccb)
         rho2c_0  = lib.einsum('pij,qij->pq', rhok0a_P__, rhok0a_P__)
         rho2c_0 += lib.einsum('pij,qij->pq', rhok0b_P__, rhok0b_P__)
-        int2c_inv = numpy.linalg.pinv(int2c, rcond=LINEAR_DEP_THRESHOLD)
+        int2c_inv = _pinv(int2c, lindep=LINEAR_DEP_THRESHOLD)
         int2c_ipip1 = auxmol.intor('int2c2e_ipip1', aosym='s1')
         int2c_ip_ip  = lib.einsum('xpq,qr,ysr->xyps', int2c_ip1, int2c_inv, int2c_ip1)
         int2c_ip_ip -= auxmol.intor('int2c2e_ip1ip2', aosym='s1').reshape(3,3,naux,naux)
@@ -398,19 +398,9 @@ def make_h1(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None, verbose=None):
     for ia, h1, vj1, vk1 in _gen_jk(hessobj, mo_coeff, mo_occ, chkfile,
                                     atmlst, verbose, True):
         vk1a, vk1b = vk1
-        h1a = h1 + vj1 - vk1a
-        h1b = h1 + vj1 - vk1b
-
-        if chkfile is None:
-            h1aoa[ia] = h1a
-            h1aob[ia] = h1b
-        else:
-            lib.chkfile.save(chkfile, 'scf_f1ao/0/%d' % ia, h1a)
-            lib.chkfile.save(chkfile, 'scf_f1ao/1/%d' % ia, h1b)
-    if chkfile is None:
-        return (h1aoa,h1aob)
-    else:
-        return chkfile
+        h1aoa[ia] = h1 + vj1 - vk1a
+        h1aob[ia] = h1 + vj1 - vk1b
+    return (h1aoa,h1aob)
 
 def _gen_jk(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None,
             verbose=None, with_k=True):
@@ -475,9 +465,9 @@ def _gen_jk(hessobj, mo_coeff, mo_occ, chkfile=None, atmlst=None,
             vj1_buf[i] += np.einsum('xp,pij->xij', wj1, coef3c)
         if with_k:
             rhok0_PlJ = lib.einsum('plj,Jj->plJ', rhok0a_Pl_[p0:p1], mocca)
-            vk1a_buf += lib.einsum('xijp,plj->xil', int3c_ip1, rhok0_PlJ[p0:p1])
+            vk1a_buf += lib.einsum('xijp,plj->xil', int3c_ip1, rhok0_PlJ)
             rhok0_PlJ = lib.einsum('plj,Jj->plJ', rhok0b_Pl_[p0:p1], moccb)
-            vk1b_buf += lib.einsum('xijp,plj->xil', int3c_ip1, rhok0_PlJ[p0:p1])
+            vk1b_buf += lib.einsum('xijp,plj->xil', int3c_ip1, rhok0_PlJ)
         int3c_ip1 = None
     vj1_buf = ftmp['vj1_buf'] = vj1_buf
 
