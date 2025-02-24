@@ -151,7 +151,6 @@ class Pyscf_NEO(Calculator):
             if self.disp:
                 mf.disp = self.disp
             if self.add_solvent:
-                mf.scf(cycle=0) # TODO: remove this
                 mf = mf.ddCOSMO()
             # TODO: last step dm0 for non-scanner?
             mf.scf()
