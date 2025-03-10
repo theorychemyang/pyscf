@@ -6,7 +6,7 @@ from pyscf import scf
 from pyscf import __config__
 from pyscf.lib import logger
 from pyscf.data import nist
-from pyscf import neo
+from pyscf import neo, scf
 
 REAL_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_pick_eig_threshold', 1e-4)
 
@@ -76,8 +76,9 @@ def eval_fxc(epc, rho_e, rho_p):
     return f_ee, f_pp, f_ep
 
 def init_guess(mf, nstates):
-    mf_elec = mf.mf_elec
-    unrestricted = mf.unrestricted
+    mol = mf.mol
+    mf_elec = mf.components['e']
+    unrestricted = isinstance(mf_elec,scf.uhf.UHF)
     if unrestricted:
         x0_e = uhf.TDA(mf_elec).init_guess(mf_elec, nstates=nstates)
     else:
@@ -85,663 +86,461 @@ def init_guess(mf, nstates):
     y0_e = numpy.zeros_like(x0_e)
     x0 = numpy.hstack((x0_e, y0_e))
     x1 = numpy.hstack((y0_e, x0_e))
-    for i in range(mf.mol.nuc_num):
-        mf_nuc = mf.mf_nuc[i]
-        nocc_p = mf_nuc.mo_coeff[:,mf_nuc.mo_occ>0].shape[1]
-        nvir_p = mf_nuc.mo_coeff.shape[1] - nocc_p
-        x0_p = numpy.zeros((x0_e.shape[0],nocc_p*nvir_p))
-        y0_p = numpy.zeros_like(x0_p)
-        x0 = numpy.hstack((x0, x0_p, y0_p))
-        x1 = numpy.hstack((x1, x0_p, y0_p))
+    for i in range(mol.natm):
+        if mol._quantum_nuc[i]:
+            mf_nuc = mf.components[f'n{i}']
+            nocc_p = mf_nuc.mo_coeff[:,mf_nuc.mo_occ>0].shape[1]
+            nvir_p = mf_nuc.mo_coeff.shape[1] - nocc_p
+            x0_p = numpy.zeros((x0_e.shape[0],nocc_p*nvir_p))
+            y0_p = numpy.zeros_like(x0_p)
+            x0 = numpy.hstack((x0, x0_p, y0_p))
+            x1 = numpy.hstack((x1, x0_p, y0_p))
 
     return numpy.asarray(numpy.vstack((x0,x1)))
     
-def nuc_dm_n_response(mf_nuc):
-    '''
-    Self interaction for one nucleus
-    '''
-    nao = mf_nuc.mol.nao_nr()
-    def vind(dms_nuc):
-        ndm = dms_nuc.shape[0]
-        vmat = numpy.zeros((ndm, nao, nao))
-
-        return vmat
-    return vind
-
-def nuc_dm_e_response(mf,i):
-    '''
-    Nuclear Coulomb matrix from electronic density matrix
-    '''
-    def vind(dms_elec):
-        vj = mf.get_j_n_dm_e(i, dms_elec)
-        if dms_elec.shape[0] == 1:
-            nao_v = vj.shape[-1]
-            vj = vj.reshape((-1,nao_v,nao_v))
-
-        return vj 
-    
-    return vind
-
-def elec_dm_n_response(mf,i):
-    '''
-    Electronic Coulomb matrix from nuclear density matrix
-    '''
-    def vind(dms_nuc):
-        vj = mf.get_j_e_dm_n(i,dms_nuc)
-        if dms_nuc.shape[0] == 1:
-            nao_v = vj.shape[-1]
-            vj = vj.reshape((-1,nao_v,nao_v))
-
-        return vj
-             
-    return vind
-
-def dm_n_dm_n_response(mf,i,j):
-    '''
-    Nuclear i Coulomb matrix from nuclear density matrix j
-    '''
-    def vind(dmj_nuc):
-        vj = mf.get_j_nn(i,j,dmj_nuc)
-        if dmj_nuc.shape[0] == 1:
-            nao_v = vj.shape[-1]
-            vj = vj.reshape((-1,nao_v,nao_v))
-        return vj
-    
-    return vind
-
 def get_epc_iajb_rhf(mf, reshape=False):
 
-    mf_elec = mf.mf_elec
-    mo_coeff_e = mf_elec.mo_coeff
-    mo_occ_e = mf_elec.mo_occ
-    occidx_e = numpy.where(mo_occ_e==2)[0]
-    viridx_e = numpy.where(mo_occ_e==0)[0]
-    nocc_e = len(occidx_e)
-    nvir_e = len(viridx_e)
-    orbv_e = mo_coeff_e[:,viridx_e]
-    orbo_e = mo_coeff_e[:,occidx_e]
+    mo_coeff = mf.mo_coeff
+    mo_occ = mf.mo_occ
+    orbv = {}
+    orbo = {}
+    nocc = {}
+    nvir = {}
 
-    nao = mf.mol.elec.nao_nr()
-    grids = mf.mf_elec.grids
-    ni = mf.mf_elec._numint
-    
-    iajb_e = numpy.zeros((nocc_e, nvir_e, nocc_e, nvir_e))
 
-    nuc_num = mf.mol.nuc_num
-    nocc_p = []
-    nvir_p = []
-    orbv_p = []
-    orbo_p = []
-    iajb_pe = []
-    iajb_pp = []
-    iajb_p = []
+    for t in mf.components.keys():
+        occidx = numpy.where(mo_occ[t] > 0)[0]
+        viridx = numpy.where(mo_occ[t] == 0)[0]
+        orbo[t] = mo_coeff[t][:,occidx]
+        orbv[t] = mo_coeff[t][:,viridx]
+        nocc[t] = len(occidx)
+        nvir[t] = len(viridx)
 
-    for i in range(nuc_num):
-        mf_nuc = mf.mf_nuc[i]
-        mo_coeff_p = mf_nuc.mo_coeff
-        mo_occ_p = mf_nuc.mo_occ
-        occidx_p = numpy.where(mo_occ_p==1)[0]
-        viridx_p = numpy.where(mo_occ_p==0)[0]
-        nocc_p.append(len(occidx_p))
-        nvir_p.append(len(viridx_p))
-        orbv_p.append(mo_coeff_p[:,viridx_p])
-        orbo_p.append(mo_coeff_p[:,occidx_p])
-        iajb_pp.append([None]*nuc_num)
-        iajb_pe.append(numpy.zeros((nocc_p[i], nvir_p[i], nocc_e, nvir_e)))
-        iajb_p.append(numpy.zeros((nocc_p[i], nvir_p[i], nocc_p[i], nvir_p[i])))
+    nao = mo_coeff['e'].shape[0]
+    grids = mf.components['e'].grids
+    ni = mf.components['e']._numint
 
-    for i in range(nuc_num):
-        for j in range(i+1, nuc_num):
-            iajb_pp[i][j] = numpy.zeros((nocc_p[i], nvir_p[i], nocc_p[j], nvir_p[j]))
+    iajb = {}
+    iajb_int = {}
+    for t in mf.components.keys():
+        iajb[t] = numpy.zeros((nocc[t], nvir[t], nocc[t], nvir[t]))
 
-    for ao, mask, weight, coords in ni.block_loop(mf.mol.elec,grids,nao):
-        
-        ao_elec = ao
-        rho_e = eval_rho(mf.mol.elec, ao_elec, mf.dm_elec)
-        w_ov_ps = []
-        rho_ov_ps = []
+    for t_pair in mf.interactions.keys():
+        t1, t2 = t_pair
+        iajb_int[t_pair] = numpy.zeros((nocc[t1], nvir[t1], nocc[t2], nvir[t2]))
 
-        for i in range(nuc_num):
-            ao_nuc = eval_ao(mf.mol.nuc[i], coords)
-            rho_p = eval_rho(mf.mol.nuc[i], ao_nuc, mf.dm_nuc[i])
-            rho_p[rho_p<0.] = 0.
-            f_ee, f_pp, f_ep = eval_fxc(mf.epc,rho_e, rho_p)
+    dm = mf.make_rdm1()
+    for _ao, mask, weight, coords in ni.block_loop(mf.mol.components['e'],grids,nao):
 
-            rho_o_p = lib.einsum('rp,pi->ri', ao_nuc, orbo_p[i])
-            rho_v_p = lib.einsum('rp,pi->ri', ao_nuc, orbv_p[i])
-            rho_ov_p = numpy.einsum('ri,ra->ria', rho_o_p, rho_v_p)
-            rho_ov_ps.append(rho_ov_p)
-            rho_o_e = lib.einsum('rp,pi->ri', ao_elec, orbo_e)
-            rho_v_e = lib.einsum('rp,pi->ri', ao_elec, orbv_e)
-            rho_ov_e = numpy.einsum('ri,ra->ria', rho_o_e, rho_v_e)
+        rho = {}
+        rho_ov = {}
 
-            w_ov_pe = numpy.einsum('ria,r->ria', rho_ov_e, f_ep*weight)
-            iajb_pe[i] += lib.einsum('ria,rjb->iajb', rho_ov_p, w_ov_pe)
-            
-            w_ov_p = numpy.einsum('ria,r->ria', rho_ov_p, f_pp*weight)
-            iajb_p[i] += lib.einsum('ria,rjb->iajb', rho_ov_p, w_ov_p)
-            w_ov_ps.append(w_ov_p)
+        for t in mf.components.keys():
+            if t.startswith('e'):
+                ao = _ao
+            else:
+                ao = eval_ao(mf.mol.components[t], coords)
 
-            w_ov_e = numpy.einsum('ria,r->ria', rho_ov_e, f_ee*weight)
-            iajb_e += lib.einsum('ria,rjb->iajb', rho_ov_e, w_ov_e) * 2
+            _rho = eval_rho(mf.mol.components[t], ao, dm[t])
+            if t.startswith('n'):
+                _rho[_rho<0.] = 0.
+            rho[t] = _rho
+            rho_o = lib.einsum('rp,pi->ri', ao, orbo[t])
+            rho_v = lib.einsum('rp,pi->ri', ao, orbv[t])
+            rho_ov[t] = numpy.einsum('ri,ra->ria', rho_o, rho_v)
 
-        for i in range(nuc_num):
-            for j in range(i+1, nuc_num):
-                iajb_pp[i][j] += lib.einsum('ria,rjb->iajb', rho_ov_ps[i], w_ov_ps[j])
+        for (t1, t2) in mf.interactions.keys():
+            if t1.startswith('e'):
+                f_ee, f_pp, f_ep = eval_fxc(mf.epc, rho[t1], rho[t2])
+                w_ov_ep = numpy.einsum('ria,r->ria', rho_ov[t2], f_ep*weight)
+                w_ov_p = numpy.einsum('ria,r->ria', rho_ov[t2], f_pp*weight)
+                w_ov_e = numpy.einsum('ria,r->ria', rho_ov[t1], f_ee*weight)
+
+                iajb[t1] += lib.einsum('ria,rjb->iajb', rho_ov[t1], w_ov_e) * 2
+                iajb[t2] += lib.einsum('ria,rjb->iajb', rho_ov[t2], w_ov_p)
+                iajb_int[(t1, t2)] += lib.einsum('ria,rjb->iajb', rho_ov[t1], w_ov_ep)
     
 
     if reshape:
-        for i in range(nuc_num):
-            iajb_p[i] = iajb_p[i].reshape((nocc_p[i]*nvir_p[i], nocc_p[i]*nvir_p[i]))
-            iajb_pe[i] = iajb_pe[i].reshape((nocc_p[i]*nvir_p[i], nocc_e*nvir_e))
-            for j in range(i+1, nuc_num):
-                iajb_pp[i][j] = iajb_pp[i][j].reshape((nocc_p[i]*nvir_p[i], nocc_p[j]*nvir_p[j]))
-        iajb_e = iajb_e.reshape((nocc_e*nvir_e, nocc_e*nvir_e))
+        for t in iajb.keys():
+            iajb[t] = iajb[t].reshape((nocc[t]*nvir[t], nocc[t]*nvir[t]))
+        for t_pair in iajb_int.keys():
+            t1, t2 = t_pair
+            iajb_int[t_pair] = iajb_int[t_pair].reshape((nocc[t1]*nvir[t1], nocc[t2]*nvir[t2]))
 
-
-    return iajb_e, iajb_pe, iajb_p
+    return iajb, iajb_int
 
 def get_epc_iajb_uhf(mf, reshape=False):
-    mf_elec = mf.mf_elec
+    mo_coeff = mf.mo_coeff
+    mo_occ = mf.mo_occ
+    orbv = {}
+    orbo = {}
+    nocc = {}
+    nvir = {}
 
-    mo_coeff_e = mf_elec.mo_coeff
-    mo_occ_e = mf_elec.mo_occ
-    occidxa = numpy.where(mo_occ_e[0]>0)[0]
-    occidxb = numpy.where(mo_occ_e[1]>0)[0]
-    viridxa = numpy.where(mo_occ_e[0]==0)[0]
-    viridxb = numpy.where(mo_occ_e[1]==0)[0]
-    nocca = len(occidxa)
-    noccb = len(occidxb)
-    nvira = len(viridxa)
-    nvirb = len(viridxb)
-    orboa = mo_coeff_e[0][:,occidxa]
-    orbob = mo_coeff_e[1][:,occidxb]
-    orbva = mo_coeff_e[0][:,viridxa]
-    orbvb = mo_coeff_e[1][:,viridxb]
+    assert isinstance(mf.components['e'], scf.uhf.UHF)
 
-    nao = mf.mol.elec.nao_nr()
-    grids = mf.mf_elec.grids
-    ni = mf.mf_elec._numint
 
-    iajb_aa = numpy.zeros((nocca, nvira, nocca, nvira))
-    iajb_ab = numpy.zeros((nocca, nvira, noccb, nvirb))
-    iajb_bb = numpy.zeros((noccb, nvirb, noccb, nvirb))
+    for t in mf.components.keys():
+        mo_occ[t] = numpy.asarray(mo_occ[t])
+        if t.startswith('e'):
+            occidxa = numpy.where(mo_occ[t][0] > 0)[0]
+            occidxb = numpy.where(mo_occ[t][1] > 0)[0]
+            viridxa = numpy.where(mo_occ[t][0] == 0)[0]
+            viridxb = numpy.where(mo_occ[t][1] == 0)[0]
+            nocc[t] = [len(occidxa), len(occidxb)]
+            nvir[t] = [len(viridxa), len(viridxb)]
+            orbo[t] = [mo_coeff[t][0][:,occidxa], mo_coeff[t][1][:,occidxb]]
+            orbv[t] = [mo_coeff[t][0][:,viridxa], mo_coeff[t][1][:,viridxb]]
+        else:       
+            occidx = numpy.where(mo_occ[t] > 0)[0]
+            viridx = numpy.where(mo_occ[t] == 0)[0]
+            orbo[t] = mo_coeff[t][:,occidx]
+            orbv[t] = mo_coeff[t][:,viridx]
+            nocc[t] = len(occidx)
+            nvir[t] = len(viridx)
+
+    nao = mf.mol.components['e'].nao_nr()
+    grids = mf.components['e'].grids
+    ni = mf.components['e']._numint
+
+    iajb = {}
+    iajb_int = {}
+
+    for t in mf.components.keys():
+        if t.startswith('e'):
+            aa = numpy.zeros((nocc[t][0], nvir[t][0], nocc[t][0], nvir[t][0]))
+            ab = numpy.zeros((nocc[t][0], nvir[t][0], nocc[t][1], nvir[t][1]))
+            bb = numpy.zeros((nocc[t][1], nvir[t][1], nocc[t][1], nvir[t][1]))
+            iajb[t] = [aa, ab, bb]
+        else:
+            iajb[t] = numpy.zeros((nocc[t], nvir[t], nocc[t], nvir[t]))
+
+    for t_pair in mf.interactions.keys():
+        t1, t2 = t_pair
+        if t1.startswith('e'):
+            ep_a = numpy.zeros((nocc[t1][0], nvir[t1][0], nocc[t2], nvir[t2]))
+            ep_b = numpy.zeros((nocc[t1][1], nvir[t1][1], nocc[t2], nvir[t2]))
+            iajb_int[t_pair] = [ep_a, ep_b]
     
-    nuc_num = mf.mol.nuc_num
-    nocc_p = []
-    nvir_p = []
-    orbv_p = []
-    orbo_p = []
-    iajb_pe_a = []
-    iajb_pe_b = []
-    iajb_p = []
-    
-    for i in range(nuc_num):
-        mf_nuc = mf.mf_nuc[i]
-        mo_coeff_p = mf_nuc.mo_coeff
-        mo_occ_p = mf_nuc.mo_occ
-        occidx_p = numpy.where(mo_occ_p==1)[0]
-        viridx_p = numpy.where(mo_occ_p==0)[0]
-        nocc_p.append(len(occidx_p))
-        nvir_p.append(len(viridx_p))
-        orbv_p.append(mo_coeff_p[:,viridx_p])
-        orbo_p.append(mo_coeff_p[:,occidx_p])
-        iajb_pe_a.append(numpy.zeros((nocc_p[i], nvir_p[i], nocca, nvira)))
-        iajb_pe_b.append(numpy.zeros((nocc_p[i], nvir_p[i], noccb, nvirb)))
-        iajb_p.append(numpy.zeros((nocc_p[i], nvir_p[i], nocc_p[i], nvir_p[i])))
+    dm = mf.make_rdm1()
+    dm['e'] = dm['e'][0] + dm['e'][1]
+    for _ao, mask, weight, coords in ni.block_loop(mf.mol.components['e'],grids,nao):
 
-    for ao, mask, weight, coords in ni.block_loop(mf.mol.elec,grids,nao):
+        rho = {}
+        rho_ov = {}
+
+        for t in mf.components.keys():
+            if t.startswith('e'):
+                ao = _ao
+            else:
+                ao = eval_ao(mf.mol.components[t], coords)
+
+            _rho = eval_rho(mf.mol.components[t], ao, dm[t])
+            if t.startswith('n'):
+                _rho[_rho<0.] = 0.
+            rho[t] = _rho
+
+            if t.startswith('e'):
+                rho_o_a = lib.einsum('rp,pi->ri', ao, orbo[t][0])
+                rho_v_a = lib.einsum('rp,pi->ri', ao, orbv[t][0])
+                rho_o_b = lib.einsum('rp,pi->ri', ao, orbo[t][1])
+                rho_v_b = lib.einsum('rp,pi->ri', ao, orbv[t][1])
+                rho_ov[t] = [numpy.einsum('ri,ra->ria', rho_o_a, rho_v_a),\
+                            numpy.einsum('ri,ra->ria', rho_o_b, rho_v_b)]
+            else:
+                rho_o = lib.einsum('rp,pi->ri', ao, orbo[t])
+                rho_v = lib.einsum('rp,pi->ri', ao, orbv[t])
+                rho_ov[t] = numpy.einsum('ri,ra->ria', rho_o, rho_v)
+
+        for (t1, t2) in mf.interactions.keys():
+            if t1.startswith('e'):
+                f_ee, f_pp, f_ep = eval_fxc(mf.epc, rho[t1], rho[t2])
+                w_ov_ep = numpy.einsum('ria,r->ria', rho_ov[t2], f_ep*weight)
+                w_ov_p = numpy.einsum('ria,r->ria', rho_ov[t2], f_pp*weight)
+                w_ov_a = numpy.einsum('ria,r->ria', rho_ov[t1][0], f_ee*weight)
+                w_ov_b = numpy.einsum('ria,r->ria', rho_ov[t1][1], f_ee*weight)
+
+                iajb[t1][0] += lib.einsum('ria,rjb->iajb', rho_ov[t1][0], w_ov_a)
+                iajb[t1][1] += lib.einsum('ria,rjb->iajb', rho_ov[t1][0], w_ov_b)
+                iajb[t1][2] += lib.einsum('ria,rjb->iajb', rho_ov[t1][1], w_ov_b)
+                iajb[t2] += lib.einsum('ria,rjb->iajb', rho_ov[t2], w_ov_p)
+                iajb_int[(t1, t2)][0] += lib.einsum('ria,rjb->iajb', rho_ov[t1][0], w_ov_ep)
+                iajb_int[(t1, t2)][1] += lib.einsum('ria,rjb->iajb', rho_ov[t1][1], w_ov_ep)
         
-        ao_elec = ao
-        rho_e = eval_rho(mf.mol.elec, ao_elec, mf.dm_elec)
-
-        for i in range(nuc_num):
-            ao_nuc = eval_ao(mf.mol.nuc[i], coords)
-            rho_p = eval_rho(mf.mol.nuc[i], ao_nuc, mf.dm_nuc[i])
-            rho_p[rho_p<0.] = 0.
-            f_ee, f_pp, f_ep = eval_fxc(mf.epc, rho_e, rho_p)
-
-            rho_o_p = lib.einsum('rp,pi->ri', ao_nuc, orbo_p[i])
-            rho_v_p = lib.einsum('rp,pi->ri', ao_nuc, orbv_p[i])
-            rho_ov_p = numpy.einsum('ri,ra->ria', rho_o_p, rho_v_p)
-            rho_o_a = lib.einsum('rp,pi->ri', ao_elec, orboa)
-            rho_v_a = lib.einsum('rp,pi->ri', ao_elec, orbva)
-            rho_ov_a = numpy.einsum('ri,ra->ria', rho_o_a, rho_v_a)
-            rho_o_b = lib.einsum('rp,pi->ri', ao_elec, orbob)
-            rho_v_b = lib.einsum('rp,pi->ri', ao_elec, orbvb)
-            rho_ov_b = numpy.einsum('ri,ra->ria', rho_o_b, rho_v_b)
-
-            w_ov_pe_a = numpy.einsum('ria,r->ria', rho_ov_a, f_ep*weight)
-            iajb_pe_a[i] += lib.einsum('ria,rjb->iajb', rho_ov_p, w_ov_pe_a)
-
-            w_ov_pe_b = numpy.einsum('ria,r->ria', rho_ov_b, f_ep*weight)
-            iajb_pe_b[i] += lib.einsum('ria,rjb->iajb', rho_ov_p, w_ov_pe_b)
-            
-            w_ov_p = numpy.einsum('ria,r->ria', rho_ov_p, f_pp*weight)
-            iajb_p[i] += lib.einsum('ria,rjb->iajb', rho_ov_p, w_ov_p)
-
-            w_ov_a = numpy.einsum('ria,r->ria', rho_ov_a, f_ee*weight)
-            iajb_aa += lib.einsum('ria,rjb->iajb', rho_ov_a, w_ov_a)
-
-            w_ov_b = numpy.einsum('ria,r->ria', rho_ov_b, f_ee*weight)
-            iajb_bb += lib.einsum('ria,rjb->iajb', rho_ov_b, w_ov_b)
-            iajb_ab += lib.einsum('ria,rjb->iajb', rho_ov_a, w_ov_b)
-
     if reshape:
-        for i in range(nuc_num):
-            iajb_pe_a[i] = iajb_pe_a[i].reshape((nocc_p[i]*nvir_p[i], nocca*nvira))
-            iajb_pe_b[i] = iajb_pe_b[i].reshape((nocc_p[i]*nvir_p[i], noccb*nvirb))
-            iajb_p[i] = iajb_p[i].reshape((nocc_p[i]*nvir_p[i], nocc_p[i]*nvir_p[i]))
+        for t, comp in iajb.items():
+            if t.startswith('n'):
+                iajb[t] = iajb[t].reshape((nocc[t]*nvir[t], nocc[t]*nvir[t]))
+        for t_pair, comp in iajb_int.items():
+            t1, t2 = t_pair
+            assert t1.startswith('e')
+            for i in range(len(comp)):
+                iajb_int[t_pair][i] = comp[i].reshape((nocc[t1][i]*nvir[t1][i], nocc[t2]*nvir[t2]))
 
-    return iajb_aa, iajb_bb, iajb_ab, iajb_pe_a, iajb_pe_b, iajb_p
+    return iajb, iajb_int
 
-def get_tdrhf_add_epc(xs_e, ys_e, xs_ps, ys_ps, iajb_e, iajb_p, iajb_ep, iajb_pe):
-    xys_e = xs_e + ys_e
-    abcc_epc = numpy.einsum('iajb,njb->nia',iajb_e,xys_e)
-    ccab_epc = []
-    nuc_num = len(iajb_ep)
-    for i in range(nuc_num):
-        xys_p = xs_ps[i] + ys_ps[i]
-        ccab_epc.append(numpy.einsum('iajb,njb->nia',iajb_p[i],xys_p))
-        ccab_epc[i] += numpy.sqrt(2)*numpy.einsum('iajb,njb->nia',iajb_pe[i],xys_e)
-        abcc_epc += numpy.sqrt(2)*numpy.einsum('iajb,njb->nia',iajb_ep[i],xys_p)
+def get_tdrhf_add_epc(xs, ys, iajb, iajb_int):
+    epc = {}
+    xys = {}
+    for t in iajb.keys():
+        xys[t] = xs[t] + ys[t]
+        epc[t] = numpy.einsum('iajb,njb->nia',iajb[t],xys[t])
 
-    return abcc_epc,ccab_epc
+    for (t1,t2), comp in iajb_int.items():
+        if t1.startswith('e'):
+            epc[t1] += numpy.einsum('iajb,njb->nia',comp,xys[t2]) * numpy.sqrt(2)
+            _comp = comp.transpose(2,3,0,1)
+            epc[t2] += numpy.einsum('iajb,njb->nia',_comp,xys[t1]) * numpy.sqrt(2)
 
-def get_tduhf_add_epc(xa, xb, ya, yb, x_ps, y_ps,
-                      iajb_aa, iajb_bb, iajb_ab, iajb_ba, 
-                      iajb_ep_a, iajb_pe_a, iajb_ep_b, iajb_pe_b, iajb_p):
-    xya = xa + ya
-    xyb = xb + yb
+    return epc
 
-    abcc_epc_a = numpy.einsum('iajb,njb->nia',iajb_aa, xya)
-    abcc_epc_a += numpy.einsum('iajb,njb->nia',iajb_ab, xyb)
+def get_tduhf_add_epc(xs, ys, iajb, iajb_int):
+    epc = {}
+    xys = {}
+    for t in iajb.keys():
+        if t.startswith('e'):
+            xys[t] = [xs[t][0] + ys[t][0], xs[t][1] + ys[t][1]]
+            epca = numpy.einsum('iajb,njb->nia',iajb[t][0], xys[t][0])
+            epca += numpy.einsum('iajb,njb->nia',iajb[t][1], xys[t][1])
+            _iajb = iajb[t][1].transpose(2,3,0,1)
+            epcb = numpy.einsum('iajb,njb->nia', _iajb, xys[t][0])
+            epcb += numpy.einsum('iajb,njb->nia', iajb[t][1], xys[t][1])
+            epc[t] = [epca, epcb]
+        else:
+            xys[t] = xs[t] + ys[t]
+            epc[t] = numpy.einsum('iajb,njb->nia', iajb[t], xys[t])
 
-    abcc_epc_b = numpy.einsum('iajb,njb->nia', iajb_ba, xya)
-    abcc_epc_b += numpy.einsum('iajb,njb->nia', iajb_bb, xyb)
+    for (t1, t2), comp in iajb_int.items():
+        if t1.startswith('e'):
+            epc[t1][0] += numpy.einsum('iajb,njb->nia', comp[0], xys[t2])
+            epc[t1][1] += numpy.einsum('iajb,njb->nia', comp[1], xys[t2])
+            _comp = comp[0].transpose(2,3,0,1)
+            epc[t2] += numpy.einsum('iajb,njb->nia', _comp, xys[t1][0])
+            _comp = comp[1].transpose(2,3,0,1)
+            epc[t2] += numpy.einsum('iajb,njb->nia', _comp, xys[t1][1])
 
-    ccab_epc = []
-    nuc_num = len(iajb_ep_a)
-    for i in range(nuc_num):
-        xys_p = x_ps[i] + y_ps[i]
+    return epc
 
-        ccab_epc.append(numpy.einsum('iajb,njb->nia', iajb_pe_a[i], xya))
-        ccab_epc[i] += numpy.einsum('iajb,njb->nia', iajb_pe_b[i], xyb)
-        ccab_epc[i] += numpy.einsum('iajb,njb->nia', iajb_p[i], xys_p)
+def gen_tdrhf_operation(mf):
+    mo_coeff = mf.mo_coeff
+    mo_occ = mf.mo_occ
+    mo_energy = mf.mo_energy
+    orbv = {}
+    orbo = {}
+    nocc = {}
+    nvir = {}
+    nov = {}
+    foo = {}
+    fvv = {}
+    hdiag = []
 
-        abcc_epc_a += numpy.einsum('iajb,njb->nia', iajb_ep_a[i], xys_p)
-        abcc_epc_b += numpy.einsum('iajb,njb->nia', iajb_ep_b[i], xys_p)
-
-    return abcc_epc_a, abcc_epc_b, ccab_epc
-
-def get_tdrhf_operation(mf, singlet=True):
-
-    mf_elec = mf.mf_elec
-    mo_coeff_e = mf_elec.mo_coeff
-    assert (mo_coeff_e.dtype == numpy.double)
-    mo_energy_e = mf_elec.mo_energy
-    mo_occ_e = mf_elec.mo_occ
-    occidx_e = numpy.where(mo_occ_e==2)[0]
-    viridx_e = numpy.where(mo_occ_e==0)[0]
-    nocc_e = len(occidx_e)
-    nvir_e = len(viridx_e)
-    orbv_e = mo_coeff_e[:,viridx_e]
-    orbo_e = mo_coeff_e[:,occidx_e]
-    foo_e = numpy.diag(mo_energy_e[occidx_e])
-    fvv_e = numpy.diag(mo_energy_e[viridx_e])
-    hdiag_e = fvv_e.diagonal() - foo_e.diagonal()[:,None]
-    hdiag = numpy.hstack((hdiag_e.ravel(), -hdiag_e.ravel()))
-
-    nuc_num = mf.mol.nuc_num
-    nocc_p = []
-    nvir_p = []
-    orbv_p = []
-    orbo_p = []
-    foo_p = []
-    fvv_p = []
-    vresp_e_dm_n = []
-    vresp_n_dm_e = []
-    vresp_n_n = []
-    vresp_n_dm_n = []
-
-    for i in range(nuc_num):
-        mf_nuc = mf.mf_nuc[i]
-        mo_coeff_p = mf_nuc.mo_coeff
-        assert (mo_coeff_p.dtype == numpy.double)
-        mo_energy_p = mf_nuc.mo_energy
-        mo_occ_p = mf_nuc.mo_occ
-        occidx_p = numpy.where(mo_occ_p==1)[0]
-        viridx_p = numpy.where(mo_occ_p==0)[0]
-        nocc_p.append(len(occidx_p))
-        nvir_p.append(len(viridx_p))
-        orbv_p.append(mo_coeff_p[:,viridx_p])
-        orbo_p.append(mo_coeff_p[:,occidx_p])
-        foo_p.append(numpy.diag(mo_energy_p[occidx_p]))
-        fvv_p.append(numpy.diag(mo_energy_p[viridx_p]))
-
-        vresp_e_dm_n.append(elec_dm_n_response(mf,i))
-        vresp_n_dm_e.append(nuc_dm_e_response(mf,i))
-        vresp_n_n.append([None]*nuc_num)
-        vresp_n_dm_n.append(nuc_dm_n_response(mf_nuc))
-        for j in range(nuc_num):
-            vresp_n_n[i][j] = dm_n_dm_n_response(mf,i,j)
-        hdiag_p = fvv_p[-1].diagonal() - foo_p[-1].diagonal()[:,None]
-        hdiag = numpy.hstack((hdiag, hdiag_p.ravel(), -hdiag_p.ravel()))
-    
-    vresp_e = mf_elec.gen_response(singlet=singlet, hermi=0)
-
+    has_epc = False
     if isinstance(mf, neo.KS):
         if mf.epc is not None:
-            iajb_e, iajb_pe, iajb_p = get_epc_iajb_rhf(mf,reshape=False)
-            iajb_ep = []
-            for i in range(nuc_num):
-                iajb_ep.append(iajb_pe[i].transpose(2,3,0,1))
+            has_epc = True
 
-    def vind_elec_elec(xs_e, ys_e, dms_elec):
-    
-        v1ao = vresp_e(dms_elec)
-        v1ov = lib.einsum('xpq,po,qv->xov', v1ao, orbo_e.conj(), orbv_e)
-        v1vo = lib.einsum('xpq,qo,pv->xov', v1ao, orbo_e, orbv_e.conj())
-        v1ov += lib.einsum('xqs,sp->xqp', xs_e, fvv_e)  # AX
-        v1ov -= lib.einsum('xpr,sp->xsr', xs_e, foo_e)  # AX
-        v1vo += lib.einsum('xqs,sp->xqp', ys_e, fvv_e)  # AY
-        v1vo -= lib.einsum('xpr,sp->xsr', ys_e, foo_e)  # AY
+    for t in mf.components.keys():
+        occidx = numpy.where(mo_occ[t] > 0)[0]
+        viridx = numpy.where(mo_occ[t] == 0)[0]
+        orbo[t] = mo_coeff[t][:,occidx]
+        orbv[t] = mo_coeff[t][:,viridx]
+        nocc[t] = len(occidx)
+        nvir[t] = len(viridx)
+        nov[t] = nocc[t]*nvir[t]
+        foo[t] = numpy.diag(mo_energy[t][occidx])
+        fvv[t] = numpy.diag(mo_energy[t][viridx])
+        _hdiag = fvv[t].diagonal() - foo[t].diagonal()[:,None]
+        hdiag.append(numpy.hstack((_hdiag.ravel(),-_hdiag.ravel())))
 
-        return v1ov, v1vo
-    
-    def vind_elec_nuc(i, dms_nuc):
+    vresp = mf.gen_response(hermi=0, no_epc=True)
+    if has_epc:
+        iajb, iajb_int = get_epc_iajb_rhf(mf, reshape=False)
 
-        v1ao_elec_dmn = vresp_e_dm_n[i](dms_nuc)
-        v1ov_ep = numpy.sqrt(2)*lib.einsum('xpq,po,qv->xov', v1ao_elec_dmn, orbo_e.conj(), orbv_e)
-
-        return v1ov_ep
-    
-    def vind_nuc_elec(i, dms_elec):
-
-        v1ao_nuc_dme = vresp_n_dm_e[i](dms_elec)
-        v1ov_pe = 0.5*numpy.sqrt(2)*lib.einsum('xpq,po,qv->xov', v1ao_nuc_dme, orbo_p[i].conj(), orbv_p[i])
-
-        return v1ov_pe
-    
-    def vind_nuc(xs_p, ys_p, i, dm_nuc):
-
-        v1ao_nuc = vresp_n_dm_n[i](dm_nuc)
-        v1ov_nuc = lib.einsum('xpq,po,qv->xov', v1ao_nuc, orbo_p[i].conj(), orbv_p[i])
-        v1vo_nuc = lib.einsum('xpq,qo,pv->xov', v1ao_nuc, orbo_p[i], orbv_p[i].conj())
-
-        v1ov_nuc += lib.einsum('xqs,sp->xqp', xs_p, fvv_p[i])
-        v1ov_nuc -= lib.einsum('xpr,sp->xsr', xs_p, foo_p[i])
-        v1vo_nuc += lib.einsum('xqs,sp->xqp', ys_p, fvv_p[i])
-        v1vo_nuc -= lib.einsum('xpr,sp->xsr', ys_p, foo_p[i])
-
-        return v1ov_nuc, v1vo_nuc
-    
-    def vind_nuc1_nuc2(i,j,dms_nuc2):
-        v1ao_dm1_dm2 = vresp_n_n[i][j](dms_nuc2)
-        v1ov_pp = lib.einsum('xpq,po,qv->xov', v1ao_dm1_dm2, orbo_p[i].conj(), orbv_p[i])
-        return v1ov_pp
-    
     def vind(xys):
         xys = numpy.asarray(xys)
-        nz = xys.shape[0]
-        xys_e = xys[:,:2*(nocc_e*nvir_e)]
-        xys_ps = xys[:,2*(nocc_e*nvir_e):]
-        
-        xys_e = xys_e.reshape(-1,2,nocc_e,nvir_e)
-        xs_e, ys_e = xys_e.transpose(1,0,2,3)
-        dms_elec  = lib.einsum('xov,qv,po->xpq', xs_e*2, orbv_e.conj(), orbo_e)
-        dms_elec += lib.einsum('xov,pv,qo->xpq', ys_e*2, orbv_e, orbo_e.conj())
-        
-        dms_nuc = []
-        xs_ps = []
-        ys_ps = []
-        for i in range(nuc_num):
-            nocci = nocc_p[i]
-            nviri = nvir_p[i]
-            xys_p = xys_ps[:,:2*(nocci*nviri)]
-            xys_ps = xys_ps[:,2*(nocci*nviri):]
-            xys_p = xys_p.reshape(-1,2,nocci,nviri)
-            xs_pi, ys_pi = xys_p.transpose(1,0,2,3)
-            dms_nuci = lib.einsum('xov,qv,po->xpq', xs_pi, orbv_p[i].conj(), orbo_p[i])
-            dms_nuci += lib.einsum('xov,qv,po->xpq', ys_pi, orbv_p[i].conj(), orbo_p[i])
-            dms_nuc.append(dms_nuci)
-            xs_ps.append(xs_pi)
-            ys_ps.append(ys_pi)
+        nz, tot_size = xys.shape
+        xs = {}
+        ys = {}
+        dms = {}
+        offset = 0
+        for t in mf.components.keys():
+            xy = xys[:,offset:offset+2*nov[t]]
+            offset += 2*nov[t]
+            xy = xy.reshape(-1,2,nocc[t],nvir[t])
+            xs[t], ys[t] = xy.transpose(1,0,2,3)
+            dms[t] = lib.einsum('xov,pv,qo->xpq', xs[t], orbv[t], orbo[t].conj())
+            dms[t] += lib.einsum('xov,qv,po->xpq', ys[t], orbv[t].conj(), orbo[t])
 
-        abcc, bacc = vind_elec_elec(xs_e, ys_e, dms_elec)    # AeXe+BeYe; BeXe+AeYe
-        if isinstance(mf, neo.KS):
-            if mf.epc is not None:
-                abcc_epc,ccab_epc = get_tdrhf_add_epc(xs_e, ys_e, xs_ps, ys_ps, iajb_e, iajb_p, iajb_ep, iajb_pe)
-                abcc += abcc_epc
-                bacc += abcc_epc
-            
-        for i in range(nuc_num):
-            v1ov_nuci, v1vo_nuci = vind_nuc(xs_ps[i], ys_ps[i], i, dms_nuc[i])
-            v1ov_ep = vind_elec_nuc(i,dms_nuc[i])
-            abcc += v1ov_ep     # AeXe+BeYe+CXp+CYp
-            bacc += v1ov_ep     # BeXe+AeYe+CXp+CYp
-            
-            v1ov_pe = vind_nuc_elec(i,dms_elec)
-            ccabi = v1ov_pe + v1ov_nuci     # CXe+CYe+ApXp+BpYp
-            ccbai = v1ov_pe + v1vo_nuci     # CXe+CYe+BpXp+ApYp
-            if isinstance(mf, neo.KS):
-                if mf.epc is not None:
-                    ccabi += ccab_epc[i]
-                    ccbai += ccab_epc[i]
-            for j in range(nuc_num):
-                if j!=i:
-                    v1ov_pp = vind_nuc1_nuc2(i,j,dms_nuc[j])
-                    ccabi += v1ov_pp
-                    ccbai += v1ov_pp
-            
-            ccabi = ccabi.reshape(nz,-1)
-            ccbai = ccbai.reshape(nz,-1)        
-            if i==0:
-                hx_nuc = numpy.hstack((ccabi, -ccbai))
+            if t.startswith('e'):
+                dms[t] *= numpy.sqrt(2)
+
+        assert (offset == tot_size)
+
+        v1ao = vresp(dms)
+        v1ao['e'] = v1ao['e'] * numpy.sqrt(2)
+        if has_epc:
+            epc = get_tdrhf_add_epc(xs, ys, iajb, iajb_int)
+
+        v1 = []
+        for t in mf.components.keys():
+            v1_top = lib.einsum('xpq,qo,pv->xov', v1ao[t], orbo[t], orbv[t].conj())
+            v1_top += lib.einsum('xqs,sp->xqp', xs[t], fvv[t])
+            v1_top -= lib.einsum('xpr,sp->xsr', xs[t], foo[t])
+
+            v1_bot = lib.einsum('xpq,po,qv->xov', v1ao[t], orbo[t].conj(), orbv[t])
+            v1_bot += lib.einsum('xqs,sp->xqp', ys[t], fvv[t])
+            v1_bot -= lib.einsum('xpr,sp->xsr', ys[t], foo[t])
+            if has_epc:
+                v1_top += epc[t]
+                v1_bot += epc[t]
+
+            v1.append(numpy.hstack((v1_top.reshape(nz,-1), -v1_bot.reshape(nz,-1))))
+
+        hx = numpy.hstack(v1)
+
+        return hx
+    
+    return vind, numpy.hstack(hdiag)
+
+def gen_tduhf_operation(mf):
+    mo_coeff = mf.mo_coeff
+    mo_occ = mf.mo_occ
+    mo_energy = mf.mo_energy
+    orbv = {}
+    orbo = {}
+    nocc = {}
+    nvir = {}
+    nov = {}
+    foo = {}
+    fvv = {}
+    hdiag = []
+
+    assert isinstance(mf.components['e'], scf.uhf.UHF)
+
+    has_epc = False
+    if isinstance(mf, neo.KS):
+        if mf.epc is not None:
+            has_epc = True
+
+    for t in mf.components.keys():
+        mo_occ[t] = numpy.asarray(mo_occ[t])
+        if t.startswith('e'):
+            occidxa = numpy.where(mo_occ[t][0] > 0)[0]
+            occidxb = numpy.where(mo_occ[t][1] > 0)[0]
+            viridxa = numpy.where(mo_occ[t][0] == 0)[0]
+            viridxb = numpy.where(mo_occ[t][1] == 0)[0]
+            nocc[t] = [len(occidxa), len(occidxb)]
+            nvir[t] = [len(viridxa), len(viridxb)]
+            nov[t] = [nocc[t][0]*nvir[t][0], nocc[t][1]*nvir[t][1]]
+            orbo[t] = [mo_coeff[t][0][:,occidxa], mo_coeff[t][1][:,occidxb]]
+            orbv[t] = [mo_coeff[t][0][:,viridxa], mo_coeff[t][1][:,viridxb]]
+            foo[t] = [numpy.diag(mo_energy[t][0][occidxa]), numpy.diag(mo_energy[t][1][occidxb])]
+            fvv[t] = [numpy.diag(mo_energy[t][0][viridxa]), numpy.diag(mo_energy[t][1][viridxb])]
+            for i in range(2):
+                _hdiag = fvv[t][i].diagonal() - foo[t][i].diagonal()[:,None]
+                hdiag.append(numpy.hstack((_hdiag.ravel(),-_hdiag.ravel())))
+        else:       
+            occidx = numpy.where(mo_occ[t] > 0)[0]
+            viridx = numpy.where(mo_occ[t] == 0)[0]
+            orbo[t] = mo_coeff[t][:,occidx]
+            orbv[t] = mo_coeff[t][:,viridx]
+            nocc[t] = len(occidx)
+            nvir[t] = len(viridx)
+            nov[t] = nocc[t]*nvir[t]
+            foo[t] = numpy.diag(mo_energy[t][occidx])
+            fvv[t] = numpy.diag(mo_energy[t][viridx])
+            _hdiag = fvv[t].diagonal() - foo[t].diagonal()[:,None]
+            hdiag.append(numpy.hstack((_hdiag.ravel(),-_hdiag.ravel())))
+
+    vresp = mf.gen_response(hermi=0, no_epc=True)
+    if has_epc:
+        iajb, iajb_int = get_epc_iajb_uhf(mf, reshape=False)
+
+    def vind(xys):
+        xys = numpy.asarray(xys)
+        nz, tot_size = xys.shape
+        xs = {}
+        ys = {}
+        dms = {}
+        offset = 0
+        for t in mf.components.keys():
+            if t.startswith('e'):
+                xy = xys[:,offset:offset+2*(nov[t][0]+nov[t][1])]
+                x, y = xy.reshape(nz,2,-1).transpose(1,0,2)
+                xa = x[:,:nov[t][0]].reshape(nz,nocc[t][0],nvir[t][0])
+                xb = x[:,nov[t][0]:].reshape(nz,nocc[t][1],nvir[t][1])
+                ya = y[:,:nov[t][0]].reshape(nz,nocc[t][0],nvir[t][0])
+                yb = y[:,nov[t][0]:].reshape(nz,nocc[t][1],nvir[t][1])
+                dmsa  = lib.einsum('xov,pv,qo->xpq', xa, orbv[t][0].conj(), orbo[t][0])
+                dmsb  = lib.einsum('xov,pv,qo->xpq', xb, orbv[t][1].conj(), orbo[t][1])
+                dmsa += lib.einsum('xov,qv,po->xpq', ya, orbv[t][0], orbo[t][0].conj())
+                dmsb += lib.einsum('xov,qv,po->xpq', yb, orbv[t][1], orbo[t][1].conj())
+                dms[t] = numpy.asarray((dmsa, dmsb))
+                xs[t] = [xa, xb]
+                ys[t] = [ya, yb]
+                offset += 2*(nov[t][0]+nov[t][1])
+
             else:
-                hx_nuc = numpy.hstack((hx_nuc, ccabi, -ccbai))
+                xy = xys[:,offset:offset+2*nov[t]]
+                offset += 2*nov[t]
+                xy = xy.reshape(-1,2,nocc[t],nvir[t])
+                xs[t], ys[t] = xy.transpose(1,0,2,3)
+                dms[t] = lib.einsum('xov,pv,qo->xpq', xs[t], orbv[t], orbo[t].conj())
+                dms[t] += lib.einsum('xov,qv,po->xpq', ys[t], orbv[t].conj(), orbo[t])
+
+        assert (offset == tot_size)
+        v1ao = vresp(dms)
+        if has_epc:
+            epc = get_tduhf_add_epc(xs, ys, iajb, iajb_int)
+
+        v1 = []
+        for t in mf.components.keys():
+            if t.startswith('e'):
+                v1a_top = lib.einsum('xpq,qo,pv->xov', v1ao[t][0], orbo[t][0], orbv[t][0].conj())
+                v1a_top += lib.einsum('xqs,sp->xqp', xs[t][0], fvv[t][0])
+                v1a_top -= lib.einsum('xpr,sp->xsr', xs[t][0], foo[t][0])
+
+                v1b_top = lib.einsum('xpq,qo,pv->xov', v1ao[t][1], orbo[t][1], orbv[t][1].conj())
+                v1b_top += lib.einsum('xqs,sp->xqp', xs[t][1], fvv[t][1])
+                v1b_top -= lib.einsum('xpr,sp->xsr', xs[t][1], foo[t][1])
+
+                v1a_bot = lib.einsum('xpq,po,qv->xov', v1ao[t][0], orbo[t][0].conj(), orbv[t][0])
+                v1a_bot += lib.einsum('xqs,sp->xqp', ys[t][0], fvv[t][0])
+                v1a_bot -= lib.einsum('xpr,sp->xsr', ys[t][0], foo[t][0])
+
+                v1b_bot = lib.einsum('xpq,po,qv->xov', v1ao[t][1], orbo[t][1].conj(), orbv[t][1])
+                v1b_bot += lib.einsum('xqs,sp->xqp', ys[t][1], fvv[t][1])
+                v1b_bot -= lib.einsum('xpr,sp->xsr', ys[t][1], foo[t][1])
+
+                if has_epc:
+                    v1a_top += epc[t][0]
+                    v1a_bot += epc[t][0]
+                    v1b_top += epc[t][1]
+                    v1b_bot += epc[t][1]
+
+                v1.append(numpy.hstack((v1a_top.reshape(nz,-1), v1b_top.reshape(nz,-1),\
+                                        -v1a_bot.reshape(nz,-1), -v1b_bot.reshape(nz,-1))))
                 
-        abcc = abcc.reshape(nz,-1)
-        bacc = bacc.reshape(nz,-1)
-        hx = numpy.hstack((abcc, -bacc, hx_nuc))
-        return hx
-    
-    return vind, hdiag
-
-def get_tduhf_operation(mf):
-
-    mf_elec = mf.mf_elec
-
-    mo_coeff_e = mf_elec.mo_coeff
-    mo_energy_e = mf_elec.mo_energy
-    mo_occ_e = mf_elec.mo_occ
-    occidxa = numpy.where(mo_occ_e[0]>0)[0]
-    occidxb = numpy.where(mo_occ_e[1]>0)[0]
-    viridxa = numpy.where(mo_occ_e[0]==0)[0]
-    viridxb = numpy.where(mo_occ_e[1]==0)[0]
-    nocca = len(occidxa)
-    noccb = len(occidxb)
-    nvira = len(viridxa)
-    nvirb = len(viridxb)
-    orboa = mo_coeff_e[0][:,occidxa]
-    orbob = mo_coeff_e[1][:,occidxb]
-    orbva = mo_coeff_e[0][:,viridxa]
-    orbvb = mo_coeff_e[1][:,viridxb]
-    e_ia_a = mo_energy_e[0][viridxa] - mo_energy_e[0][occidxa,None]
-    e_ia_b = mo_energy_e[1][viridxb] - mo_energy_e[1][occidxb,None]
-    e_ia = hdiag_e = numpy.hstack((e_ia_a.ravel(), e_ia_b.ravel()))
-    hdiag = numpy.hstack((hdiag_e, -hdiag_e))
-    vresp_e = mf_elec.gen_response(hermi=0)
-    
-    nuc_num = mf.mol.nuc_num
-    nocc_p = []
-    nvir_p = []
-    orbv_p = []
-    orbo_p = []
-    foo_p = []
-    fvv_p = []
-    vresp_e_dm_n = []
-    vresp_n_dm_e = []
-    vresp_n_n = []
-    for i in range(nuc_num):
-        mf_nuc = mf.mf_nuc[i]
-        mo_coeff_p = mf_nuc.mo_coeff
-        mo_energy_p = mf_nuc.mo_energy
-        mo_occ_p = mf_nuc.mo_occ
-        occidx_p = numpy.where(mo_occ_p==1)[0]
-        viridx_p = numpy.where(mo_occ_p==0)[0]
-        nocc_p.append(len(occidx_p))
-        nvir_p.append(len(viridx_p))
-        orbv_p.append(mo_coeff_p[:,viridx_p])
-        orbo_p.append(mo_coeff_p[:,occidx_p])
-        foo_p.append(numpy.diag(mo_energy_p[occidx_p]))
-        fvv_p.append(numpy.diag(mo_energy_p[viridx_p]))
-        vresp_e_dm_n.append(elec_dm_n_response(mf,i))
-        vresp_n_dm_e.append(nuc_dm_e_response(mf,i))
-        vresp_n_n.append([None]*nuc_num)
-        for j in range(nuc_num):
-            vresp_n_n[i][j] = dm_n_dm_n_response(mf,i,j)
-        hdiag_p = fvv_p[-1].diagonal() - foo_p[-1].diagonal()[:,None]
-        hdiag = numpy.hstack((hdiag, hdiag_p.ravel(), -hdiag_p.ravel()))
-
-    if isinstance(mf, neo.KS):
-        if mf.epc is not None:
-            iajb_aa, iajb_bb, iajb_ab, iajb_pe_a, iajb_pe_b, iajb_p = get_epc_iajb_uhf(mf, reshape=False)
-            iajb_ba = iajb_ab.transpose(2,3,0,1)
-            iajb_ep_a = []
-            iajb_ep_b = []
-            for i in range(len(iajb_pe_a)):
-                iajb_ep_a.append(iajb_pe_a[i].transpose(2,3,0,1))
-                iajb_ep_b.append(iajb_pe_b[i].transpose(2,3,0,1))
-
-    def vind_elec_elec(dmsa, dmsb):
-
-        v1ao = vresp_e(numpy.asarray((dmsa,dmsb)))
-
-        v1aov = lib.einsum('xpq,po,qv->xov', v1ao[0], orboa.conj(), orbva)
-        v1avo = lib.einsum('xpq,qo,pv->xov', v1ao[0], orboa, orbva.conj())
-        v1bov = lib.einsum('xpq,po,qv->xov', v1ao[1], orbob.conj(), orbvb)
-        v1bvo = lib.einsum('xpq,qo,pv->xov', v1ao[1], orbob, orbvb.conj())
-
-        return v1aov, v1bov, v1avo, v1bvo
-    
-    def vind_elec_nuc(i, dms_nuc):
-        v1ao_elec_dmn = vresp_e_dm_n[i](dms_nuc)
-        v1aov_ep = lib.einsum('xpq,po,qv->xov', v1ao_elec_dmn, orboa.conj(), orbva)
-        v1bov_ep = lib.einsum('xpq,po,qv->xov', v1ao_elec_dmn, orbob.conj(), orbvb)
-
-        return v1aov_ep, v1bov_ep
-    
-    def vind_nuc_elec(i, dms_elec):
-
-        v1ao_nuc_dme = vresp_n_dm_e[i](dms_elec)
-        v1ov_pe = lib.einsum('xpq,po,qv->xov', v1ao_nuc_dme, orbo_p[i].conj(), orbv_p[i])
-
-        return v1ov_pe
-    
-    def vind_nuc(xs_p, ys_p, i):
-
-        v1ov_nuc = lib.einsum('xqs,sp->xqp', xs_p, fvv_p[i])
-        v1ov_nuc -= lib.einsum('xpr,sp->xsr', xs_p, foo_p[i])
-
-        v1vo_nuc = lib.einsum('xqs,sp->xqp', ys_p, fvv_p[i])
-        v1vo_nuc -= lib.einsum('xpr,sp->xsr', ys_p, foo_p[i])
-
-        return v1ov_nuc, v1vo_nuc
-    
-    def vind_nuc1_nuc2(i,j,dms_nuc2):
-        v1ao_dm1_dm2 = vresp_n_n[i][j](dms_nuc2)
-        v1ov_pp = lib.einsum('xpq,po,qv->xov', v1ao_dm1_dm2, orbo_p[i].conj(), orbv_p[i])
-        return v1ov_pp
-    
-    def vind(xys):
-        xys = numpy.asarray(xys)
-        nz = xys.shape[0]
-        xys_e = xys[:,:2*(nocca*nvira+noccb*nvirb)]
-        xys_ps = xys[:,2*(nocca*nvira+noccb*nvirb):]
-
-        xs_e, ys_e = xys_e.reshape(nz,2,-1).transpose(1,0,2)
-        xa = xs_e[:,:nocca*nvira].reshape(nz,nocca,nvira)
-        xb = xs_e[:,nocca*nvira:].reshape(nz,noccb,nvirb)
-        ya = ys_e[:,:nocca*nvira].reshape(nz,nocca,nvira)
-        yb = ys_e[:,nocca*nvira:].reshape(nz,noccb,nvirb)
-        # dms = AX + BY
-        dmsa  = lib.einsum('xov,qv,po->xpq', xa, orbva.conj(), orboa)
-        dmsb  = lib.einsum('xov,qv,po->xpq', xb, orbvb.conj(), orbob)
-        dmsa += lib.einsum('xov,pv,qo->xpq', ya, orbva, orboa.conj())
-        dmsb += lib.einsum('xov,pv,qo->xpq', yb, orbvb, orbob.conj())
-        dms_elec = dmsa + dmsb
-        v1aov, v1bov, v1avo, v1bvo = vind_elec_elec(dmsa, dmsb)
-
-        dms_nuc = []
-        v1ov_nuc = []
-        v1vo_nuc = []
-        xs_ps = []
-        ys_ps = []
-        for i in range(nuc_num):
-            nocci = nocc_p[i]
-            nviri = nvir_p[i]
-            xys_p = xys_ps[:,:2*(nocci*nviri)]
-            xys_ps = xys_ps[:,2*(nocci*nviri):]
-            xys_p = xys_p.reshape(-1,2,nocci,nviri)
-            xs_pi, ys_pi = xys_p.transpose(1,0,2,3)
-            dms_nuci = lib.einsum('xov,qv,po->xpq', xs_pi, orbv_p[i].conj(), orbo_p[i])
-            dms_nuci += lib.einsum('xov,qv,po->xpq', ys_pi, orbv_p[i].conj(), orbo_p[i])
-            v1ov_nuci, v1vo_nuci = vind_nuc(xs_pi, ys_pi, i)
-            
-            dms_nuc.append(dms_nuci)
-            v1ov_nuc.append(v1ov_nuci)
-            v1vo_nuc.append(v1vo_nuci)
-            xs_ps.append(xs_pi)
-            ys_ps.append(ys_pi)
-
-        if isinstance(mf, neo.KS):
-            if mf.epc is not None:
-                abcc_epc_a, abcc_epc_b, ccab_epc = get_tduhf_add_epc(xa, xb, ya, yb, xs_ps, ys_ps,
-                                                                    iajb_aa, iajb_bb, iajb_ab, iajb_ba,
-                                                                    iajb_ep_a, iajb_pe_a, iajb_ep_b, iajb_pe_b, iajb_p)
-                v1aov += abcc_epc_a
-                v1avo += abcc_epc_a
-                v1bov += abcc_epc_b
-                v1bvo += abcc_epc_b
-
-        for i in range(nuc_num):
-            v1aov_ep, v1bov_ep = vind_elec_nuc(i, dms_nuc[i])
-            v1aov += v1aov_ep
-            v1bov += v1bov_ep
-            v1avo += v1aov_ep
-            v1bvo += v1bov_ep
-
-            v1ov_pe = vind_nuc_elec(i,dms_elec)
-            ccabi = v1ov_pe + v1ov_nuc[i]
-            ccbai = v1ov_pe + v1vo_nuc[i]
-            if isinstance(mf, neo.KS):
-                if mf.epc is not None:
-                    ccabi += ccab_epc[i]
-                    ccbai += ccab_epc[i]
-            for j in range(nuc_num):
-                if j!=i:
-                    v1ov_pp = vind_nuc1_nuc2(i,j,dms_nuc[j])
-                    ccabi += v1ov_pp
-                    ccbai += v1ov_pp
-            
-            ccabi = ccabi.reshape(nz,-1)
-            ccbai = ccbai.reshape(nz,-1)        
-            if i==0:
-                hx_nuc = numpy.hstack((ccabi, -ccbai))
             else:
-                hx_nuc = numpy.hstack((hx_nuc, ccabi, -ccbai))
+                v1_top = lib.einsum('xpq,qo,pv->xov', v1ao[t], orbo[t].conj(), orbv[t])
+                v1_top += lib.einsum('xqs,sp->xqp', xs[t], fvv[t])
+                v1_top -= lib.einsum('xpr,sp->xsr', xs[t], foo[t])
 
-        abcc = xs_e * e_ia
-        bacc = ys_e * e_ia
-        abcc[:,:nocca*nvira] += v1aov.reshape(nz,-1)
-        abcc[:,nocca*nvira:] += v1bov.reshape(nz,-1)        
-        bacc[:,:nocca*nvira] += v1avo.reshape(nz,-1)
-        bacc[:,nocca*nvira:] += v1bvo.reshape(nz,-1)
+                v1_bot = lib.einsum('xpq,po,qv->xov', v1ao[t], orbo[t], orbv[t].conj())
+                v1_bot += lib.einsum('xqs,sp->xqp', ys[t], fvv[t])
+                v1_bot -= lib.einsum('xpr,sp->xsr', ys[t], foo[t])
 
-        hx = numpy.hstack((abcc, -bacc, hx_nuc))
+                if has_epc:
+                    v1_top += epc[t]
+                    v1_bot += epc[t]
+
+                v1.append(numpy.hstack((v1_top.reshape(nz,-1), -v1_bot.reshape(nz,-1))))
+            
+        hx = numpy.hstack(v1)
         return hx
-    return vind, hdiag
+    
+    return vind, numpy.hstack(hdiag)
 
 def pickeig(w, v, nroots, envs):
     realidx = numpy.where((abs(w.imag) < 1e-4) &
@@ -764,18 +563,17 @@ class TDDFT(lib.StreamObject):
     >>> from pyscf import neo
     >>> from pyscf.neo import tddft
     >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g', 
-                    quantum_nuc = ['H'], nuc_basis = 'pb4p', cart=True)
+                    quantum_nuc = ['H'], nuc_basis = 'pb4d')
     >>> mf = neo.HF(mol)
     >>> mf.scf()
     >>> td_mf = tddft.TDDFT(mf)
     >>> td_mf.kernel(nstates=5)
     Excited State energies (eV)
-    [0.69058969 0.69058969 0.78053614 1.33065563 1.97414121]
+    [0.62060056 0.62060056 0.69023232 1.24762233 1.33973627]
     '''
     
     conv_tol = getattr(__config__, 'tdscf_rhf_TDA_conv_tol', 1e-9)
     nstates = getattr(__config__, 'tdscf_rhf_TDA_nstates', 3)
-    singlet = getattr(__config__, 'tdscf_rhf_TDA_singlet', True)
     lindep = getattr(__config__, 'tdscf_rhf_TDA_lindep', 1e-12)
     level_shift = getattr(__config__, 'tdscf_rhf_TDA_level_shift', 0)
     max_space = getattr(__config__, 'tdscf_rhf_TDA_max_space', 50)
@@ -785,14 +583,12 @@ class TDDFT(lib.StreamObject):
 
     def __init__(self, mf):
         self.verbose = mf.verbose
-        self.stdout = mf.mf_elec.stdout
+        self.stdout = mf.components['e'].stdout
         self.mol = mf.mol
         self._scf = mf
         self.max_memory = mf.max_memory
         self.chkfile = mf.chkfile
-        self.unrestricted = mf.unrestricted
-        if self.unrestricted:
-            self.singlet = None
+        self.unrestricted = isinstance(mf.components['e'], scf.uhf.UHF)
 
         self.wfnsym = None
 
@@ -800,7 +596,7 @@ class TDDFT(lib.StreamObject):
         self.e = None
         self.x1 = None
 
-        keys = set(('conv_tol', 'nstates', 'singlet', 'lindep', 'level_shift',
+        keys = set(('conv_tol', 'nstates', 'lindep', 'level_shift',
                     'max_space', 'max_cycle'))
         self._keys = set(self.__dict__.keys()).union(keys)
 
@@ -827,9 +623,9 @@ class TDDFT(lib.StreamObject):
         if mf is None:
             mf = self._scf
         if self.unrestricted:
-            return get_tduhf_operation(mf)
+            return gen_tduhf_operation(mf)
         else:
-            return get_tdrhf_operation(mf, singlet=self.singlet)
+            return gen_tdrhf_operation(mf)
         
     def init_guess(self, mf, nstates=None):
         return init_guess(mf, nstates)

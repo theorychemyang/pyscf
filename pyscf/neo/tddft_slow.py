@@ -2,11 +2,32 @@ from pyscf.tdscf import rhf, uhf
 from pyscf import ao2mo
 from pyscf import lib
 from pyscf.neo.tddft import get_epc_iajb_rhf, get_epc_iajb_uhf
-from pyscf.tdscf.common_slow import eig
 from pyscf.data import nist
 from pyscf.lib import logger
-from pyscf import neo
+from pyscf import neo, scf
 import numpy
+
+def eig_mat(m, nroots=None, half=True):
+    """
+    Eigenvalue problem solver.
+    Copied from old tdscf.common_slow
+
+    Args:
+        m (numpy.ndarray): the matrix to diagonalize;
+        nroots (int): the number of roots ot calculate (ignored for `driver` == 'eig');
+        half (bool): if True, implies spectrum symmetry and takes only a half of eigenvalues;
+
+    Returns:
+
+    """
+    vals, vecs = numpy.linalg.eig(m)
+    order = numpy.argsort(vals)
+    vals, vecs = vals[order], vecs[:, order]
+    if half:
+        vals, vecs = vals[len(vals) // 2:], vecs[:, vecs.shape[1] // 2:]
+        vecs = vecs[:, ]
+    vals, vecs = vals[:nroots], vecs[:, :nroots]
+    return vals, vecs
 
 def aabb2a(a):
     '''
@@ -27,8 +48,8 @@ def ab2full(a,b):
 def c2full(c):
     return numpy.block([[c, c],[-c, -c]])
 
-def get_ab_elec(mf_elec, unrestricted):
-    if unrestricted:
+def get_ab_elec(mf_elec):
+    if isinstance(mf_elec,scf.uhf.UHF):
         return uhf.get_ab(mf_elec)
     else:
         nocc = mf_elec.mo_coeff[:,mf_elec.mo_occ>0].shape[1]
@@ -49,96 +70,67 @@ def get_ab_nuc(mf_nuc):
 
     return a_p, b_p
 
-def get_c(mf1, mf2, eri, charge):
-    nocc_1 = mf1.mo_coeff[:,mf1.mo_occ>0].shape[1]
-    nocc_2 = mf2.mo_coeff[:,mf2.mo_occ>0].shape[1]
+def get_c_int(interaction, coeff_o, coeff_v):
+    t1 = interaction.mf1_type
+    t2 = interaction.mf2_type
+    eri = interaction._eri
+    co_1 = coeff_o[t1]
+    cv_1 = coeff_v[t1]
+    co_2 = coeff_o[t2]
+    cv_2 = coeff_v[t2]
+    scale = interaction.mf1.charge * interaction.mf2.charge
 
-    co_1= mf1.mo_coeff[:,:nocc_1]
-    cv_1= mf1.mo_coeff[:,nocc_1:]
-
-    co_2=mf2.mo_coeff[:,:nocc_2]
-    cv_2=mf2.mo_coeff[:,nocc_2:]
-
-    c_12 = charge*ao2mo.incore.general(eri, (co_1, cv_1, co_2, cv_2),compact=False)
-    return c_12
-
-def get_c_nn(mf, idx1=0, idx2=1):
-    assert(idx1 < idx2)
-    mf1 = mf.mf_nuc[idx1]
-    mf2 = mf.mf_nuc[idx2]
-    eri = mf._eri_nn[idx1][idx2]
-    charge = mf.mol.atom_charge(mf1.mol.atom_index) * mf.mol.atom_charge(mf2.mol.atom_index)
-    
-    return get_c(mf1, mf2, eri, charge)
-
-def get_c_ne_restricted(mf, idx=0):
-    mf_elec = mf.mf_elec
-    mf_nuc = mf.mf_nuc[idx]
-    eri = mf._eri_ne[idx]
-    charge = -1 * mf.mol.atom_charge(mf_nuc.mol.atom_index)
-    return get_c(mf_nuc, mf_elec, eri, charge)
-
-def get_c_ne_unrestricted(mf, i=0):
-    eri = mf._eri_ne[i]
-    charge = -1*mf.mol.atom_charge(mf.mf_nuc[i].mol.atom_index)
-    mo_coeff = mf.mf_elec.mo_coeff
-    mo_occ = mf.mf_elec.mo_occ
-    occidx_a = numpy.where(mo_occ[0]==1)[0]
-    viridx_a = numpy.where(mo_occ[0]==0)[0]
-    occidx_b = numpy.where(mo_occ[1]==1)[0]
-    viridx_b = numpy.where(mo_occ[1]==0)[0]
-    orbo_a = mo_coeff[0][:,occidx_a]
-    orbv_a = mo_coeff[0][:,viridx_a]
-    orbo_b = mo_coeff[1][:,occidx_b]
-    orbv_b = mo_coeff[1][:,viridx_b]
-    p_nocc = mf.mf_nuc[i].mo_coeff[:,mf.mf_nuc[0].mo_occ>0].shape[1]
-
-    co_n=mf.mf_nuc[i].mo_coeff[:,:p_nocc]
-    cv_n=mf.mf_nuc[i].mo_coeff[:,p_nocc:]
-
-    c_ne_a = charge*ao2mo.incore.general(eri, (co_n, cv_n, orbo_a, orbv_a),compact=False)
-    c_ne_b = charge*ao2mo.incore.general(eri, (co_n, cv_n, orbo_b, orbv_b),compact=False)
-    return [c_ne_a, c_ne_b]
-
-def get_c_ne(mf, i):
-    if mf.unrestricted:
-        return get_c_ne_unrestricted(mf, i)
+    if isinstance(co_1, list):
+        coeffs = (co_1[0], cv_1[0], co_2, cv_2)
+        c_1 = scale*ao2mo.incore.general(eri, coeffs,compact=False)
+        coeffs = (co_1[1], cv_1[1], co_2, cv_2)
+        c_2 = scale*ao2mo.incore.general(eri, coeffs,compact=False)
+        return [c_1, c_2]
     else:
-        return get_c_ne_restricted(mf,i)
-    
+        coeffs = (co_1, cv_1, co_2, cv_2)
+        c = scale*ao2mo.incore.general(eri, coeffs,compact=False)
+        return c
+        
 def get_abc_no_epc(mf):
-    a_e, b_e = get_ab_elec(mf.mf_elec, unrestricted=mf.unrestricted)
-    if mf.unrestricted:
+    a = {}
+    b = {}
+    c = {}
+    a_e, b_e = get_ab_elec(mf.components['e'])
+    if isinstance(a_e, tuple):
         a_e = list(a_e)
         b_e = list(b_e)
-    nuc_num = mf.mol.nuc_num
-    a_ps = []
-    b_ps = []
-    c_nes = []
-    c_pps = []
-    for i in range(nuc_num):
-        a_p, b_p = get_ab_nuc(mf.mf_nuc[i])
-        a_ps.append(a_p)
-        b_ps.append(b_p)
-        c_nes.append(get_c_ne(mf, i))
-        c_pps.append([None]*nuc_num)
-    for i in range(nuc_num):
-        for j in range(i+1, nuc_num):
-            c_pps[i][j] = get_c_nn(mf, i, j)
+    a['e'] = a_e
+    b['e'] = b_e
+    for t in mf.components.keys():
+        if t.startswith('n'):
+            a_p, b_p = get_ab_nuc(mf.components[t])
+            a[t] = a_p
+            b[t] = b_p
 
-    return a_e, b_e, a_ps, b_ps, c_nes, c_pps
+    mo_coeff_o = {}
+    mo_coeff_v = {}
+    for t, comp in mf.components.items():
+        if (t.startswith('e') and isinstance(comp, scf.uhf.UHF)):
+            nocca = numpy.count_nonzero((mf.mo_occ[t][0]>0))
+            noccb = numpy.count_nonzero((mf.mo_occ[t][1]>0))
+            mo_coeff_o[t] = [mf.mo_coeff[t][0][:,:nocca], mf.mo_coeff[t][1][:,:noccb]]
+            mo_coeff_v[t] = [mf.mo_coeff[t][0][:,nocca:], mf.mo_coeff[t][1][:,noccb:]]
+        else:
+            nocc = numpy.count_nonzero((mf.mo_occ[t]>0))
+            mo_coeff_o[t] = mf.mo_coeff[t][:,:nocc]
+            mo_coeff_v[t] = mf.mo_coeff[t][:,nocc:]
+    for t_pair, interaction in mf.interactions.items():
+        c[t_pair] = get_c_int(interaction, mo_coeff_o, mo_coeff_v)
+
+    return a, b, c
 
 def get_epc_iajb(mf):
-    if mf.unrestricted:
-        iajb_aa, iajb_bb, iajb_ab, iajb_pe_a, iajb_pe_b, iajb_p = get_epc_iajb_uhf(mf, reshape=True)
-        iajb_e = [iajb_aa, iajb_ab, iajb_bb]
-        iajb_ne = []
-        for i in range(mf.mol.nuc_num):
-            iajb_ne.append([iajb_pe_a[i], iajb_pe_b[i]])
+    if isinstance(mf.components['e'], scf.uhf.UHF):
+        iajb, iajb_int = get_epc_iajb_uhf(mf, reshape=True)
     else:
-        iajb_e, iajb_ne, iajb_p = get_epc_iajb_rhf(mf, reshape=True)
+        iajb, iajb_int = get_epc_iajb_rhf(mf, reshape=True)
     
-    return iajb_e, iajb_ne, iajb_p
+    return iajb, iajb_int
     
 def add_epc(a, iajb):
     '''
@@ -154,77 +146,81 @@ def add_epc(a, iajb):
     return a
     
 def get_abc(mf):
-    a_e, b_e, a_ns, b_ns, c_nes, c_nns = get_abc_no_epc(mf)
+    a, b, c = get_abc_no_epc(mf)
     if isinstance(mf, neo.KS):
         if mf.epc is not None:
-            iajb_e, iajb_ne, iajb_n = get_epc_iajb(mf)
-            a_e = add_epc(a_e, iajb_e)
-            b_e = add_epc(b_e, iajb_e)
-            for i in range(mf.mol.nuc_num):
-                a_ns[i] += iajb_n[i]
-                b_ns[i] += iajb_n[i]
-                c_nes[i] = add_epc(c_nes[i], iajb_ne[i])
+            iajb, iajb_int = get_epc_iajb(mf)
+            for t, comp in iajb.items():
+                a[t] = add_epc(a[t], comp)
+                b[t] = add_epc(b[t], comp)
+            for t_pair, comp in iajb_int.items():
+                c[t_pair] = add_epc(c[t_pair], comp)
+    return a, b, c
 
-    return a_e, b_e, a_ns, b_ns, c_nes, c_nns
-
-def full_elec(a_e, b_e):
-    if isinstance(a_e, list):
-        a_e = aabb2a(a_e)
-        b_e = aabb2a(b_e)
-    return ab2full(a_e, b_e)
-
-def one_nuc(a_p, b_p):
-    return ab2full(a_p, b_p)
-
-def nuc2_to_nuc1(a_ps, b_ps, c_pps, idx, nuc2):
-    nuc_num = len(a_ps)
-    assert(idx < nuc_num)
-    if nuc2 is None or idx == nuc_num-1:
-        return one_nuc(a_ps[-1], b_ps[-1])
-    
-    nuc1_nuc2 = []
-    nuc2_nuc1 = []
-    for idx2 in range(idx+1,nuc_num):
-        c_12 = c_pps[idx][idx2]
-        nuc1_nuc2.append(c2full(c_12))
-        nuc2_nuc1.append([c2full(c_12.transpose())])
-
-    nuc1_nuc = numpy.block([*nuc1_nuc2])
-    nuc_nuc1 = numpy.block([*nuc2_nuc1])
-    nuc1_nuc1 = one_nuc(a_ps[idx], b_ps[idx])
-    return numpy.block([[nuc1_nuc1, nuc1_nuc],[nuc_nuc1, nuc2]])
-
-def full_nuc(a_ps, b_ps, c_pps):
-    nuc_num = len(a_ps)
-
-    nuc2 = None
-    for i in reversed(range(nuc_num)):
-        nuc1 = nuc2_to_nuc1(a_ps, b_ps, c_pps, i, nuc2)
-        nuc2 = nuc1
-
-    return nuc1
-
-def full_ep(c_nes):
-    nuc_num = len(c_nes)
-    elec_nuc = []
-    nuc_elec = []
-    for i in range(nuc_num):
-        c_ne = c_nes[i]
-        if isinstance(c_ne, list):
-            c_ne = numpy.hstack((c_ne[0], c_ne[1]))
+def get_diag_block(a, b):
+    '''
+    get diagonal blocks [[A, B], [-B, -A]] of the full matrix
+    '''
+    diag = {}
+    for t in a.keys():
+        if isinstance(a[t], list):
+            _a = aabb2a(a[t])
+            _b = aabb2a(b[t])
+            diag[t] = ab2full(_a, _b)
         else:
-            c_ne *= numpy.sqrt(2)
-        nuc_elec.append([c2full(c_ne)])
-        elec_nuc.append(c2full(c_ne.transpose()))
-    
-    return numpy.block([*elec_nuc]), numpy.block([*nuc_elec])
+            diag[t] = ab2full(a[t], b[t])
+    return diag
+
+def get_cross_block(c):
+    '''
+    get cross blocks of the full matrix
+
+    cross: [[C, C], [-C, -C]]
+    '''
+    cross = {}
+    for t_pair, comp in c.items():
+        t1, t2 = t_pair
+        if isinstance(comp, list):
+            _c = numpy.vstack((comp[0], comp[1]))
+        elif t1.startswith('e'):
+            _c = comp * numpy.sqrt(2)
+        else:
+            _c = comp
+        cross[t_pair] = c2full(_c)
+        cross[(t2, t1)] = c2full(_c.transpose())
+    return cross
+
+def get_full_mat(diag, cross):
+    '''
+    get full matrix from diagonal and cross blocks
+    '''
+    tot_size = 0
+    offset = {}
+    for t in diag.keys():
+        offset[t] = tot_size
+        tot_size += diag[t].shape[0]
+
+    mat = numpy.zeros((tot_size, tot_size))
+    for t in diag.keys():
+        i1 = offset[t]
+        i2 = i1 + diag[t].shape[0]
+        mat[i1:i2, i1:i2] = diag[t]
+
+    for (t1, t2) in cross.keys():
+        i1 = offset[t1]
+        i2 = i1 + diag[t1].shape[0]
+        j1 = offset[t2]
+        j2 = j1 + diag[t2].shape[0]
+        mat[i1:i2, j1:j2] = cross[(t1, t2)]
+
+    return mat
 
 def get_td_mat(mf):
-    a_e, b_e, a_ns, b_ns, c_nes, c_nns = get_abc(mf)
-    elec = full_elec(a_e, b_e)
-    nuc = full_nuc(a_ns, b_ns, c_nns)
-    elec_nuc, nuc_elec = full_ep(c_nes)
-    return numpy.block([[elec, elec_nuc],[nuc_elec, nuc]])
+    a, b, c = get_abc(mf)
+    diag = get_diag_block(a, b)
+    cross = get_cross_block(c)
+    return get_full_mat(diag, cross)
+
 
 class TDBase(lib.StreamObject):
     '''Full td matrix diagonlization
@@ -234,23 +230,22 @@ class TDBase(lib.StreamObject):
     >>> from pyscf import neo
     >>> from pyscf.neo import tddft_slow
     >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g', 
-                    quantum_nuc = ['H'], nuc_basis = 'pb4p', cart=True)
+                    quantum_nuc = ['H'], nuc_basis = 'pb4d')
     >>> mf = neo.HF(mol)
     >>> mf.scf()
     >>> td_mf = tddft_slow.TDBase(mf)
     >>> td_mf.kernel(nstates=5)
     Excited State energies (eV)
-    [0.69058969 0.69058969 0.78053615 1.33065414 1.97414121]
+    [0.62060056 0.62060056 0.69023232 1.24762232 1.33973627]
     '''
 
-    def __init__(self, mf, nstates=3, driver='eig'):
+    def __init__(self, mf, nstates=3):
         self.verbose = mf.verbose
-        self.stdout = mf.mf_elec.stdout
+        self.stdout = mf.components['e'].stdout
         self.mol = mf.mol
         self._scf = mf
         self.unrestricted = mf.unrestricted
         self.nstates = nstates
-        self.driver = driver
         self.td_mat = None
         self.e = None
         self.x1 = None
@@ -282,7 +277,7 @@ class TDBase(lib.StreamObject):
         log = logger.Logger(self.stdout, self.verbose)
         
         m = self.get_td_mat()
-        w, x1 = eig(m, nroots = nstates, driver = self.driver)
+        w, x1 = eig_mat(m, nroots = nstates)
         
         self.e = w
         self.x1 = x1

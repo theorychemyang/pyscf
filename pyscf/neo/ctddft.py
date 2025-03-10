@@ -1,8 +1,8 @@
 '''Cneo TDDFT with frozen orbital assumption'''
 
 from pyscf.neo import tddft_slow
-from pyscf import neo, lib
-from pyscf.tdscf.common_slow import eig
+from pyscf import neo, lib, scf
+from pyscf.tdscf._lr_eig import eigh as lr_eigh, eig as lr_eig, real_eig
 from pyscf.tdscf import rhf, TDDFT
 from pyscf.lib import logger
 from pyscf import __config__
@@ -11,17 +11,22 @@ import numpy
 REAL_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_pick_eig_threshold', 1e-4)
 
 def get_ab(mf):
-    if isinstance(mf, neo.KS) and mf.epc is not None:
-        a, b = tddft_slow.get_abc(mf)[0:2]
+    if isinstance(mf, neo.KS):
+        if mf.epc is not None:
+            _a, _b, c = tddft_slow.get_abc(mf)
+            a = _a['e']
+            b = _b['e']
+        else:
+            a, b = tddft_slow.get_ab_elec(mf.components['e'])
     else:    
-        a, b = tddft_slow.get_ab_elec(mf.mf_elec, mf.unrestricted)
+        a, b = tddft_slow.get_ab_elec(mf.components['e'])
     if isinstance(a, tuple):
         a = list(a)
         b = list(b)
     return a, b
 
 def _normalize(x1, mo_occ):
-    if isinstance(mo_occ, list):
+    if (mo_occ.ndim == 2):
         nmo = mo_occ[0].size
         nocca = (mo_occ[0]>0).sum()
         noccb = (mo_occ[1]>0).sum()
@@ -79,27 +84,30 @@ def as_scanner(td):
 
     
 class CTDBase(rhf.TDBase):
-    
-    def __init__(self, mf, driver='eig'):
-        rhf.TDBase.__init__(self, mf)
+    ''' Frozen nuclear orbital CNEO-TDDFT: full matrix diagonalization
+    Examples:
 
-        self.driver = driver
-        self.unrestricted = mf.unrestricted
-
-        self._keys = self._keys.union(['driver', 'unrestricted'])
-    
-    def check_sanity(self):
-        if self._scf.mf_elec.mo_coeff is None:
-            raise RuntimeError('SCF object is not initialized')
-        lib.StreamObject.check_sanity(self)
-    
+    >>> from pyscf import neo
+    >>> from pyscf.neo import ctddft
+    >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g', 
+                    quantum_nuc = ['H'], nuc_basis = 'pb4d')
+    >>> mf = neo.CDFT(mol, xc='hf')
+    >>> mf.scf()
+    >>> td_mf = ctddft.CTDBase(mf)
+    >>> td_mf.kernel(nstates=5)
+    Excited State energies (eV)
+    [ 6.82308887  7.68777851  7.68777851 10.05706016 10.05706016]
+    '''
+        
     def get_ab(self):
-        a, b = get_ab(self._scf)
-        return [a,b]
+        return get_ab(self._scf)
     
     def get_full(self):
         a, b = self.get_ab()
-        return tddft_slow.full_elec(a, b)
+        if isinstance(a, list):
+            a = tddft_slow.aabb2a(a)
+            b = tddft_slow.aabb2a(b)
+        return tddft_slow.ab2full(a, b)
 
     def kernel(self, nstates=None):
         cpu0 = (logger.process_clock(), logger.perf_counter())
@@ -112,12 +120,13 @@ class CTDBase(rhf.TDBase):
 
         log = logger.Logger(self.stdout, self.verbose)
         td_mat = self.get_full()
-        w, x1 = eig(td_mat, driver=self.driver, nroots=nstates)
+        w, x1 = tddft_slow.eig_mat(td_mat, nroots=nstates)
         self.converged = [True for i in range(nstates)]
         x1 = x1.T
 
         self.e = numpy.array(w)
-        self.xy = _normalize(x1, self._scf.mf_elec.mo_occ)
+        mo_occ = self._scf.mo_occ['e']
+        self.xy = _normalize(x1, mo_occ)
 
         log.timer('TDDFT', *cpu0)
         self._finalize()
@@ -125,7 +134,7 @@ class CTDBase(rhf.TDBase):
         return self.e, self.xy
 
     def nuc_grad_method(self):
-        if self.unrestricted:
+        if isinstance(self._scf.components['e'], scf.uhf.UHF):
             raise NotImplementedError('unrestricted is not supported for td gradients')
         from pyscf.neo import tdgrad
         return tdgrad.Gradients(self)
@@ -134,23 +143,40 @@ class CTDBase(rhf.TDBase):
     
 
 class CTDDFT(CTDBase):
+    ''' Frozen nuclear orbital CNEO-TDDFT: Davidson
+    Examples:
+
+    >>> from pyscf import neo
+    >>> from pyscf.neo import ctddft
+    >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g', 
+                    quantum_nuc = ['H'], nuc_basis = 'pb4d')
+    >>> mf = neo.CDFT(mol, xc='hf')
+    >>> mf.scf()
+    >>> td_mf = ctddft.CTDDFT(mf)
+    >>> td_mf.kernel(nstates=5)
+    Excited State energies (eV)
+    [ 6.82308887  7.68777851  7.68777851 10.05706016 10.05706016]
+    '''
     def __init__(self, mf):
         CTDBase.__init__(self, mf)
+        self.max_space = 100
 
     def gen_vind(self, mf=None):
         if mf is None:
             mf = self._scf
         if isinstance(mf, neo.KS) and mf.epc is not None:
-            raise NotImplementedError('epc is not supported')
-        return TDDFT(mf.mf_elec).gen_vind()
+            raise NotImplementedError('epc is not implemented for CNEO-TDDFT davidson')
+        return TDDFT(mf.components['e']).gen_vind()
 
     def init_guess(self, mf, nstates=None, wfnsym=None):
-        return TDDFT(mf.mf_elec).init_guess(mf.mf_elec, nstates, wfnsym)
+        mf_elec = mf.components['e']
+        return TDDFT(mf_elec).init_guess(mf_elec, nstates, wfnsym)
     
     def kernel(self, x0=None, nstates=None):
         '''
-        Copied from tdscf.rhf/uhf
+        Modified from tdscf.rhf/uhf
         '''
+        log = logger.new_logger(self)
         cpu0 = (logger.process_clock(), logger.perf_counter())
         self.check_sanity()
         self.dump_flags()
@@ -185,7 +211,7 @@ class CTDDFT(CTDBase):
                                     verbose=log)
         
         self.e = numpy.array(w)
-        self.xy = _normalize(x1, self._scf.mf_elec.mo_occ)
+        self.xy = _normalize(x1, self._scf.mo_occ['e'])
 
         log.timer('TDDFT', *cpu0)
         self._finalize()
