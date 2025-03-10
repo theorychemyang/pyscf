@@ -10,13 +10,14 @@ from pyscf import lib, neo
 from pyscf.scf import _response_functions  # noqa
 
 
-def _gen_neo_response(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=None):
+def _gen_neo_response(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=None, no_epc=False):
     '''Generate a function to compute the product of (C)NEO response function
     and electronic/nuclear density matrices.
     '''
     assert isinstance(mf, neo.HF)
-    if mf.epc is not None:
-        raise NotImplementedError('Response with EPC kernel is not available.')
+    if isinstance(mf, neo.KS):
+        if mf.epc is not None and not no_epc:
+            raise NotImplementedError('Response with EPC kernel is not available.')
     if mo_coeff is None: mo_coeff = mf.mo_coeff
     if mo_occ is None: mo_occ = mf.mo_occ
 
@@ -44,7 +45,10 @@ def _gen_neo_response(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=None):
 
         # Process each interaction
         for (t1, t2), interaction in mf.interactions.items():
-            vint = interaction.get_vint(dm1)
+            if isinstance(mf, neo.KS):
+                vint = interaction.get_vint(dm1, no_epc=no_epc)
+            else:
+                vint = interaction.get_vint(dm1)
             v1[t1] = v1.get(t1, 0) + vint[t1]
             v1[t2] = v1.get(t2, 0) + vint[t2]
 
