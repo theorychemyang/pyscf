@@ -447,7 +447,9 @@ def cholesky_eneri(mol_n, auxmol_e, int3c, int2c, max_memory,
 
 def _build_cderi(mf_e, mf_n, cart, max_memory):
     auxmol_e = mf_e.with_df.auxmol
-    naux_e = auxmol_e.na_nr()
+    if auxmol_e is None:
+        auxmol_e = df.addons.make_auxmol(mf_e.mol, mf_e.with_df.auxbasis)
+    naux_e = auxmol_e.nao_nr()
     mol_n = mf_n.mol
     nao_n = mol_n.nao_nr()
     nao_n_pair = nao_n*(nao_n+1)//2
@@ -462,8 +464,20 @@ def _build_cderi(mf_e, mf_n, cart, max_memory):
     if nao_n_pair*naux_e*8/1e6 < .9*max_memory:
         return cholesky_eneri(mol_n, auxmol_e, int3c, int2c, max_memory)
     else:
-        raise NotImplementedError('outcore df_ne uder development')
+        raise NotImplementedError('outcore df_en not implemented')
 
+def dot_cderi_dm(eri1, eri2, dm1):
+    dms1 = numpy.asarray(dm1)
+    dm_shape1 = dms1.shape
+    nao1 = dm_shape1[-1]
+    dms1 = dms1.reshape(-1,nao1,nao1)
+
+    idx = numpy.arange(nao1)
+    dmtril = lib.pack_tril(dms1 + dms1.conj().transpose(0,2,1))
+    dmtril[:,idx*(idx+1)//2+idx] *= .5
+    vj = dmtril.dot(eri1.T).dot(eri2)
+    dm2_len = int((numpy.sqrt(8*eri2.shape[1]+1)-1)/2)
+    return lib.unpack_tril(vj, 1).reshape((dm2_len, dm2_len))
 class InteractionCoulomb:
     '''Inter-component Coulomb interactions'''
     def __init__(self, mf1_type, mf1, mf2_type, mf2, max_memory, df_ne):
@@ -476,7 +490,7 @@ class InteractionCoulomb:
         self.max_memory = max_memory
         self.df_ne = df_ne
         self._eri = None # mol1: left; mol2: right
-        self._cderi = None #aux_e: left; nuc: right
+        self._cderi = None # weighted (M|kl), left: elec right: nuc
 
     def _is_mem_enough(self):
         nao1 = self.mf1.mol.nao_nr()
@@ -504,11 +518,31 @@ class InteractionCoulomb:
         vj = {}
         if self.df_ne and ((self.mf1_type.startswith('n') and self.mf2_type.startswith('e')) or
                            ((self.mf1_type.startswith('e') and self.mf2_type.startswith('n')))):
-            mf_e = self.mf1 if self.mf1_type.startswith('e') else self.mf2
+            if self.mf1_type == 'e':
+                mf_e = self.mf1
+                dm_e = dm1
+                mf_n = self.mf2
+                dm_n = dm2
+                t_n = self.mf2_type
+            else:
+                mf_e = self.mf2
+                dm_e = dm2
+                mf_n = self.mf1
+                dm_n = dm1
+                t_n = self.mf1_type
             assert isinstance(mf_e, df.df_jk._DFHF)
-            mf_n = self.mf1 if self.mf1_type.startswith('n') else self.mf2
             if self._cderi is None:
                 self._cderi = _build_cderi(mf_e, mf_n, mol.cart, self.max_memory)
+            if dm_e is not None:
+                vj[t_n] = dot_cderi_dm(mf_e._cderi, self._cderi, dm_e)
+            if dm_n is not None:
+                vj['e'] = dot_cderi_dm(self._cderi, mf_e._cderi, dm_n)
+            charge_product = self.mf1.charge * self.mf2.charge
+            if self.mf1_type in vj:
+                vj[self.mf1_type] *= charge_product
+            if self.mf2_type in vj:
+                vj[self.mf2_type] *= charge_product
+
         else:
             if (not mol.direct_vee and
                 (self._eri is not None or mol.incore_anyway or self._is_mem_enough())):
