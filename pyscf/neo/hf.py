@@ -378,9 +378,95 @@ def _build_eri(mol1, mol2, cart):
                                              size1, size1 + size2),
                                  aosym='s4')
 
+def cholesky_eneri(mol_n, auxmol_e, int3c, int2c, max_memory,
+                   aosym='s2ij', decompose_j2c='cd'):
+    from pyscf.df.incore import _eig_decompose
+    from pyscf.df.outcore import _guess_shell_ranges
+    j2c_e = auxmol_e.intor(int2c, hermi=1)
+    if decompose_j2c == 'eig':
+        low = _eig_decompose(auxmol_e, j2c_e)
+    else:
+        try:
+            low = scipy.linalg.cholesky(j2c_e, lower=True)
+            decompose_j2c = 'cd'
+        except scipy.linalg.LinAlgError:
+            low = _eig_decompose(auxmol_e, j2c_e)
+            decompose_j2c = 'eig'
+    j2c_e = None
+    naux_e, naoaux_e = low.shape
+    atm, bas, env = gto.mole.conc_env(mol_n._atm, mol_n._bas, mol_n._env,
+                                      auxmol_e._atm, auxmol_e._bas, auxmol_e._env)
+    ao_loc = gto.moleintor.make_loc(bas, int3c)
+    nao_n = int(ao_loc[mol_n.nbas])
+    if aosym == 's1':
+        nao_n_pair = nao_n * nao_n
+    else:
+        nao_n_pair = nao_n * (nao_n+1) // 2
+
+    cderi = numpy.empty((naux_e, nao_n_pair))
+
+    max_words = max_memory*.98e6/8 - low.size - cderi.size
+    buflen = min(max(int(max_words/naoaux_e/3), 8), nao_n_pair)
+    shranges = _guess_shell_ranges(mol_n, buflen, aosym)
+
+    cintopt = gto.moleintor.make_cintopt(atm, bas, env, int3c)
+    bufs1 = numpy.empty((max([x[2] for x in shranges]),naoaux_e))
+    bufs2 = numpy.empty_like(bufs1)
+
+    p1 = 0
+    for istep, sh_range in enumerate(shranges):
+        bstart, bend, nrow = sh_range
+        shls_slice = (bstart, bend, 0, mol_n.nbas, mol_n.nbas, mol_n.nbas+auxmol_e.nbas)
+        ints = gto.moleintor.getints3c(int3c, atm, bas, env, shls_slice, 1,
+                                       aosym, ao_loc, cintopt, out=bufs1)
+
+        if ints.ndim == 3 and ints.flags.f_contiguous:
+            ints = lib.transpose(ints.T, axes=(0,2,1), out=bufs2).reshape(naoaux_e,-1)
+            bufs1, bufs2 = bufs2, bufs1
+        else:
+            ints = ints.reshape((-1,naoaux_e)).T
+
+        p0, p1 = p1, p1 + nrow
+        if decompose_j2c == 'cd':
+            if ints.flags.c_contiguous:
+                trsm, = scipy.linalg.get_blas_funcs(('trsm',), (low, ints))
+                dat = trsm(1.0, low, ints.T, lower=True, trans_a = 1, side = 1, overwrite_b=True).T
+            else:
+                dat = scipy.linalg.solve_triangular(low, ints, lower=True,
+                                                   overwrite_b=True, check_finite=False)
+            if dat.flags.f_contiguous:
+                dat = lib.transpose(dat.T, out=bufs2)
+            cderi[:,p0:p1] = dat
+        else:
+            dat = numpy.ndarray((naux_e, ints.shape[1]), buffer=bufs2)
+            cderi[:,p0:p1] = lib.dot(low, ints, c=dat)
+        dat = ints = None
+
+    return cderi
+
+
+def _build_cderi(mf_e, mf_n, cart, max_memory):
+    auxmol_e = mf_e.with_df.auxmol
+    naux_e = auxmol_e.na_nr()
+    mol_n = mf_n.mol
+    nao_n = mol_n.nao_nr()
+    nao_n_pair = nao_n*(nao_n+1)//2
+
+    max_memory = max_memory - lib.current_memory()[0]
+    if cart:
+        int3c = 'int3c2e_cart'
+        int2c = 'int2c2e_cart'
+    else:
+        int3c = 'int3c2e_sph'
+        int2c = 'int2c2e_sph'
+    if nao_n_pair*naux_e*8/1e6 < .9*max_memory:
+        return cholesky_eneri(mol_n, auxmol_e, int3c, int2c, max_memory)
+    else:
+        raise NotImplementedError('outcore df_ne uder development')
+
 class InteractionCoulomb:
     '''Inter-component Coulomb interactions'''
-    def __init__(self, mf1_type, mf1, mf2_type, mf2, max_memory):
+    def __init__(self, mf1_type, mf1, mf2_type, mf2, max_memory, df_ne):
         self.mf1_type = mf1_type
         self.mf1 = mf1
         self.mf1_unrestricted = isinstance(self.mf1, scf.uhf.UHF)
@@ -388,7 +474,9 @@ class InteractionCoulomb:
         self.mf2 = mf2
         self.mf2_unrestricted = isinstance(self.mf2, scf.uhf.UHF)
         self.max_memory = max_memory
+        self.df_ne = df_ne
         self._eri = None # mol1: left; mol2: right
+        self._cderi = None #aux_e: left; nuc: right
 
     def _is_mem_enough(self):
         nao1 = self.mf1.mol.nao_nr()
@@ -414,55 +502,63 @@ class InteractionCoulomb:
         mol = mol1.super_mol
         assert mol == mol2.super_mol
         vj = {}
-        if (not mol.direct_vee and
-            (self._eri is not None or mol.incore_anyway or self._is_mem_enough())):
-            if self._eri is None:
-                if mol.verbose >= logger.DEBUG:
-                    cput0 = (logger.process_clock(), logger.perf_counter())
-                self._eri = _build_eri(mol1, mol2, mol.cart)
-                if mol.verbose >= logger.DEBUG and self._eri is not None:
-                    logger.timer(mol,
-                                 f'Incore ERI between {self.mf1_type} and {self.mf2_type}',
-                                 *cput0)
-                    logger.debug(mol, f'    Memory usage: {self._eri.nbytes/1024**2:.3f} MB')
-            if dm2 is not None:
-                vj[self.mf1_type] = dot_eri_dm(self._eri, dm2,
-                                               nao_v=mol1.nao, eri_dot_dm=True)
-            if dm1 is not None:
-                vj[self.mf2_type] = dot_eri_dm(self._eri, dm1,
-                                               nao_v=mol2.nao, eri_dot_dm=False)
+        if self.df_ne and ((self.mf1_type.startswith('n') and self.mf2_type.startswith('e')) or
+                           ((self.mf1_type.startswith('e') and self.mf2_type.startswith('n')))):
+            mf_e = self.mf1 if self.mf1_type.startswith('e') else self.mf2
+            assert isinstance(mf_e, df.df_jk._DFHF)
+            mf_n = self.mf1 if self.mf1_type.startswith('n') else self.mf2
+            if self._cderi is None:
+                self._cderi = _build_cderi(mf_e, mf_n, mol.cart, self.max_memory)
         else:
-            if not mol.direct_vee:
-                warnings.warn(f'Direct Vee is used for {self.mf1_type}-{self.mf2_type} ERIs, '
-                              +'might be slow. '
-                              +f'PYSCF_MAX_MEMORY is set to {mol.max_memory} MB, '
-                              +f'required memory: {mol1.nao**2*mol2.nao**2*2/1e6=:.2f} MB')
-            if dm1 is not None and dm2 is not None:
-                vj[self.mf1_type], vj[self.mf2_type] = \
-                        scf.jk.get_jk((mol1, mol1, mol2, mol2),
-                                      (dm2, dm1),
-                                      scripts=('ijkl,lk->ij', 'ijkl,ji->kl'),
-                                      intor='int2e', aosym='s4')
-            elif dm1 is not None:
-                vj[self.mf2_type] = \
-                        scf.jk.get_jk((mol1, mol1, mol2, mol2),
-                                      dm1,
-                                      scripts='ijkl,ji->kl',
-                                      intor='int2e', aosym='s4')
+            if (not mol.direct_vee and
+                (self._eri is not None or mol.incore_anyway or self._is_mem_enough())):
+                if self._eri is None:
+                    if mol.verbose >= logger.DEBUG:
+                        cput0 = (logger.process_clock(), logger.perf_counter())
+                    self._eri = _build_eri(mol1, mol2, mol.cart)
+                    if mol.verbose >= logger.DEBUG and self._eri is not None:
+                        logger.timer(mol,
+                                    f'Incore ERI between {self.mf1_type} and {self.mf2_type}',
+                                    *cput0)
+                        logger.debug(mol, f'    Memory usage: {self._eri.nbytes/1024**2:.3f} MB')
+                if dm2 is not None:
+                    vj[self.mf1_type] = dot_eri_dm(self._eri, dm2,
+                                                nao_v=mol1.nao, eri_dot_dm=True)
+                if dm1 is not None:
+                    vj[self.mf2_type] = dot_eri_dm(self._eri, dm1,
+                                                nao_v=mol2.nao, eri_dot_dm=False)
             else:
-                vj[self.mf1_type] = \
-                        scf.jk.get_jk((mol1, mol1, mol2, mol2),
-                                      dm2,
-                                      scripts='ijkl,lk->ij',
-                                      intor='int2e', aosym='s4')
-        charge_product = self.mf1.charge * self.mf2.charge
-        if self.mf1_type in vj:
-            vj[self.mf1_type] *= charge_product
-        if self.mf2_type in vj:
-            vj[self.mf2_type] *= charge_product
+                if not mol.direct_vee:
+                    warnings.warn(f'Direct Vee is used for {self.mf1_type}-{self.mf2_type} ERIs, '
+                                +'might be slow. '
+                                +f'PYSCF_MAX_MEMORY is set to {mol.max_memory} MB, '
+                                +f'required memory: {mol1.nao**2*mol2.nao**2*2/1e6=:.2f} MB')
+                if dm1 is not None and dm2 is not None:
+                    vj[self.mf1_type], vj[self.mf2_type] = \
+                            scf.jk.get_jk((mol1, mol1, mol2, mol2),
+                                        (dm2, dm1),
+                                        scripts=('ijkl,lk->ij', 'ijkl,ji->kl'),
+                                        intor='int2e', aosym='s4')
+                elif dm1 is not None:
+                    vj[self.mf2_type] = \
+                            scf.jk.get_jk((mol1, mol1, mol2, mol2),
+                                        dm1,
+                                        scripts='ijkl,ji->kl',
+                                        intor='int2e', aosym='s4')
+                else:
+                    vj[self.mf1_type] = \
+                            scf.jk.get_jk((mol1, mol1, mol2, mol2),
+                                        dm2,
+                                        scripts='ijkl,lk->ij',
+                                        intor='int2e', aosym='s4')
+            charge_product = self.mf1.charge * self.mf2.charge
+            if self.mf1_type in vj:
+                vj[self.mf1_type] *= charge_product
+            if self.mf2_type in vj:
+                vj[self.mf2_type] *= charge_product
         return vj
 
-def generate_interactions(components, interaction_class, max_memory, **kwagrs):
+def generate_interactions(components, interaction_class, max_memory, df_ne, **kwagrs):
     keys = sorted(components.keys())
 
     interactions = {}
@@ -471,7 +567,8 @@ def generate_interactions(components, interaction_class, max_memory, **kwagrs):
             if p1 != p2:
                 interaction = interaction_class(p1, components[p1],
                                                 p2, components[p2],
-                                                max_memory, **kwagrs)
+                                                max_memory, df_ne,
+                                                **kwagrs)
                 interactions[(p1, p2)] = interaction
 
     return interactions
@@ -764,10 +861,11 @@ class HF(scf.hf.SCF):
     >>> mf.scf()
     -99.98104139461894
     '''
-    def __init__(self, mol, unrestricted=False, df_ee=False,
+    def __init__(self, mol, unrestricted=False, df_ee=False, df_ne=False,
                  auxbasis_e=None, only_dfj_e=False):
         super().__init__(mol)
         self.df_ee = df_ee
+        self.df_ne = df_ne
         self.auxbasis_e = auxbasis_e
         self.only_dfj_e = only_dfj_e
         # NOTE: unrestricted should be understood as "force unrestricted".
@@ -797,7 +895,7 @@ class HF(scf.hf.SCF):
                     charge = -1.
                 self.components[t] = general_scf(mf, charge=charge)
         self.interactions = generate_interactions(self.components, InteractionCoulomb,
-                                                  self.max_memory)
+                                                  self.max_memory, self.df_ne)
 
     # mf_elec and mf_nuc for backward compatibility
     @property
