@@ -471,3 +471,9 @@ class _DFNEO:
             self.interactions = hf.generate_interactions(self.components, DFInteractionCoulomb,
                                                          self.max_memory, df_ne=self.df_ne,
                                                          auxbasis=self.auxbasis)
+
+    def nuc_grad_method(self):
+        import pyscf.neo.df_grad
+        return pyscf.neo.df_grad.Gradients(self)
+
+    Gradients = lib.alias(nuc_grad_method, alias_name='Gradients')
