@@ -1,3 +1,9 @@
+#!/usr/bin/env python
+
+'''
+Analytic gradient for density-fitting interaction Coulomb in CDFT
+'''
+
 import numpy
 import scipy
 from pyscf import lib
@@ -6,6 +12,7 @@ from pyscf.grad import rhf as rhf_grad
 from pyscf.neo import grad
 from pyscf.lib import logger
 from pyscf.df.grad.rhf import _int3c_wrapper, balance_partition
+
 
 def get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n, atmlst, max_memory,
                 auxbasis_response=True):
@@ -85,56 +92,66 @@ def get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n, atmlst, max_memory,
     rhoj_n = scipy.linalg.solve(int2c, rhoj_n.T, assume_a='pos').T
     int2c = None
 
-    de = numpy.zeros((len(atmlst),3))
+    de = numpy.zeros((len(atmlst), 3))
     vj = process_vj_block(get_int3c_ip1_e, mol_e, rhoj_n, ao_ranges_e, aux_loc)
     aoslices = mol_e.aoslice_by_atom()
+
     for k, ia in enumerate(atmlst):
-        p0, p1 = aoslices[ia,2:]
-        de[k] += 2 * lib.einsum('xij,ij->x', vj[:,p0:p1], dm_e[p0:p1])
+        p0, p1 = aoslices[ia, 2:]
+        de[k] += 2 * lib.einsum('xij,ij->x', vj[:, p0:p1], dm_e[p0:p1])
 
     vj = process_vj_block(get_int3c_ip1_n, mol_n, rhoj_e, ao_ranges_n, aux_loc)
     aoslices = mol_n.aoslice_by_atom()
+
     for k, ia in enumerate(atmlst):
-        p0, p1 = aoslices[ia,2:]
-        de[k] += 2 * lib.einsum('xij,ij->x', vj[:,p0:p1], dm_n[p0:p1])
+        p0, p1 = aoslices[ia, 2:]
+        de[k] += 2 * lib.einsum('xij,ij->x', vj[:, p0:p1], dm_n[p0:p1])
+
     vj = None
 
     if auxbasis_response:
+        vjaux = numpy.empty((3, naux))
 
-        vjaux = numpy.empty((3,naux))
         for shl0, shl1, _ in ao_ranges_e:
             int3c = get_int3c_ip2_e((0, mol_e.nbas, 0, mol_e.nbas, shl0, shl1))  # (i,j|P)
             p0, p1 = aux_loc[shl0], aux_loc[shl1]
-            vjaux[:,p0:p1] = lib.einsum('xwp,w,p->xp',
+            vjaux[:, p0:p1] = lib.einsum('xwp,w,p->xp',
                                         int3c, dm_tril_e, rhoj_n[p0:p1])
             int3c = None
 
         for shl0, shl1, _ in ao_ranges_n:
             int3c = get_int3c_ip2_n((0, mol_n.nbas, 0, mol_n.nbas, shl0, shl1))  # (I,J|P)
             p0, p1 = aux_loc[shl0], aux_loc[shl1]
-            vjaux[:,p0:p1] += lib.einsum('xwp,w,p->xp',
+            vjaux[:, p0:p1] += lib.einsum('xwp,w,p->xp',
                                          int3c, dm_tril_n, rhoj_e[p0:p1])
             int3c = None
 
         # (d/dX P|Q)
         int2c_e1 = auxmol_e.intor('int2c2e_ip1', aosym='s1')
-        vjaux -= lib.einsum('xpq,p,q->xp', int2c_e1, rhoj_e, rhoj_n) +\
-                 lib.einsum('xpq,p,q->xp', int2c_e1, rhoj_n, rhoj_e)
+        vjaux -= lib.einsum('xpq,p,q->xp', int2c_e1, rhoj_e, rhoj_n) + \
+                lib.einsum('xpq,p,q->xp', int2c_e1, rhoj_n, rhoj_e)
 
         auxslices = auxmol_e.aoslice_by_atom()
-        vjaux = numpy.array([vjaux[:, p0:p1].sum(axis=1) for p0, p1 in auxslices[:,2:]])
+        vjaux = numpy.array([vjaux[:, p0:p1].sum(axis=1)
+                            for p0, p1 in auxslices[:, 2:]])
         de += vjaux
         vjaux = None
 
     return de
 
+
 def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
     '''Calcuate gradient for inter-component density-fitting Coulomb interactions'''
     mf = mf_grad.base
     mol = mf_grad.mol
-    if mo_energy is None: mo_energy = mf.mo_energy
-    if mo_occ is None:    mo_occ = mf.mo_occ
-    if mo_coeff is None:  mo_coeff = mf.mo_coeff
+
+    if mo_energy is None:
+        mo_energy = mf.mo_energy
+    if mo_occ is None:
+        mo_occ = mf.mo_occ
+    if mo_coeff is None:
+        mo_coeff = mf.mo_coeff
+
     log = logger.Logger(mf_grad.stdout, mf_grad.verbose)
 
     dm0 = mf.make_rdm1(mo_coeff, mo_occ)
@@ -142,27 +159,33 @@ def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
     if atmlst is None:
         atmlst = range(mol.natm)
 
-    de = numpy.zeros((len(atmlst),3))
+    de = numpy.zeros((len(atmlst), 3))
 
     for (t1, t2), interaction in mf.interactions.items():
         comp1 = mf.components[t1]
         comp2 = mf.components[t2]
         dm1 = dm0[t1]
+
         if interaction.mf1_unrestricted:
             assert dm1.ndim > 2 and dm1.shape[0] == 2
             dm1 = dm1[0] + dm1[1]
+
         dm2 = dm0[t2]
+
         if interaction.mf2_unrestricted:
             assert dm2.ndim > 2 and dm2.shape[0] == 2
             dm2 = dm2[0] + dm2[1]
+
         mol1 = comp1.mol
         mol2 = comp2.mol
 
-        check_ne = 0 # 0: not ne; 1: t1 is e t2 is n; 2: t1 is n t2 is e
+        check_ne = 0  # 0: not ne; 1: t1 is e t2 is n; 2: t1 is n t2 is e
+
         if t1 == 'e' and t2.startswith('n'):
             check_ne = 1
         elif t2 == 'e' and t1.startswith('n'):
             check_ne = 2
+
         if check_ne and mf_grad.base.df_ne:
             if check_ne == 1:
                 mol_e, mol_n = mol1, mol2
@@ -172,37 +195,18 @@ def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
                 mol_e, mol_n = mol2, mol1
                 auxmol_e = comp2.with_df.auxmol
                 dm_e, dm_n = dm2, dm1
-            de = get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n, atmlst,
+
+            de += get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n, atmlst,
                              mf_grad.max_memory,
                              mf_grad.auxbasis_response)
-
         else:
-            aoslices1 = mol1.aoslice_by_atom()
-            aoslices2 = mol2.aoslice_by_atom()
-            for i0, ia in enumerate(atmlst):
-                shl0, shl1, p0, p1 = aoslices1[ia]
-                # Derivative w.r.t. mol1
-                if shl1 > shl0:
-                    shls_slice = (shl0, shl1) + (0, mol1.nbas) + (0, mol2.nbas)*2
-                    v1 = get_jk((mol1, mol1, mol2, mol2),
-                                dm2, scripts='ijkl,lk->ij',
-                                intor='int2e_ip1', aosym='s2kl', comp=3,
-                                shls_slice=shls_slice)
-                    de[i0] -= 2. * comp1.charge * comp2.charge * \
-                            numpy.einsum('xij,ij->x', v1, dm1[p0:p1])
-                shl0, shl1, p0, p1 = aoslices2[ia]
-                # Derivative w.r.t. mol2
-                if shl1 > shl0:
-                    shls_slice = (shl0, shl1) + (0, mol2.nbas) + (0, mol1.nbas)*2
-                    v1 = get_jk((mol2, mol2, mol1, mol1),
-                                dm1, scripts='ijkl,lk->ij',
-                                intor='int2e_ip1', aosym='s2kl', comp=3,
-                                shls_slice=shls_slice)
-                    de[i0] -= 2. * comp1.charge * comp2.charge * \
-                            numpy.einsum('xij,ij->x', v1, dm2[p0:p1])
+            de += grad.grad_pair_int(mol1, mol2, dm1, dm2,
+                                    comp1.charge, comp2.charge, atmlst)
+
     if log.verbose >= logger.DEBUG:
         log.debug('gradients of Coulomb interaction')
         rhf_grad._write(log, mol, de, atmlst)
+
     return de
 
 
@@ -214,5 +218,6 @@ class Gradients(grad.Gradients):
 
     auxbasis_response = True
     grad_int = grad_int
+
 
 Grad = Gradients

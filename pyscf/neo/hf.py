@@ -764,12 +764,8 @@ class HF(scf.hf.SCF):
     >>> mf.scf()
     -99.98104139461894
     '''
-    def __init__(self, mol, unrestricted=False, df_ee=False,
-                 auxbasis_e=None, only_dfj_e=False):
+    def __init__(self, mol, unrestricted=False):
         super().__init__(mol)
-        self.df_ee = df_ee
-        self.auxbasis_e = auxbasis_e
-        self.only_dfj_e = only_dfj_e
         # NOTE: unrestricted should be understood as "force unrestricted".
         # With unrestricted=False, each component will still be RHF/UHF depending on the spin
         self.unrestricted = unrestricted
@@ -790,8 +786,6 @@ class HF(scf.hf.SCF):
                         mf = scf.UHF(comp)
                     else:
                         mf = scf.RHF(comp)
-                if self.df_ee:
-                    mf = mf.density_fit(auxbasis=self.auxbasis_e, only_dfj=self.only_dfj_e)
                 charge = 1.
                 if t.startswith('p'):
                     charge = -1.
@@ -1166,8 +1160,6 @@ class HF(scf.hf.SCF):
                             mf = scf.UHF(comp)
                         else:
                             mf = scf.RHF(comp)
-                    if self.df_ee:
-                        mf = mf.density_fit(auxbasis=self.auxbasis_e, only_dfj=self.only_dfj_e)
                     charge = 1.
                     if t.startswith('p'):
                         charge = -1.

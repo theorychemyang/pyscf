@@ -120,6 +120,33 @@ class ComponentGrad:
     def kernel(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         raise AttributeError
 
+def grad_pair_int(mol1, mol2, dm1, dm2, charge1, charge2, atmlst):
+    de = numpy.zeros((len(atmlst),3))
+    aoslices1 = mol1.aoslice_by_atom()
+    aoslices2 = mol2.aoslice_by_atom()
+    for i0, ia in enumerate(atmlst):
+        shl0, shl1, p0, p1 = aoslices1[ia]
+        # Derivative w.r.t. mol1
+        if shl1 > shl0:
+            shls_slice = (shl0, shl1) + (0, mol1.nbas) + (0, mol2.nbas)*2
+            v1 = get_jk((mol1, mol1, mol2, mol2),
+                        dm2, scripts='ijkl,lk->ij',
+                        intor='int2e_ip1', aosym='s2kl', comp=3,
+                        shls_slice=shls_slice)
+            de[i0] -= 2. * charge1 * charge2 * \
+                        numpy.einsum('xij,ij->x', v1, dm1[p0:p1])
+        shl0, shl1, p0, p1 = aoslices2[ia]
+        # Derivative w.r.t. mol2
+        if shl1 > shl0:
+            shls_slice = (shl0, shl1) + (0, mol2.nbas) + (0, mol1.nbas)*2
+            v1 = get_jk((mol2, mol2, mol1, mol1),
+                        dm1, scripts='ijkl,lk->ij',
+                        intor='int2e_ip1', aosym='s2kl', comp=3,
+                        shls_slice=shls_slice)
+            de[i0] -= 2. * charge1 * charge2 * \
+                        numpy.einsum('xij,ij->x', v1, dm2[p0:p1])
+    return de
+
 def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
     '''Calculate gradient for inter-component Coulomb interactions'''
     mf = mf_grad.base
@@ -149,29 +176,8 @@ def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
             dm2 = dm2[0] + dm2[1]
         mol1 = comp1.mol
         mol2 = comp2.mol
-        aoslices1 = mol1.aoslice_by_atom()
-        aoslices2 = mol2.aoslice_by_atom()
-        for i0, ia in enumerate(atmlst):
-            shl0, shl1, p0, p1 = aoslices1[ia]
-            # Derivative w.r.t. mol1
-            if shl1 > shl0:
-                shls_slice = (shl0, shl1) + (0, mol1.nbas) + (0, mol2.nbas)*2
-                v1 = get_jk((mol1, mol1, mol2, mol2),
-                            dm2, scripts='ijkl,lk->ij',
-                            intor='int2e_ip1', aosym='s2kl', comp=3,
-                            shls_slice=shls_slice)
-                de[i0] -= 2. * comp1.charge * comp2.charge * \
-                          numpy.einsum('xij,ij->x', v1, dm1[p0:p1])
-            shl0, shl1, p0, p1 = aoslices2[ia]
-            # Derivative w.r.t. mol2
-            if shl1 > shl0:
-                shls_slice = (shl0, shl1) + (0, mol2.nbas) + (0, mol1.nbas)*2
-                v1 = get_jk((mol2, mol2, mol1, mol1),
-                            dm1, scripts='ijkl,lk->ij',
-                            intor='int2e_ip1', aosym='s2kl', comp=3,
-                            shls_slice=shls_slice)
-                de[i0] -= 2. * comp1.charge * comp2.charge * \
-                          numpy.einsum('xij,ij->x', v1, dm2[p0:p1])
+        de += grad_pair_int(mol1, mol2, dm1, dm2,
+                            comp1.charge, comp2.charge, atmlst)
 
     if log.verbose >= logger.DEBUG:
         log.debug('gradients of Coulomb interaction')
