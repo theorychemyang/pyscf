@@ -21,7 +21,6 @@ class KnownValues(unittest.TestCase):
         de = mf.Gradients().kernel()
 
         e_scanner = mf.as_scanner()
-        e0 = e_scanner('H 0 0 0; F 0 0 1')
         e1 = e_scanner('H 0 0 -0.001; F 0 0 1')
         e2 = e_scanner('H 0 0  0.001; F 0 0 1')
 
@@ -38,6 +37,25 @@ class KnownValues(unittest.TestCase):
         e2 = e_scanner('H 0 0 0; F 0 0 1.001')
 
         self.assertAlmostEqual(de[1,2], (e2-e1)/0.002*lib.param.BOHR, 5)
+
+    def test_scanner(self):
+        mol = neo.M(atom='H 0 0 0; F 0 0 0.94', basis='aug-ccpvdz')
+        mf = neo.CDFT(mol, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
+        grad_scanner = mf.nuc_grad_method().as_scanner()
+
+        mol2 = neo.M(atom='H 0 0 0; F 0 0 1.1', basis='aug-ccpvdz')
+        mf2 = neo.CDFT(mol2, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
+        mf2.scf()
+        grad2 = mf2.Gradients().grad()
+        _, grad = grad_scanner(mol2)
+        self.assertTrue(abs(grad-grad2).max() < 1e-6)
+
+        mol2 = neo.M(atom='H 0 0 0; F 0 0 1.2', basis='aug-ccpvdz')
+        mf2 = neo.CDFT(mol2, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
+        mf2.scf()
+        grad2 = mf2.Gradients().grad()
+        _, grad = grad_scanner(mol2)
+        self.assertTrue(abs(grad-grad2).max() < 1e-6)
 
 if __name__ == "__main__":
     print("Full Tests for ee and ne density-fitting in CDFT")

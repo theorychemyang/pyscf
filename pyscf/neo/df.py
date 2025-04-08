@@ -189,7 +189,11 @@ def density_fit(mf, auxbasis=None, ee_only_dfj=False, df_ne=False):
         return mf
 
     dfmf = _DFNEO(mf, auxbasis, ee_only_dfj, df_ne)
-    return lib.set_class(dfmf, (_DFNEO, mf.__class__))
+    if df_ne:
+        name = _DFNEO.__name_mixin__ + '-EE&NE-' + mf.__class__.__name__
+    else:
+        name = _DFNEO.__name_mixin__ + '-EE-' + mf.__class__.__name__
+    return lib.set_class(dfmf, (_DFNEO, mf.__class__), name)
 
 class DFInteractionCoulomb(hf.InteractionCoulomb):
     def __init__(self, *args, df_ne=False, auxbasis=None, **kwargs):
@@ -335,7 +339,7 @@ class DFE(df.DF):
         return self
 
 class _DFNEO:
-    __name_mixin__ = 'DFNEO'
+    __name_mixin__ = 'DF'
 
     _keys = {'ee_only_dfj', 'df_ne', 'auxbasis'}
 
@@ -343,6 +347,7 @@ class _DFNEO:
         self.__dict__.update(mf.__dict__)
         self.ee_only_dfj = ee_only_dfj
         self.df_ne = df_ne
+
         self.auxbasis = auxbasis
 
         if isinstance(mf, neo.KS):
