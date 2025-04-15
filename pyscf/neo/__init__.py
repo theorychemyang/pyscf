@@ -13,3 +13,4 @@ except ImportError:
     pass
 from pyscf.neo.mp2 import MP2
 from pyscf.neo.fci_n_minus_2_resolution import FCI
+from pyscf.neo.efield import SCFwithEfield, GradwithEfield, polarizability

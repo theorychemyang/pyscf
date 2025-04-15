@@ -734,7 +734,7 @@ def dipole_grad(hessobj, mo1=None):
     coords  = mol.atom_coords()
     charge_center = numpy.einsum('i,ix->x', charges, coords) / charges.sum()
 
-    with mol.with_common_orig(charge_center):
+    with mol_e.with_common_orig(charge_center):
         int1e_irp = - mol_e.intor("int1e_irp", comp=9)
         int1e_r = mol_e.intor_symmetric("int1e_r", comp=3)
 
