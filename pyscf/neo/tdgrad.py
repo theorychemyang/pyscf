@@ -48,8 +48,7 @@ def solve_nos1(fvind, mo_energy, mo_occ, h1, with_f1=False,
             e_ai[t] = 1. / lib.direct_sum('a-i->ai', e_a[t], e_i[t])
             nvir[t], nocc[t] = e_ai[t].shape
             if with_f1 and t.startswith('n'):
-                # Use 1/(HOMO-LUMO) to scale position constraint equations
-                scale[t] = 1 / (e_a[t][0] - e_i[t][-1])
+                scale[t] = 2.0
                 total_f1 += 3
 
             hs[t] = h1[t].reshape(-1,nvir[t],nocc[t])
@@ -280,7 +279,8 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
     z1, mo_e1, f1 = solve_nos1(fvind, mf.mo_energy, mo_occ, wvo,
                                           with_f1 = True,
                                           max_cycle=td_grad.cphf_max_cycle,
-                                          tol=td_grad.cphf_conv_tol)
+                                          tol=td_grad.cphf_conv_tol,
+                                          verbose = verbose)
     for t in z1.keys():
         z1[t] = z1[t].reshape(nvir[t], nocc[t])
     time1 = log.timer('Z-vector using CPHF solver', *time0)
@@ -497,8 +497,6 @@ class Gradients(tdrhf.Gradients):
     >>> td_grad = tdgrad.Gradients(td_mf)
     >>> td_grad.kernel()
     '''
-    # def __init__(self, td):
-    #     tdrhf.Gradients.__init__(self, td)
 
     @lib.with_doc(grad_elec.__doc__)
     def grad_elec(self, xy, singlet, atmlst=None):

@@ -98,15 +98,7 @@ class CTDBase(rhf.TDBase):
     Excited State energies (eV)
     [ 6.82308887  7.68777851  7.68777851 10.05706016 10.05706016]
     '''
-    
-    def __init__(self, mf):
-        rhf.TDBase.__init__(self, mf)
-    
-    def check_sanity(self):
-        if self._scf.mo_coeff['e'] is None:
-            raise RuntimeError('SCF object is not initialized')
-        lib.StreamObject.check_sanity(self)
-    
+        
     def get_ab(self):
         return get_ab(self._scf)
     
@@ -167,6 +159,7 @@ class CTDDFT(CTDBase):
     '''
     def __init__(self, mf):
         CTDBase.__init__(self, mf)
+        self.max_space = 100
 
     def gen_vind(self, mf=None):
         if mf is None:
@@ -209,10 +202,13 @@ class CTDDFT(CTDBase):
             return lib.linalg_helper._eigs_cmplx2real(w, v, realidx,
                                                       real_eigenvectors=True)
 
-        self.converged, w, x1 = lr_eig(
-            vind, x0, precond, tol_residual=self.conv_tol, lindep=self.lindep,
-            nroots=nstates, pick=pickeig, max_cycle=self.max_cycle,
-            max_memory=self.max_memory, verbose=log)
+        self.converged, w, x1 = \
+                lib.davidson_nosym1(vind, x0, precond,
+                                    tol=self.conv_tol,
+                                    nroots=nstates, lindep=self.lindep,
+                                    max_cycle=self.max_cycle,
+                                    max_space=self.max_space, pick=pickeig,
+                                    verbose=log)
         
         self.e = numpy.array(w)
         self.xy = _normalize(x1, self._scf.mo_occ['e'])
