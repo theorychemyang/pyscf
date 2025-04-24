@@ -167,31 +167,29 @@ class SCFwithEfield(CDFT):
         E_nuc_field = -numpy.sum([Z * numpy.dot(self.efield, R) for Z, R in zip(nuclear_charges, nuclear_coords)])
 
         return enuc + E_nuc_field
-    
+
+
 class GradwithEfield(Gradients):
     '''CNEO gradients with external electric field'''
     _keys = {'mf'}
 
     def __init__(self, mf):
-        Gradients.__init__(self, mf)
+        super().__init__(mf)
         self.mf = self.base = mf
         self._efield = mf.efield
-    
-    def get_hcore(self, mol=None):
-        if mol is None: mol = self.mol
-        hcore = {}
-        for t, comp in mol.components.items():
-            hcore[t] = self.components[t].get_hcore(mol=comp)
-            comp.set_common_orig([0, 0, 0])
-            nao = comp.nao
-            int1e_irp = - comp.intor('int1e_irp', comp=9).reshape(3, 3, nao, nao)
-            hcore[t] += numpy.einsum('z,zxij->xij', self._efield, int1e_irp) * self.components[t].charge
 
-        return hcore
+        mol_e = self.mol.components['e']
+        h = self.components['e'].get_hcore(mol=mol_e)
+        nao = mol_e.nao
+        with mol_e.with_common_orig([0, 0, 0]):
+            int1e_irp = - mol_e.intor('int1e_irp', comp=9).reshape(3, 3, nao, nao)
+        h += numpy.einsum('z,zxij->xji', numpy.array(self._efield), int1e_irp) * self.components['e'].base.charge
+
+        self.components['e'].get_hcore = lambda *args: h
     
     def grad_nuc(self, atmlst=None):
         gs = super().grad_nuc(atmlst)
-        charges = self.mol.components['e'].atom_charges()
+        charges = self.mol.atom_charges()
 
         gs -= numpy.einsum('i,x->ix', charges, self._efield)
         if atmlst is not None:
@@ -201,19 +199,14 @@ class GradwithEfield(Gradients):
 
 if __name__ == '__main__':
     from pyscf import neo
-    mol = neo.M(atom='H 0 0 0; F 0 0 0.9', basis='ccpvdz')
+    mol = neo.M(atom='H 0 0 0; F 0 0 0.8', basis='ccpvdz')
     mf = SCFwithEfield(mol, xc='b3lyp')
     mf.efield = numpy.array([0, 0, 0.001])
     #mf.conv_tol = 1e-14
     mf.scf()
 
-    p = polarizability(mf)
-    print(p)
-
-    de = dipole_grad(mf)
-    print(de)
-
     grad = GradwithEfield(mf)
+    grad.grid_response = True
     g = grad.kernel()
     
 

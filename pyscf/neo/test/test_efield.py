@@ -55,23 +55,24 @@ class KnownValues(unittest.TestCase):
     def test_grad_with_efield(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 0.8', basis='ccpvdz')
         mf = SCFwithEfield(mol, xc='b3lyp')
-        mf.efield = numpy.array([0, 0, 0.0001])
+        mf.efield = numpy.array([0, 0, 0.01])
         mf.scf()
         grad = GradwithEfield(mf)
+        grad.grid_response = True
         de = grad.kernel()
 
         mol1 = neo.M(atom='H 0 0 -0.001; F 0 0 0.8', basis='ccpvdz')
         mf1 = SCFwithEfield(mol1, xc='b3lyp')
-        mf1.efield = numpy.array([0, 0, 0.0001])
+        mf1.efield = numpy.array([0, 0, 0.01])
         e1 = mf1.scf()
 
         mol2 = neo.M(atom='H 0 0 0.001; F 0 0 0.8', basis='ccpvdz')
         mf2 = SCFwithEfield(mol2, xc='b3lyp')
-        mf2.efield = numpy.array([0, 0, 0.0001])
+        mf2.efield = numpy.array([0, 0, 0.01])
         e2 = mf2.scf()
         
         de_fd = (e2-e1) / 0.002 * lib.param.BOHR
-        self.assertAlmostEqual(de[0,-1], de_fd, 4)
+        self.assertAlmostEqual(de[0,-1], de_fd, 5)
 
 
 if __name__ == "__main__":
