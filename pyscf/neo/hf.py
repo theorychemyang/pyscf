@@ -259,8 +259,12 @@ class ComponentSCF(Component):
         if len(mol._ecpbas) > 0 and not self.is_nucleus:
             h += mol.intor_symmetric('ECPscalar') * self.charge
 
-        if mol.super_mol.mm_mol is not None:
-            h += hcore_qmmm(mol, mol.super_mol.mm_mol) * self.charge
+        if hasattr(mol, 'super_mol'):
+            if mol.super_mol.mm_mol is not None:
+                h += hcore_qmmm(mol, mol.super_mol.mm_mol) * self.charge
+        elif hasattr(mol, 'mm_mol'): # elec guess directly uses super_mol
+            if mol.mm_mol is not None:
+                h += hcore_qmmm(mol, mol.mm_mol) * self.charge
         return h
 
     def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
