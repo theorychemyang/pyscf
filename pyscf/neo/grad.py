@@ -507,7 +507,7 @@ class Gradients(rhf_grad.GradientsBase):
         de += self.grad_int(mo_energy, mo_coeff, mo_occ, atmlst)
 
         # Add EPC contribution if needed
-        if self.base.epc is not None:
+        if hasattr(self.base, 'epc') and self.base.epc is not None:
             de += self.grad_epc(mo_energy, mo_coeff, mo_occ, atmlst)
 
         self.de = de + self.grad_nuc(atmlst=atmlst)
