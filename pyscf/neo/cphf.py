@@ -123,8 +123,45 @@ def solve_withs1(fvind, mo_energy, mo_occ, h1, s1, with_f1=False,
             nvir, nocc[t] = e_ai[t].shape
             nmo[t] = nocc[t] + nvir
             if with_f1 and t.startswith('n'):
-                # Use 1/(HOMO-LUMO) to scale position constraint equations
-                scale[t] = 1 / (e_a[t][0] + level_shift - e_i[t][-1])
+                # In theory, this scale factor should be 1/(LUMO-HOMO) to be
+                # consistent with NEO-CPHF blocks, but in practical tests it
+                # can lead to nonconvergence. In the test for a molecule with
+                # 24 atoms (9 of which are hydrogen), I get the following results:
+                #  | scale | #cycles | NEO-CPHF error | position error |
+                #  |  1.0  |    44   |     2.9e-10    |    1.4e-10     |
+                #  |  1.6  |    49   |     1.7e-12    |    5.8e-13     |
+                #  |  1.8  |    51   |     1.9e-13    |    1.2e-13     |
+                #  |  2.0  |    54   |     6.9e-14    |    6.2e-14     |
+                #  |  2.2  |    55   |     4.5e-14    |    8.9e-15     |
+                #  |  2.4  |    57   |     5.5e-14    |    8.9e-16     |
+                #  |  2.6  |    60   |     5.0e-14    |    4.4e-16     |
+                #  |  2.8  |    63   |     5.0e-14    |    5.8e-16     |
+                #  |  5.0  |    85   |     7.7e-14    |    1.2e-15     |
+                #  | 10.0  |   138   |     4.2e-14    |    1.2e-15     |
+                # Roughly 2.0 can be chosen to balance the accuracy and efficiency
+                # However, this does not work well for heavier quantum nuclei, e.g.,
+                # full quantum H-F molecule in the test.
+                # Previously the empirical scale factor was chosen as 2 * charge,
+                # but now this function does not have access to the charge, so using
+                # a slightly weird empirical formula:
+                # Instead of
+                #scale[t] = 1. / (e_a[t][0] + level_shift - e_i[t][-1])
+                # use
+                scale[t] = (e_a[t][0] + level_shift - e_i[t][-1]) * 100.
+                # This will give roughly 2.0 for hydrogen. For heavier nuclei, this
+                # will give a large number. I guess it is likely to fail the krylov
+                # solver again if someone calculates with multiple heavy quantum nuclei,
+                # but this is the best compromise I can find now (works for multiple
+                # hydrogen and doesn't fail the one heavy nucleus full quantum test).
+                # Here I collect the data for full quantum H-F, H2O and CH3:
+                # | molecule | scale for H | scale for heavy | NEO-CPHF error | position error |
+                # |    HF    |     45.9    |      1.53       |     3.7e-7     |    3.5e-8      |
+                # |    HF    |     2.18    |      65.2       |     4.5e-6     |    1.7e-6      |
+                # |    H2O   |     44.3    |      1.80       |     8.8e-14    |    1.7e-15     |
+                # |    H2O   |     2.26    |      55.6       |     1.3e-5     |    4.0e-6      |
+                # |    CH3   |     41.5    |      2.84       |     6.3e-14    |    9.6e-15     |
+                # |    CH3   |     2.41    |      35.2       |     2.0e-5     |    1.4e-5      |
+                # The error is much larger, but at least the frequency test does not fail.
                 total_f1 += 3
 
             s1[t] = s1[t].reshape(-1,nmo[t],nocc[t])
@@ -293,6 +330,9 @@ def solve_withs1(fvind, mo_energy, mo_occ, h1, s1, with_f1=False,
                     x.append(f1[t])
         x = numpy.hstack(x)
         ax = vind_vo(x).reshape(x.shape) + x
-        log.debug1(f'[DEBUG] CPHF error: {numpy.abs(ax - mo1base).max()=}')
+        log.debug1(f'[DEBUG] CPHF error: {numpy.abs(ax - mo1base).max()}')
+        if mo1base.shape[1] > total_mo1:
+            log.debug1(f'[DEBUG] error for NEO part:   {numpy.abs(ax - mo1base)[:,:total_mo1].max()}')
+            log.debug1(f'[DEBUG] error for constraint: {numpy.abs(ax - mo1base)[:,total_mo1:].max()}')
 
     return mo1, mo_e1, f1

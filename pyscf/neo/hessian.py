@@ -515,8 +515,15 @@ def solve_mo1(mf, mo_energy, mo_coeff, mo_occ, h1ao,
             mocc[t] = mo_coeff[t][:,mo_occ[t]>0]
             nocc[t] = mocc[t].shape[1]
 
+    debug = False
+    if isinstance(verbose, int):
+        if verbose >= logger.DEBUG1:
+            debug = True
+    elif hasattr(verbose, 'verbose'):
+        if verbose.verbose >= logger.DEBUG1:
+            debug = True
     if fx is None:
-        fx = gen_vind(mf, mo_coeff, mo_occ)
+        fx = gen_vind(mf, mo_coeff, mo_occ, debug=debug)
 
     s1a = {}
     for t, comp in mol.components.items():
@@ -606,7 +613,7 @@ def solve_mo1(mf, mo_energy, mo_coeff, mo_occ, h1ao,
         mo1 = e1 = None
     return mo1s, e1s
 
-def gen_vind(mf, mo_coeff, mo_occ):
+def gen_vind(mf, mo_coeff, mo_occ, debug=False):
     nao = {}
     nmo = {}
     mocc = {}
@@ -688,8 +695,9 @@ def gen_vind(mf, mo_coeff, mo_occ):
                     v1vo[t][i] = reduce(numpy.dot, (mo_coeff[t].T, x, mocc[t]))
             if f1 is not None and t in f1 and t.startswith('n'):
                 # DEBUG: Verify nuclear dm1 * int1e_r
-                #position = numpy.einsum('aij,xij->ax', dm1[t], mf.components[t].int1e_r)
-                #print(f'[DEBUG] norm(dm1 * int1e_r) for {t}: {numpy.linalg.norm(position)}')
+                if debug:
+                    position = numpy.einsum('aij,xij->ax', dm1[t], mf.components[t].int1e_r)
+                    print(f'[DEBUG] norm(dm1 * int1e_r) for {t}: {numpy.linalg.norm(position)}')
                 rvo = numpy.empty((3,nmo[t],nocc[t]))
                 for i, x in enumerate(mf.components[t].int1e_r):
                     rvo[i] = reduce(numpy.dot, (mo_coeff[t].T, x, mocc[t]))

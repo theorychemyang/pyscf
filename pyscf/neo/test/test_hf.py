@@ -42,7 +42,6 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(mol.mass[2], 14.007, 4)
         self.assertAlmostEqual(energy, -92.8437063565785, 8)
 
-
 if __name__ == "__main__":
     print("Full Tests for neo.hf")
     unittest.main()
