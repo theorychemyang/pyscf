@@ -1128,7 +1128,8 @@ class HF(scf.hf.SCF):
         raise NotImplementedError
 
     def nuc_grad_method(self):
-        raise AttributeError('Only CNEO-DFT has gradients.')
+        from pyscf.neo import grad
+        return grad.Gradients(self)
 
     def update_(self, chkfile=None):
         raise NotImplementedError

@@ -55,6 +55,25 @@ class KnownValues(unittest.TestCase):
              + 4/5 * e5 + -1/5 * e6 + 4/105 * e7 - 1/280 * e8
         self.assertAlmostEqual(de[0,2], fd/0.0001*lib.param.BOHR, 5)
 
+    def test_neo_grad_fd(self):
+        mol = neo.M(atom='H 0 0 0; C 0 0 1.0754; N 0 0 2.2223',
+                    basis='ccpvdz', quantum_nuc=[0,1,2])
+        mf = neo.KS(mol, xc='b3lyp5')
+        mf.run()
+        de = mf.nuc_grad_method().kernel()
+
+        mfs = mf.as_scanner()
+        e1 = mfs('H 0 0 -0.001; C 0 0 1.0754; N 0 0 2.2223')
+        e2 = mfs('H 0 0  0.001; C 0 0 1.0754; N 0 0 2.2223')
+        self.assertAlmostEqual(de[0,2], (e2-e1)/0.002*lib.param.BOHR, 5)
+
+        e1 = mfs('H 0 0 0; C 0 0 1.0744; N 0 0 2.2223')
+        e2 = mfs('H 0 0 0; C 0 0 1.0764; N 0 0 2.2223')
+        self.assertAlmostEqual(de[1,2], (e2-e1)/0.002*lib.param.BOHR, 5)
+
+        e1 = mfs('H 0 0 0; C 0 0 1.0754; N 0 0 2.2213')
+        e2 = mfs('H 0 0 0; C 0 0 1.0754; N 0 0 2.2233')
+        self.assertAlmostEqual(de[2,2], (e2-e1)/0.002*lib.param.BOHR, 5)
 
 if __name__ == "__main__":
     print("Full Tests for neo.grad")
