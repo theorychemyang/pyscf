@@ -14,12 +14,29 @@ class KnownValues(unittest.TestCase):
                     basis='ccpvdz', quantum_nuc=[1,3])
         '''
         The neo module will automatically label the symbols according to the order:
-        O0 H1 (X-H1)(2) H3 (X-H3)(4)
-        The ghost atoms will occupy spaces, therefore quantum=[1,3], not [1,2], because
-        of those two X-H1. X-H1 will be automatically assigned to H1, and X-H3 to H3.
+
+            O0 H1 (X-H1)(2) H3 (X-H3)(4)
+
+        The ghost atoms will occupy spaces, therefore quantum_nuc=[1,3], not [1,2],
+        because of the X-H1. X-H1 will be automatically assigned to H1, and X-H3 to H3.
+
         Alternatively just use quantum_nuc=['H']. Only need to care about this number
         if you only want a specific part of hydrogen to be quantized.
-        Yes you can use more than one ghost for each quantum nucleus.
+
+        Yes you can use more than one ghost for each quantum nucleus, like
+
+            O
+            H
+            X-H1
+            X-H1
+            H
+            X-H4
+            X-H4
+            X-H4
+
+        with quantum_nuc=['H'] or [1,4].
+        Don't forget you need to label the ghost atoms according to the global index of
+        the non-ghost quantum nucleus that you want to put more basis at.
         '''
         #mf = neo.KS(mol, xc='b3lypg') # FIXME: DFT has a larger gradient error, why?
         mf = neo.HF(mol)
@@ -82,7 +99,7 @@ class KnownValues(unittest.TestCase):
                             X-H0  0 0 0.2;
                             F     0 0 1.0''',
                     basis='ccpvdz', quantum_nuc=[0,2])
-        mf = neo.HF(mol) # same here, gradient is accurate for HF but not KS
+        mf = neo.HF(mol) # same here, gradient is accurate for HF but not for KS
         mf.scf()
         de = mf.nuc_grad_method().kernel()
 
