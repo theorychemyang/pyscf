@@ -38,15 +38,14 @@ class KnownValues(unittest.TestCase):
         Don't forget you need to label the ghost atoms according to the global index of
         the non-ghost quantum nucleus that you want to put more basis at.
         '''
-        #mf = neo.KS(mol, xc='b3lypg') # FIXME: DFT has a larger gradient error, why?
-        mf = neo.HF(mol)
-        mf.conv_tol_grad = 1e-7 # tighter convergence
+        mf = neo.KS(mol, xc='b3lypg')
+        mf.conv_tol_grad = 1e-7
         mf.scf()
         '''
         The gradient is basis center gradient, including ghost atom center contributions.
         '''
         mf_grad = mf.nuc_grad_method()
-        #mf_grad.grid_response = True # For DFT
+        mf_grad.grid_response = True
         de = mf_grad.kernel()
 
         mfs = mf.as_scanner()
@@ -99,9 +98,12 @@ class KnownValues(unittest.TestCase):
                             X-H0  0 0 0.2;
                             F     0 0 1.0''',
                     basis='ccpvdz', quantum_nuc=[0,2])
-        mf = neo.HF(mol) # same here, gradient is accurate for HF but not for KS
+        mf = neo.KS(mol, xc='M062X')
+        mf.conv_tol_grad = 1e-7
         mf.scf()
-        de = mf.nuc_grad_method().kernel()
+        mf_grad = mf.nuc_grad_method()
+        mf_grad.grid_response = True
+        de = mf_grad.kernel()
 
         mfs = mf.as_scanner()
         e1 = mfs('''H     0 0 -0.001;
@@ -111,6 +113,13 @@ class KnownValues(unittest.TestCase):
                     X-H0  0 0  0.2;
                     F     0 0  1.0''')
         self.assertAlmostEqual(de[0,2], (e2-e1)/0.002*lib.param.BOHR, 5)
+        e1 = mfs('''H     0 0  0;
+                    X-H0  0 0  0.2;
+                    F     0 0  0.999''')
+        e2 = mfs('''H     0 0  0;
+                    X-H0  0 0  0.2;
+                    F     0 0  1.001''')
+        self.assertAlmostEqual(de[2,2], (e2-e1)/0.002*lib.param.BOHR, 5)
 
 if __name__ == "__main__":
     print("Full Tests for ghost atoms")
