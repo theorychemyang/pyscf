@@ -237,6 +237,31 @@ class Mole(gto.Mole):
                 self.components[f'n{i}'] = n_mol
                 idx += 1
 
+                # modified_symbol is the symbol with atom index
+                modified_symbol = n_mol.atom_symbol(i)
+                # When there are ghost atoms, hack the electronic mole, to remove the
+                # 'GHOST-' or 'X-' prefix of the quantum nuclear ghost atom, such that
+                # the DFT grid code will be tricked into generating grids with radius
+                # corresponding to that actual element, but not for charge 0 ghost atom.
+                # FIXME: A dirty hack. Need to let the upstream have a nicer interface
+                # to change the grid radius instead of this brutal force hack.
+                for j in range(self.natm):
+                    # Remove ghost prefix but do not remove digit because we need
+                    # the atom index from user manual input
+                    symb = self.components['e'].atom_symbol(j)
+                    is_ghost = False
+                    if len(symb) > 2 and symb[0].upper() == 'X' and symb[:2].upper() != 'XE':
+                        symb = symb[2:]  # Remove the prefix 'X-'
+                        is_ghost = True
+                    elif len(symb) > 6 and symb[:5].upper() == 'GHOST':
+                        symb = symb[6:]  # Remove the prefix 'GHOST-'
+                        is_ghost = True
+                    if is_ghost and modified_symbol.upper() == symb.upper():
+                        # This ghost atom is indeed specifically for this quantum nucleus
+                        modified_atom = list(self.components['e']._atom[j])
+                        modified_atom[0] = modified_symbol
+                        self.components['e']._atom[j] = tuple(modified_atom)
+
     def _build_electronic_mol(self, q_nuc_occ=None, **kwargs):
         '''Build electronic component including fractional occupations'''
         e_mol = gto.Mole()
@@ -532,6 +557,33 @@ class Mole(gto.Mole):
                     if mol._quantum_nuc[j]:
                         mol.components[f'n{i}']._atm[j, gto.CHARGE_OF] = 0
                 mol.components[f'n{i}'].nelec = (1,1)
+
+        # When there are ghost atoms, hack the electronic mole, to remove the
+        # 'GHOST-' or 'X-' prefix of the quantum nuclear ghost atom, such that
+        # the DFT grid code will be tricked into generating grids with radius
+        # corresponding to that actual element, but not for charge 0 ghost atom.
+        # FIXME: A dirty hack. Need to let the upstream have a nicer interface
+        # to change the grid radius instead of this brutal force hack.
+        for j in range(mol.natm):
+            # Remove ghost prefix but do not remove digit because we need
+            # the atom index from user manual input
+            symb = mol.components['e'].atom_symbol(j)
+            is_ghost = False
+            if len(symb) > 2 and symb[0].upper() == 'X' and symb[:2].upper() != 'XE':
+                symb = symb[2:]  # Remove the prefix 'X-'
+                is_ghost = True
+            elif len(symb) > 6 and symb[:5].upper() == 'GHOST':
+                symb = symb[6:]  # Remove the prefix 'GHOST-'
+                is_ghost = True
+            if is_ghost:
+                for i in range(mol.natm):
+                    if mol._quantum_nuc[i]:
+                        modified_symbol = mol.components[f'n{i}'].atom_symbol(i)
+                        if modified_symbol.upper() == symb.upper():
+                            # This ghost atom is indeed specifically for this quantum nucleus
+                            modified_atom = list(mol.components['e']._atom[j])
+                            modified_atom[0] = modified_symbol
+                            mol.components['e']._atom[j] = tuple(modified_atom)
 
         # then set_geom_ for the base mole
         # copied from gto.mole.Mole.set_geom_

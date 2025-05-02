@@ -97,7 +97,7 @@ class KnownValues(unittest.TestCase):
         mol = neo.M(atom='''H     0 0 0;
                             X-H0  0 0 0.2;
                             F     0 0 1.0''',
-                    basis='ccpvdz', quantum_nuc=[0,2])
+                    basis='ccpvdz', quantum_nuc=['H'])
         mf = neo.KS(mol, xc='M062X')
         mf.conv_tol_grad = 1e-7
         mf.scf()
@@ -120,6 +120,19 @@ class KnownValues(unittest.TestCase):
                     X-H0  0 0  0.2;
                     F     0 0  1.001''')
         self.assertAlmostEqual(de[2,2], (e2-e1)/0.002*lib.param.BOHR, 5)
+
+    def test_ghost_swap(self):
+        mol = neo.M(atom='''H     0 0 0;
+                            X-H0  0 0 0.2;
+                            F     0 0 1.0''',
+                    basis='ccpvdz', quantum_nuc=[0,2])
+        mf = neo.KS(mol, xc='PBE')
+        e1 = mf.scf()
+        mfs = mf.as_scanner()
+        e2 = mfs('''H     0 0 0.2;
+                    X-H0  0 0 0;
+                    F     0 0 1.0''')
+        self.assertAlmostEqual(e1, e2, 6)
 
 if __name__ == "__main__":
     print("Full Tests for ghost atoms")

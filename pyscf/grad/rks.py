@@ -458,13 +458,10 @@ def grids_response_cc(grids):
     atm_dist = gto.inter_distance(mol, atm_coords)
 
     def _radii_adjust(mol, atomic_radii):
-        # For CNEO, use super_mol, otherwise quantum nuclei in CNEO's
-        # electronic part `mole' object will have zero charge and trigger the
-        # ghost atom radii
-        if hasattr(mol, 'super_mol'):
-            charges = mol.super_mol.atom_charges()
-        else:
-            charges = mol.atom_charges()
+        # Be consistent with functions in dft.gen_grid, use symbols to
+        # re-evaluate the charges, in case the charges got modified
+        charges = numpy.array([gto.charge(mol.atom_symbol(ia))
+                               for ia in range(mol.natm)], dtype=int)
         if grids.radii_adjust == radi.treutler_atomic_radii_adjust:
             rad = numpy.sqrt(atomic_radii[charges]) + 1e-200
         elif grids.radii_adjust == radi.becke_atomic_radii_adjust:
