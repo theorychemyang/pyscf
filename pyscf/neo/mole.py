@@ -185,6 +185,8 @@ class Mole(gto.Mole):
                         self._quantum_nuc[j] = True
                 logger.info(self, 'All %s atoms are treated quantum-mechanically.' % i)
         self._n_quantum_nuc = sum(self._quantum_nuc)
+        if self._n_quantum_nuc <= 0:
+            raise RuntimeError('No quantum nucleus detected! Check your quantum_nuc input.')
 
     def _init_masses(self):
         '''Initialize nuclear masses including special isotopes'''
