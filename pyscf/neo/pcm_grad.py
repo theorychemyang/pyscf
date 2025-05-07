@@ -273,10 +273,10 @@ class WithSolventGrad:
             dm = self.base.make_rdm1()
         self.de_solute = super().kernel(*args, **kwargs)
 
-        self.de_solvent = 0
-        if not self.base.with_solvent._intermediates:
-            self.base.with_solvent.build()
-        dm_cache = self.base.with_solvent._intermediates.get('dm', None)
+        solvent = self.base.with_solvent
+        if not solvent._intermediates:
+            solvent.build()
+        dm_cache = solvent._intermediates.get('dm', None)
         if dm_cache is not None and isinstance(dm_cache, dict):
             is_dm_similar = True
             for t, comp in dm.items():
@@ -288,19 +288,19 @@ class WithSolventGrad:
                     is_dm_similar = False
                     break
             if not is_dm_similar:
-                self.base.with_solvent._get_vind(dm)
+                solvent._get_vind(dm)
         else:
-            self.base.with_solvent._get_vind(dm)
-        super_mol = self.base.with_solvent.mol.super_mol
-        for t, dm_comp in dm.items():
+            solvent._get_vind(dm)
+        self.de_solvent = grad_nuc(solvent) + grad_solver(solvent)
+        mol = self.mol
+        for t, comp in self.base.components.items():
+            dm_comp = dm[t]
             if dm_comp.ndim == 3:
                 dm_comp = dm_comp[0] + dm_comp[1]
 
-            charge = self.base.components[t].charge
-            self.de_solvent += charge * grad_qv(self.base.with_solvent, dm_comp,
-                                                super_mol.components[t])
-        self.de_solvent += grad_nuc(self.base.with_solvent)
-        self.de_solvent += grad_solver(self.base.with_solvent)
+            charge = comp.charge
+            self.de_solvent += charge * grad_qv(solvent, dm_comp,
+                                                mol.components[t])
         self.de = self.de_solute + self.de_solvent
 
         if self.verbose >= logger.NOTE:

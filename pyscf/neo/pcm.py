@@ -40,13 +40,14 @@ class PCM4NEO(pcm.PCM):
 
         v_grids = self.v_grids_n
         super_mol = self.mol.super_mol
-        for t, dms_comp in dms.items():
+        for t, comp in super_mol.components.items():
+            dms_comp = dms[t]
             nao = dms_comp.shape[-1]
             dms_comp = dms_comp.reshape(-1,nao,nao)
             if dms_comp.shape[0] == 2:
                 dms_comp = (dms_comp[0] + dms_comp[1]).reshape(-1,nao,nao)
 
-            v_grids_comp = self._get_v(dms_comp, super_mol.components[t])
+            v_grids_comp = self._get_v(dms_comp, comp)
             charge = _get_charge_from_mol_comp(super_mol, t)
             v_grids = v_grids - charge * v_grids_comp
 
@@ -60,9 +61,9 @@ class PCM4NEO(pcm.PCM):
         q_sym = (q + qt)/2.0
 
         vmat = {}
-        for t in dms.keys():
+        for t, comp in super_mol.components.items():
             charge = _get_charge_from_mol_comp(super_mol, t)
-            vmat[t] = charge * self._get_vmat(q_sym, super_mol.components[t])[0]
+            vmat[t] = charge * self._get_vmat(q_sym, comp)[0]
         epcm = 0.5 * numpy.dot(q_sym[0], v_grids[0])
 
         self._intermediates['q'] = q[0]
@@ -125,22 +126,22 @@ class PCM4NEO(pcm.PCM):
 
     def Hessian(self, hess_method):
         pass
-    # TODO
-    #    from pyscf.neo import pcm_hess
-    #    if self.frozen:
-    #        raise RuntimeError('Frozen solvent model is not supported')
-    #    from pyscf.neo import cdft
-    #    if isinstance(hess_method.base, cdft.CDFT):
-    #        return pcm_hess.make_hess_object(hess_method)
-    #    else:
-    #        raise NotImplementedError
+        from pyscf.neo import pcm_hess
+        if self.frozen:
+            raise RuntimeError('Frozen solvent model is not supported')
+        from pyscf.neo import cdft
+        if isinstance(hess_method.base, cdft.CDFT):
+            return pcm_hess.make_hess_object(hess_method)
+        else:
+            raise NotImplementedError
 
     def _B_dot_x(self, dms):
         if not self._intermediates:
             self.build()
         vmat = {}
         super_mol = self.mol.super_mol
-        for t, dms_comp in dms.items():
+        for t, comp in super_mol.components.items():
+            dms_comp = dms[t]
             out_shape = dms_comp.shape
             nao = dms_comp.shape[-1]
             dms_comp = dms_comp.reshape(-1,nao,nao)
@@ -148,7 +149,7 @@ class PCM4NEO(pcm.PCM):
             K = self._intermediates['K']
             R = self._intermediates['R']
             charge = _get_charge_from_mol_comp(super_mol, t)
-            v_grids = -charge * self._get_v(dms_comp, super_mol.components[t])
+            v_grids = -charge * self._get_v(dms_comp, comp)
 
             b = numpy.dot(R, v_grids.T)
             q = numpy.linalg.solve(K, b).T
@@ -157,5 +158,5 @@ class PCM4NEO(pcm.PCM):
             qt = numpy.dot(R.T, vK_1).T
             q_sym = (q + qt)/2.0
 
-            vmat[t] = self._get_vmat(q_sym, super_mol.components[t]).reshape(out_shape)
+            vmat[t] = self._get_vmat(q_sym, comp).reshape(out_shape)
         return vmat

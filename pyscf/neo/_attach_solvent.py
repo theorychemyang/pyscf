@@ -121,7 +121,13 @@ class NEOSCFWithSolvent(_Solvation):
 
     def gen_response(self, *args, **kwargs):
         vind = super().gen_response(*args, **kwargs)
-        # singlet=None is orbital hessian or CPHF type response function
+        # * singlet=None is orbital hessian or CPHF type response function.
+        # Except TDDFT, this is the default case for all response calculations
+        # (such as stability analysis, SOSCF, polarizability and Hessian).
+        # * In TDDFT, this setting only affect RHF wfn. The UHF wfn does not
+        # depend on the setting of "singlet".
+        # * For RHF reference, the triplet excitation does not change the total
+        # electron density, thus does not lead to solvent response.
         singlet = kwargs.get('singlet', True)
         singlet = singlet or singlet is None
         def vind_with_solvent(dm1):
@@ -135,7 +141,10 @@ class NEOSCFWithSolvent(_Solvation):
                             v[t] += v_solvent[t][0] + v_solvent[t][1]
                         elif singlet:
                             v[t] += v_solvent[t]
-                        # RHF triplet does not have solvent response
+                        else:
+                            # The response of electron density should be strictly zero
+                            # for TDDFT triplet
+                            pass
                     else:
                         # ??? (C)NEO-TDDFT? Should nuclei have solvent response?
                         # CNEO-TDDFT with frozen nuclei?
