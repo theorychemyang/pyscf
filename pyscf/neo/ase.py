@@ -116,8 +116,7 @@ class Pyscf_NEO(Calculator):
     def create_mf(self, mol):
         if self.den_fit:
             mf = neo.CDFT(mol, xc=self.xc, unrestricted=self.unrestricted,
-                          epc=self.epc, df_ee=self.den_fit,
-                          auxbasis_e=self.den_fit_basis)
+                          epc=self.epc).density_fit(auxbasis=self.den_fit_basis)
         else:
             mf = neo.CDFT(mol, xc=self.xc, unrestricted=self.unrestricted,
                           epc=self.epc)
