@@ -2,6 +2,7 @@ import numpy
 from pyscf import lib, gto, df, scf
 from pyscf.lib import logger
 from pyscf.solvent.hessian import pcm as pcm_hess
+from pyscf.solvent.pcm import PI
 from pyscf.neo import pcm_grad
 from pyscf.neo.pcm import _get_charge_from_mol_comp
 

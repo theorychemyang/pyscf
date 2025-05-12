@@ -33,7 +33,7 @@ class NEOSCFWithSolvent(_Solvation):
     def undo_solvent(self):
         cls = self.__class__
         name_mixin = self.with_solvent.__class__.__name__
-        obj = lib.view(self, lib.drop_class(cls, SCFWithSolvent, name_mixin))
+        obj = lib.view(self, lib.drop_class(cls, NEOSCFWithSolvent, name_mixin))
         del obj.with_solvent
         return obj
 

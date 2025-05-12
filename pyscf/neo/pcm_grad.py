@@ -3,6 +3,7 @@ from pyscf import lib
 from pyscf.lib import logger
 from pyscf import gto, df
 from pyscf.solvent.grad import pcm as pcm_grad
+from pyscf.solvent.pcm import PI
 from pyscf.grad import rhf as rhf_grad
 
 def grad_nuc(pcmobj, q_sym = None):
