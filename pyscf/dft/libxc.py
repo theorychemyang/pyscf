@@ -97,7 +97,6 @@ def print_XC_CODES():
     for name, func_id in xc_codes.items():
         refs = xc_reference(func_id)
         key = f"'{name}'"
-        print(key, func_id)
         print(f'{key:<31s}: {func_id:<3d}, # {refs[0]}')
         for r in refs[1:]:
             print(f"                                      # {r}")
@@ -583,7 +582,7 @@ def parse_xc(description):
                                 x_id = possible_xc.pop()
                             sys.stderr.write('XC parser takes %s\n' % x_id)
                             sys.stderr.write('You can add prefix to %s for a '
-                                             'specific functional (e.g. X_%s, '
+                                             'specific functional (e.g. GGA_X_%s, '
                                              'HYB_MGGA_X_%s)\n'
                                              % (key, key, key))
                         else:

@@ -303,8 +303,6 @@ class KS(hf.HF):
                         mf = dft.UKS(comp, xc=self.xc_e)
                     else:
                         mf = dft.RKS(comp, xc=self.xc_e)
-                if self.df_ee:
-                    mf = mf.density_fit(auxbasis=self.auxbasis_e, only_dfj=self.only_dfj_e)
                 charge = 1.
                 if t.startswith('p'):
                     charge = -1.
@@ -550,8 +548,6 @@ class KS(hf.HF):
                             mf = dft.UKS(comp, xc=self.xc_e)
                         else:
                             mf = dft.RKS(comp, xc=self.xc_e)
-                    if self.df_ee:
-                        mf = mf.density_fit(auxbasis=self.auxbasis_e, only_dfj=self.only_dfj_e)
                     charge = 1.
                     if t.startswith('p'):
                         charge = -1.

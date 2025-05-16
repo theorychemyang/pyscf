@@ -259,8 +259,12 @@ class ComponentSCF(Component):
         if len(mol._ecpbas) > 0 and not self.is_nucleus:
             h += mol.intor_symmetric('ECPscalar') * self.charge
 
-        if mol.super_mol.mm_mol is not None:
-            h += hcore_qmmm(mol, mol.super_mol.mm_mol) * self.charge
+        if hasattr(mol, 'super_mol'):
+            if mol.super_mol.mm_mol is not None:
+                h += hcore_qmmm(mol, mol.super_mol.mm_mol) * self.charge
+        elif hasattr(mol, 'mm_mol'): # elec guess directly uses super_mol
+            if mol.mm_mol is not None:
+                h += hcore_qmmm(mol, mol.mm_mol) * self.charge
         return h
 
     def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
@@ -764,12 +768,8 @@ class HF(scf.hf.SCF):
     >>> mf.scf()
     -99.98104139461894
     '''
-    def __init__(self, mol, unrestricted=False, df_ee=False,
-                 auxbasis_e=None, only_dfj_e=False):
+    def __init__(self, mol, unrestricted=False):
         super().__init__(mol)
-        self.df_ee = df_ee
-        self.auxbasis_e = auxbasis_e
-        self.only_dfj_e = only_dfj_e
         # NOTE: unrestricted should be understood as "force unrestricted".
         # With unrestricted=False, each component will still be RHF/UHF depending on the spin
         self.unrestricted = unrestricted
@@ -790,8 +790,6 @@ class HF(scf.hf.SCF):
                         mf = scf.UHF(comp)
                     else:
                         mf = scf.RHF(comp)
-                if self.df_ee:
-                    mf = mf.density_fit(auxbasis=self.auxbasis_e, only_dfj=self.only_dfj_e)
                 charge = 1.
                 if t.startswith('p'):
                     charge = -1.
@@ -1112,8 +1110,10 @@ class HF(scf.hf.SCF):
     def _is_mem_enough(self):
         raise NotImplementedError
 
-    def density_fit(self, auxbasis=None, with_df=None, only_dfj=False):
-        raise AttributeError('density_fit should not be used. Check df_ee option.')
+    def density_fit(self, auxbasis=None, ee_only_dfj=False, df_ne=False):
+        import pyscf.neo.df
+        return pyscf.neo.df.density_fit(self, auxbasis=auxbasis,
+                                        ee_only_dfj=ee_only_dfj, df_ne=df_ne)
 
     def sfx2c1e(self):
         raise NotImplementedError
@@ -1128,7 +1128,8 @@ class HF(scf.hf.SCF):
         raise NotImplementedError
 
     def nuc_grad_method(self):
-        raise AttributeError('Only CNEO-DFT has gradients.')
+        from pyscf.neo import grad
+        return grad.Gradients(self)
 
     def update_(self, chkfile=None):
         raise NotImplementedError
@@ -1164,8 +1165,6 @@ class HF(scf.hf.SCF):
                             mf = scf.UHF(comp)
                         else:
                             mf = scf.RHF(comp)
-                    if self.df_ee:
-                        mf = mf.density_fit(auxbasis=self.auxbasis_e, only_dfj=self.only_dfj_e)
                     charge = 1.
                     if t.startswith('p'):
                         charge = -1.

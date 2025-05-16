@@ -458,14 +458,10 @@ def grids_response_cc(grids):
     atm_dist = gto.inter_distance(mol, atm_coords)
 
     def _radii_adjust(mol, atomic_radii):
-        # FIXME: TODO: fix it in NEO and do not touch the code here.
-        # a dirty fix for CNEO, as CNEO's electronic part `mole' object
-        # have zero charge hydrogen atoms. atomic_radii[0] will trigger
-        # the "unknown" radii, which is very different from that of hydrogen
-        charges = mol.atom_charges().copy()
-        for i in range(charges.size):
-            if charges[i] == 0:
-                charges[i] = 1
+        # Be consistent with functions in dft.gen_grid, use symbols to
+        # re-evaluate the charges, in case the charges got modified
+        charges = numpy.array([gto.charge(mol.atom_symbol(ia))
+                               for ia in range(mol.natm)], dtype=int)
         if grids.radii_adjust == radi.treutler_atomic_radii_adjust:
             rad = numpy.sqrt(atomic_radii[charges]) + 1e-200
         elif grids.radii_adjust == radi.becke_atomic_radii_adjust:

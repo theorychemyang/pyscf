@@ -41,6 +41,8 @@ class Pyscf_NEO(Calculator):
     def __init__(self, basis='ccpvdz', nuc_basis='pb4d', charge=0, spin=0,
                  quantum_nuc=['H'], xc='b3lyp',
                  add_solvent=False,        # add implict solvent model ddCOSMO
+                 pcm_eps=None,             # PCM solvent model, see pyscf.solvent.pcm
+                 pcm_method=None,          # PCM solvent model, see pyscf.solvent.pcm
                  run_tda=False,            # run TDA calculations
                  disp=False,               # add dispersion correction (such as d3, d3bj, d4)
                  add_vv10=False,           # add dispersion correction VV10
@@ -52,6 +54,7 @@ class Pyscf_NEO(Calculator):
                  conv_tol_grad=None,       # 1e-7~1e-8 for tight convergence
                  den_fit=False,            # density-fitting
                  den_fit_basis=None,       # DF aux basis
+                 den_fit_ne=False,         # if density fit the nuclear-electronic Coulomb
                  force_unrestricted=False, # can force mf to be unrestricted
                  stable_opt=False,         # if check stability
                  **kwargs):
@@ -70,10 +73,13 @@ class Pyscf_NEO(Calculator):
         self.conv_tol_grad = conv_tol_grad
         self.den_fit = den_fit
         self.den_fit_basis = den_fit_basis
+        self.den_fit_ne = den_fit_ne
         self.init_guess = init_guess
         ###
         self.unrestricted = force_unrestricted
         self.add_solvent = add_solvent
+        self.pcm_eps = pcm_eps
+        self.pcm_method = pcm_method # NEO-PCM can work with scanners
         self.run_tda = run_tda
         self.disp = disp
         self.stable_opt = stable_opt
@@ -117,11 +123,15 @@ class Pyscf_NEO(Calculator):
     def create_mf(self, mol):
         if self.den_fit:
             mf = neo.CDFT(mol, xc=self.xc, unrestricted=self.unrestricted,
-                          epc=self.epc, df_ee=self.den_fit,
-                          auxbasis_e=self.den_fit_basis)
+                          epc=self.epc).density_fit(auxbasis=self.den_fit_basis,
+                                                    df_ne=self.den_fit_ne)
         else:
             mf = neo.CDFT(mol, xc=self.xc, unrestricted=self.unrestricted,
                           epc=self.epc)
+        if self.pcm_eps is not None and self.pcm_method is not None:
+            mf = mf.PCM()
+            mf.with_solvent.eps = self.pcm_eps
+            mf.with_solvent.method = self.pcm_method
         if self.atom_grid is not None:
             mf.components['e'].grids.atom_grid = self.atom_grid
         if self.add_vv10:
@@ -152,7 +162,6 @@ class Pyscf_NEO(Calculator):
             if self.disp:
                 mf.disp = self.disp
             if self.add_solvent:
-                mf.scf(cycle=0) # TODO: remove this
                 mf = mf.ddCOSMO()
             # TODO: last step dm0 for non-scanner?
             mf.scf()
@@ -273,6 +282,8 @@ class Pyscf_DFT(Calculator):
 
     def __init__(self, basis='ccpvdz', charge=0, spin=0, xc='b3lyp',
                  add_solvent=False,        # add implict solvent model ddCOSMO
+                 pcm_eps=None,             # PCM solvent model, see pyscf.solvent.pcm
+                 pcm_method=None,          # PCM solvent model, see pyscf.solvent.pcm
                  run_tda=False,            # run TDA calculations
                  disp=False,               # add dispersion correction (such as d3, d3bj, d4)
                  add_vv10=False,           # add dispersion correction VV10
@@ -301,6 +312,8 @@ class Pyscf_DFT(Calculator):
         self.init_guess = init_guess
         ###
         self.unrestricted = force_unrestricted
+        self.pcm_eps = pcm_eps
+        self.pcm_method = pcm_method
         self.add_solvent = add_solvent
         self.run_tda = run_tda
         self.disp = disp
@@ -353,6 +366,10 @@ class Pyscf_DFT(Calculator):
         if self.den_fit:
             mf = mf.density_fit(auxbasis=self.den_fit_basis)
         mf.xc = self.xc
+        if self.pcm_eps is not None and self.pcm_method is not None:
+            mf = mf.PCM()
+            mf.with_solvent.eps = self.pcm_eps
+            mf.with_solvent.method = self.pcm_method
         if self.atom_grid is not None:
             mf.grids.atom_grid = self.atom_grid
         if self.add_vv10:
