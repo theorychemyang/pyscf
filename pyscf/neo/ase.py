@@ -90,7 +90,7 @@ class Pyscf_NEO(Calculator):
             mol = neo.M(atom='H 0 0 0; F 0 0 0.9')
             mf = self.create_mf(mol)
             self.mf_scanner = mf.as_scanner()
-            self.mf_grad_scanner = mf.Gradients().set(grid_response=self.grid_response).as_scanner()
+            self.mf_grad_scanner = mf.nuc_grad_method().set(grid_response=self.grid_response).as_scanner()
             self.scanner_available = True
 
     def get_mol_from_atoms(self, atoms):
@@ -168,7 +168,7 @@ class Pyscf_NEO(Calculator):
                 mf = stable_opt_internal(mf)
             e_tot = mf.e_tot
             if 'forces' in properties:
-                de = mf.Gradients().set(grid_response=self.grid_response).grad()
+                de = mf.nuc_grad_method().set(grid_response=self.grid_response).grad()
         self.results['energy'] = e_tot * Hartree
         if 'forces' in properties:
             self.results['forces'] = -de * Hartree / Bohr
@@ -240,7 +240,7 @@ class Pyscf_DFT(Calculator):
             mol = gto.M(atom='H 0 0 0; F 0 0 0.9')
             mf = self.create_mf(mol)
             self.mf_scanner = mf.as_scanner()
-            self.mf_grad_scanner = mf.Gradients().set(grid_response=self.grid_response).as_scanner()
+            self.mf_grad_scanner = mf.nuc_grad_method().set(grid_response=self.grid_response).as_scanner()
             self.scanner_available = True
 
     def get_mol_from_atoms(self, atoms):
@@ -322,7 +322,7 @@ class Pyscf_DFT(Calculator):
                 mf = stable_opt_internal(mf)
             e_tot = mf.e_tot
             if 'forces' in properties:
-                de = mf.Gradients().set(grid_response=self.grid_response).grad()
+                de = mf.nuc_grad_method().set(grid_response=self.grid_response).grad()
         self.results['energy'] = e_tot * Hartree
         if 'forces' in properties:
             self.results['forces'] = -de * Hartree / Bohr

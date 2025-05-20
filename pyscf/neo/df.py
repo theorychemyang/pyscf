@@ -370,6 +370,22 @@ class _DFNEO:
     def reset(self, mol=None):
         '''Reset mol and clean up relevant attributes for scanner mode'''
         super().reset(mol)
+        # Need this because components and interactions can be
+        # completely destroyed in super().reset
+        if not isinstance(self.components['e'], df_jk._DFHF):
+            self.components['e'] = density_fit_e(self.components['e'],
+                                                 auxbasis=self.auxbasis,
+                                                 only_dfj=self.ee_only_dfj)
+            if isinstance(self, neo.KS):
+                self.interactions = hf.generate_interactions(
+                    self.components, DFInteractionCorrelation,
+                    self.max_memory, df_ne=self.df_ne,
+                    auxbasis=self.auxbasis, epc=self.epc)
+            else:
+                self.interactions = hf.generate_interactions(
+                    self.components, DFInteractionCoulomb,
+                    self.max_memory, df_ne=self.df_ne,
+                    auxbasis=self.auxbasis)
         if self.components['e'].with_df is not None:
             self.components['e'].with_df._low = None
         for t, comp in self.interactions.items():
