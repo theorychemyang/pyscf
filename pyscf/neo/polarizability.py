@@ -7,8 +7,9 @@ from pyscf import lib
 from pyscf.lib import logger
 from pyscf.neo import cphf
 from pyscf.neo import _response_functions  
-from pyscf.prop.polarizability.rks import Polarizability as PolarizabilityRKS
-def pol(polobj,with_cphf=True):
+
+
+def polarizability(polobj,with_cphf=True):
     log = logger.new_logger(polobj)
     mf = polobj._scf
     mol = mf.mol
@@ -70,7 +71,7 @@ class Polarizability(lib.StreamObject):
         self.max_cycle_cphf = 100
         ### Convergence tolerance for the CPHF equation
         ### default: 1e-4 is enough for polarizability(the same order of magnitude as the numerical error)
-        self.conv_tol = 1e-4
+        self.conv_tol = 1e-6
 
         self._keys = set(self.__dict__.keys())  
 
@@ -170,87 +171,107 @@ class Polarizability(lib.StreamObject):
         return fx
 
 
-    polarizability = pol
+    polarizability = polarizability
     polarizability_with_freq = polarizability_with_freq
     hyper_polarizability = hyper_polarizability
 
 if __name__ == '__main__':
     from pyscf import gto, scf
     from pyscf import neo
+    from pyscf.prop.polarizability.rks import Polarizability as PolarizabilityRKS
     import time
+    atom0 = '''  H  ,  0.   0.   0.
+                F  ,  0.5   0.5   .6 '''
+    atom='''O      -0.238592051971541      3.392862580374811     -0.162250372572209
+            H      -0.372155346926180      4.140860293438132      0.458993573797752
+            O      -0.372179575211653      0.927817762829201      0.930787926659881
+            H       0.558585632607203      0.942689527210511      0.537530265546420
+            H      -0.569749794403297      2.564812770048602      0.313389233846506
+            O       1.882940760094289      1.722608203620976     -0.321583375288254
+            H       2.708145104394429      1.960187678129227      0.153839472332841
+            H       1.320382834214582      2.560169548693901     -0.357958027550273
+            H      -0.849540572154995      0.199065638210133      0.477693313245828'''
     mol=neo.M(
-          atom = '''H  ,  0.   0.   0.
-                  F  ,  0.5   0.5   .6 ''',
+          atom = atom,
         basis = 'cc-pvdz',
         quantum_nuc = ['H'])
     mf = neo.CDFT(mol,xc='b3lyp')
     mf.run(conv_tol=1e-14,max_cycle=1000)
-    t0 = time.time()
-    print('analytical CNEO polarizability\n',Polarizability(mf).polarizability())
-    t1 = time.time()
-    charges = mol.atom_charges()
-    coords  = mol.atom_coords()
-    charge_center = numpy.einsum('i,ix->x', charges, coords) / charges.sum()
-    ao_dip = {}
-    h1 = {}
-    def apply_E(E):
-        hcore = {}
-        for t, comp in mol.components.items():
-            hcore[t] = mf.components[t].get_hcore(mol=comp).copy()
-            hcore[t] -= numpy.einsum('x,xij->ij', E, comp.intor('int1e_r', comp=3)) * comp.charge
-        def get_hcore(_mol=None):
-            return hcore
-        mf.get_hcore = get_hcore
-        mf.conv_tol = 1e-14
-        mf.max_cycle = 1000
-        mf.kernel()
-        return mf.dip_moment(mol, mf.make_rdm1(), unit='AU', verbose=0)
-    e1 = apply_E([ 0.0001, 0, 0])
-    e2 = apply_E([-0.0001, 0, 0])
-    a1 = (e1 - e2) / 0.0002
-    e1 = apply_E([0, 0.0001, 0])
-    e2 = apply_E([0,-0.0001, 0])
-    a2 = (e1 - e2) / 0.0002
-    e1 = apply_E([0, 0, 0.0001])
-    e2 = apply_E([0, 0,-0.0001])
-    a3 = (e1 - e2) / 0.0002
-    numpol = numpy.array([a1, a2, a3])
-    print('numerical CNEO polarizability\n',numpol)
-    print(numpy.allclose(numpol, Polarizability(mf).polarizability(),atol=1e-3)) 
-    print('max_diff',numpy.max(abs(numpol - Polarizability(mf).polarizability())))
-    print("new time:", t1-t0)
+    polobj1 = Polarizability(mf)
+    polobj1.verbose = 5
+    t_0 = time.time()
+    pol = polobj1.polarizability()
+    t_1 = time.time()
+    print('CNEO pol time:', t_1-t_0)
+    # charges = mol.atom_charges()
+    # coords  = mol.atom_coords()
+    # charge_center = numpy.einsum('i,ix->x', charges, coords) / charges.sum()
+    # ao_dip = {}
+    # h1 = {}
+    # def apply_E(E):
+    #     hcore = {}
+    #     for t, comp in mol.components.items():
+    #         hcore[t] = mf.components[t].get_hcore(mol=comp).copy()
+    #         hcore[t] -= numpy.einsum('x,xij->ij', E, comp.intor('int1e_r', comp=3)) * comp.charge
+    #     def get_hcore(_mol=None):
+    #         return hcore
+    #     mf.get_hcore = get_hcore
+    #     mf.conv_tol = 1e-14
+    #     mf.max_cycle = 1000
+    #     mf.kernel()
+    #     return mf.dip_moment(mol, mf.make_rdm1(), unit='AU', verbose=0)
+    # e1 = apply_E([ 0.0001, 0, 0])
+    # e2 = apply_E([-0.0001, 0, 0])
+    # a1 = (e1 - e2) / 0.0002
+    # e1 = apply_E([0, 0.0001, 0])
+    # e2 = apply_E([0,-0.0001, 0])
+    # a2 = (e1 - e2) / 0.0002
+    # e1 = apply_E([0, 0, 0.0001])
+    # e2 = apply_E([0, 0,-0.0001])
+    # a3 = (e1 - e2) / 0.0002
+    # numpol = numpy.array([a1, a2, a3])
+    # print('numerical CNEO polarizability\n',numpol)
+    # print(numpy.allclose(numpol, Polarizability(mf).polarizability(),atol=1e-3)) 
+    # print('max_diff',numpy.max(abs(numpol - Polarizability(mf).polarizability())))
+    # print("new time:", t1-t0)
     ### not all close but comnpared with DFT the tolerance is comparable
     mol1=gto.M(
-          atom = '''H  ,  0.   0.   0.
-                  F  ,  0.5   0.5   .6''',
+          atom = atom,
         basis = 'cc-pvdz',)
     mf1 = scf.RKS(mol1)
     mf1.xc='b3lyp'
     mf1.kernel()
-    with mol.with_common_orig(charge_center):
-        ao_dip = mol.intor_symmetric('int1e_r', comp=3)
-    h1 = mf1.get_hcore()
-    def applyDFT(E):
-        mf1.get_hcore = lambda *args, **kwargs: h1 + numpy.einsum('x,xij->ij', E, ao_dip)
-        mf1.run(conv_tol=1e-14)
-        return mf1.dip_moment(mol, mf1.make_rdm1(), unit='AU', verbose=0)
-    e1 = applyDFT([ 0.0001, 0, 0])
-    e2 = applyDFT([-0.0001, 0, 0])
-    a1 = (e1 - e2) / 0.0002
-    e1 = applyDFT([0, 0.0001, 0])
-    e2 = applyDFT([0,-0.0001, 0])
-    a2 = (e1 - e2) / 0.0002                 
-    e1 = applyDFT([0, 0, 0.0001])
-    e2 = applyDFT([0, 0,-0.0001])
-    a3 = (e1 - e2) / 0.0002
-    numpol = numpy.array([a1, a2, a3])
-    t0 = time.time()
-    print('analytical DFT polarizability\n',PolarizabilityRKS(mf1).polarizability())
-    t1 = time.time()
-    print('numerical DFT polarizability\n',numpol)
-    print("DFT time:", t1-t0)
-    print(numpy.allclose(numpol, PolarizabilityRKS(mf1).polarizability(),atol=1e-3)) 
-    print('max_diff',numpy.max(abs(numpol - PolarizabilityRKS(mf1).polarizability())))
+    # mf1.verbose = 5
+    polobj = PolarizabilityRKS(mf1)
+    polobj.verbose = 5
+    t_0 = time.time()
+    pol1 = polobj.polarizability()
+    t_1 = time.time()
+    print('DFT pol time:', t_1-t_0)
+    # with mol.with_common_orig(charge_center):
+    #     ao_dip = mol.intor_symmetric('int1e_r', comp=3)
+    # h1 = mf1.get_hcore()
+    # def applyDFT(E):
+    #     mf1.get_hcore = lambda *args, **kwargs: h1 + numpy.einsum('x,xij->ij', E, ao_dip)
+    #     mf1.run(conv_tol=1e-14)
+    #     return mf1.dip_moment(mol, mf1.make_rdm1(), unit='AU', verbose=0)
+    # e1 = applyDFT([ 0.0001, 0, 0])
+    # e2 = applyDFT([-0.0001, 0, 0])
+    # a1 = (e1 - e2) / 0.0002
+    # e1 = applyDFT([0, 0.0001, 0])
+    # e2 = applyDFT([0,-0.0001, 0])
+    # a2 = (e1 - e2) / 0.0002                 
+    # e1 = applyDFT([0, 0, 0.0001])
+    # e2 = applyDFT([0, 0,-0.0001])
+    # a3 = (e1 - e2) / 0.0002
+    # numpol = numpy.array([a1, a2, a3])
+    # t0 = time.time()
+    # print('analytical DFT polarizability\n',PolarizabilityRKS(mf1).polarizability())
+    # t1 = time.time()
+    # print('numerical DFT polarizability\n',numpol)
+    # print("DFT time:", t1-t0)
+    # print(numpy.allclose(numpol, PolarizabilityRKS(mf1).polarizability(),atol=1e-3)) 
+    # print('max_diff',numpy.max(abs(numpol - PolarizabilityRKS(mf1).polarizability())))
 ##########################################
 # analytical CNEO polarizability
 #  [[2.45253419 0.81346612 0.97615912]
@@ -275,3 +296,28 @@ if __name__ == '__main__':
 # True
 # max_diff 0.0006553384576553078
 ############################################
+mol=neo.M(
+        atom = atom,
+    basis = 'cc-pvdz',
+    quantum_nuc = ['H'])
+mf = neo.CDFT(mol,xc='b3lyp')
+mf.kernel()
+hess = mf.Hessian()
+hess.verbose = 5
+t_0 = time.time()
+hessian = hess.kernel()
+t_1 = time.time()
+print('CNEO Hessian time:', t_1-t_0)
+mol1=gto.M(
+        atom = atom,
+    basis = 'cc-pvdz',)
+mf1 = scf.RKS(mol1)
+mf1.xc='b3lyp'
+mf1.kernel()
+
+hess1 = mf1.Hessian()
+hess1.verbose = 5
+t_0 = time.time()
+hessian = hess1.kernel()
+t_1 = time.time()
+print('DFT Hessian time:', t_1-t_0)
