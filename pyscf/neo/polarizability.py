@@ -7,6 +7,7 @@ from pyscf import lib
 from pyscf.lib import logger
 from pyscf.neo import cphf
 from pyscf.neo import _response_functions
+from pyscf.neo.hessian import gen_vind
 
 def polarizability(polobj,with_cphf=True):
     log = logger.new_logger(polobj)
@@ -68,108 +69,54 @@ class Polarizability(lib.StreamObject):
 
         self.cphf = True
         self.max_cycle_cphf = 100
-        ### Convergence tolerance for the CPHF equation
         ### default: 1e-4 is enough for polarizability(the same order of magnitude as the numerical error)
         self.conv_tol = 1e-4
 
         self._keys = set(self.__dict__.keys())  
 
-    def gen_vind(self,mf, mo_coeff, mo_occ):
-        nao = {}
-        nmo = {}
-        mocc = {}
-        nocc = {}
-        is_component_unrestricted = {}
-        for t in mo_coeff.keys():
-            mo_coeff[t] = numpy.asarray(mo_coeff[t])
-            if mo_coeff[t].ndim > 2: # unrestricted
-                assert not t.startswith('n')
-                assert mo_coeff[t].shape[0] == 2
-                is_component_unrestricted[t] = True
-                nao[t], nmoa = mo_coeff[t][0].shape
-                nmob = mo_coeff[t][1].shape[1]
-                nmo[t] = (nmoa, nmob)
-                mo_occ[t] = numpy.asarray(mo_occ[t])
-                assert mo_occ[t].ndim > 1 and mo_occ[t].shape[0] == 2
-                mocca = mo_coeff[t][0][:,mo_occ[t][0]>0]
-                moccb = mo_coeff[t][1][:,mo_occ[t][1]>0]
-                mocc[t] = (mocca, moccb)
-                nocca = mocca.shape[1]
-                noccb = moccb.shape[1]
-                nocc[t] = (nocca, noccb)
-            else: # restricted
-                is_component_unrestricted[t] = False
-                nao[t], nmo[t] = mo_coeff[t].shape
-                mocc[t] = mo_coeff[t][:,mo_occ[t]>0]
-                nocc[t] = mocc[t].shape[1]
-        vresp = mf.gen_response(mo_coeff, mo_occ, hermi=1)
-        def fx(mo1, f1=None):
-            dm1 = {}
-            for t, comp in mo1.items():
-                if is_component_unrestricted[t]:
-                    nmoa, nmob = nmo[t]
-                    mocca, moccb = mocc[t]
-                    nocca, noccb = nocc[t]
-                    comp = comp.reshape(-1,nmoa*nocca+nmob*noccb)
-                    nset = len(comp)
-                    dm1[t] = numpy.empty((2,nset,nao[t],nao[t]))
-                    for i, x in enumerate(comp):
-                        xa = x[:nmoa*nocca].reshape(nmoa,nocca)
-                        xb = x[nmoa*nocca:].reshape(nmob,noccb)
-                        dma = reduce(numpy.dot, (mo_coeff[t][0], xa, mocca.T))
-                        dmb = reduce(numpy.dot, (mo_coeff[t][1], xb, moccb.T))
-                        dm1[t][0,i] = dma + dma.T
-                        dm1[t][1,i] = dmb + dmb.T
-                else:
-                    comp = comp.reshape(-1,nmo[t],nocc[t])
-                    nset = len(comp)
-                    dm1[t] = numpy.empty((nset,nao[t],nao[t]))
-                    for i, x in enumerate(comp):
-                        if t.startswith('n'):
-                            # quantum nuclei are always singly occupied
-                            dm = reduce(numpy.dot, (mo_coeff[t], x, mocc[t].T))
-                        else:
-                            # *2 for double occupancy (RHF electrons)
-                            dm = reduce(numpy.dot, (mo_coeff[t], x*2, mocc[t].T))
-                        dm1[t][i] = dm + dm.T
-            v1 = vresp(dm1)
-            v1vo = {}
-            if f1 is None:
-                r1vo = None
-            else:
-                r1vo = {}
-            for t, comp in mo1.items():
-                if is_component_unrestricted[t]:
-                    nmoa, nmob = nmo[t]
-                    mocca, moccb = mocc[t]
-                    nocca, noccb = nocc[t]
-                    comp = comp.reshape(-1,nmoa*nocca+nmob*noccb)
-                    nset = len(comp)
-                    v1vo[t] = numpy.empty_like(comp)
-                    for i in range(nset):
-                        v1vo[t][i,:nmoa*nocca] = reduce(numpy.dot, (mo_coeff[t][0].T, v1[t][0,i], mocca)).ravel()
-                        v1vo[t][i,nmoa*nocca:] = reduce(numpy.dot, (mo_coeff[t][1].T, v1[t][1,i], moccb)).ravel()
-                else:
-                    comp = comp.reshape(-1,nmo[t],nocc[t])
-                    v1vo[t] = numpy.empty_like(comp)
-                    for i, x in enumerate(v1[t]):
-                        v1vo[t][i] = reduce(numpy.dot, (mo_coeff[t].T, x, mocc[t]))
-                if f1 is not None and t in f1 and t.startswith('n'):
-                    # DEBUG: Verify nuclear dm1 * int1e_r
-                    # if debug:
-                    #     position = numpy.einsum('aij,xij->ax', dm1[t], mf.components[t].int1e_r)
-                    #     print(f'[DEBUG] norm(dm1 * int1e_r) for {t}: {numpy.linalg.norm(position)}')
-                    rvo = numpy.empty((3,nmo[t],nocc[t]))
-                    for i, x in enumerate(mf.components[t].int1e_r):
-                        rvo[i] = reduce(numpy.dot, (mo_coeff[t].T, x, mocc[t]))
-                    # Calculate f1 * r and add to nuclear Fock derivative
-                    v1vo[t] += numpy.einsum('ax,xpi->api', f1[t], rvo)
-                    # Store r * mo1, which will lead to equation r * mo1 = 0
-                    r1vo[t] = numpy.einsum('api,xpi->ax', comp, rvo)
-            return v1vo, r1vo
-        return fx
-
+    def gen_vind(self, mf, mo_coeff, mo_occ):
+        return gen_vind(mf, mo_coeff, mo_occ)
 
     polarizability = polarizability
     polarizability_with_freq = polarizability_with_freq
     hyper_polarizability = hyper_polarizability
+
+if __name__ == '__main__':
+    from pyscf import neo
+    import time
+    from pyscf.neo.efield import polarizability as polarizability_efield
+    """Test and compare execution time of both polarizability implementations"""
+    n_runs = 20  # Number of runs for averaging
+    
+    mol = neo.M(atom='''H 0. 0. 0.
+                    F  0.5   0.5   .6''', basis='ccpvdz', 
+                    quantum_nuc = ['H'])
+    mf = neo.CDFT(mol,xc='b3lyp')
+    mf.scf()
+
+    # Time Polarizability class implementation
+    times_me = []
+    for _ in range(n_runs):
+        t0 = time.time()
+        p = Polarizability(mf)
+        pol1 = p.polarizability()
+        t1 = time.time()
+        times_me.append(t1 - t0)
+    
+    # Time efield.polarizability implementation
+    times_efield = []
+    for _ in range(n_runs):
+        t0 = time.time()
+        pol2 = polarizability_efield(mf)
+        t1 = time.time()
+        times_efield.append(t1 - t0)
+
+    # Calculate statistics
+    avg_me = numpy.mean(times_me)
+    std_me = numpy.std(times_me)
+    avg_efield = numpy.mean(times_efield)
+    std_efield = numpy.std(times_efield)
+
+    print('\nTiming Results (averaged over {} runs):'.format(n_runs))
+    print(f'Polarizability class time: {avg_me:.6f} ± {std_me:.6f} seconds')
+    print(f'efield.polarizability time: {avg_efield:.6f} ± {std_efield:.6f} seconds')
