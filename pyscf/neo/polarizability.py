@@ -85,8 +85,8 @@ if __name__ == '__main__':
     from pyscf import neo
     import time
     from pyscf.neo.efield import polarizability as polarizability_efield
-    """Test and compare execution time of both polarizability implementations"""
-    n_runs = 20  # Number of runs for averaging
+    #compar time of both polarizability implementations
+    n_runs = 20 
     
     mol = neo.M(atom='''H 0. 0. 0.
                     F  0.5   0.5   .6''', basis='ccpvdz', 
@@ -110,8 +110,7 @@ if __name__ == '__main__':
         pol2 = polarizability_efield(mf)
         t1 = time.time()
         times_efield.append(t1 - t0)
-
-    # Calculate statistics
+        
     avg_me = numpy.mean(times_me)
     std_me = numpy.std(times_me)
     avg_efield = numpy.mean(times_efield)
