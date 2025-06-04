@@ -6,9 +6,10 @@ from pyscf import lib
 from pyscf import ao2mo
 from pyscf.fci import cistring
 from pyscf import neo
+from pyscf.neo import cdavidson
 import time
 
-def contract(h1, h2, fcivec, norb, nparticle, link_index=None):
+def contract(h1, h2, fcivec, norb, nparticle, link_index=None, r1=None):
     ndim = len(norb)
     if link_index is None:
         link_index = []
@@ -88,8 +89,63 @@ def contract(h1, h2, fcivec, norb, nparticle, link_index=None):
                             str1_indices[k] = str1
                             fcinew[tuple(str1_indices)] += sign * g1[tuple([a,i]+str0_indices)]
                 done[k][l] = done[l][k] = True
-    return fcinew.reshape(fcivec.shape)
+    if r1 is not None:
+        total_dim = 0
+        for i in range(ndim):
+            if r1[i] is not None:
+                if r1[i].ndim == 2:
+                    r1[i] = r1[i].reshape((1,)+r1[i].shape)
+                total_dim += r1[i].shape[0]
+        r_fcinew = numpy.empty((total_dim,)+ci0.shape, dtype=fcivec.dtype)
+        n = 0
+        for i in range(ndim):
+            if r1[i] is not None:
+                for x in range(r1[i].shape[0]):
+                    r_fcinew[n] = numpy.dot(r1[i][x].reshape(-1),
+                                            t1[i].reshape(-1,fcivec.size)).reshape(r_fcinew.shape[1:])
+                    n += 1
+        return fcinew.reshape(fcivec.shape), r_fcinew.reshape((total_dim,)+fcivec.shape)
+    else:
+        return fcinew.reshape(fcivec.shape)
 
+def contract_1e(h1, fcivec, norb, nparticle, link_index=None):
+    '''Contract only for the one-body part of quantum nuclei'''
+    ndim = len(norb)
+    if link_index is None:
+        link_index = [None, None]
+        for i in range(2, ndim):
+            link_index.append(cistring.gen_linkstr_index(range(norb[i]), nparticle[i]))
+    dim = []
+    for i in range(ndim):
+        dim.append(cistring.num_strings(norb[i], nparticle[i]))
+    ci0 = fcivec.reshape(dim)
+
+    t1 = [None, None]
+    for k in range(2, ndim):
+        t1_this = numpy.zeros((norb[k],norb[k])+tuple(dim), dtype=fcivec.dtype)
+        str0_indices = [slice(None)] * ndim
+        str1_indices = [slice(None)] * ndim
+        for str0, tab in enumerate(link_index[k]):
+            str0_indices[k] = str0
+            str0_indices_tuple = tuple(str0_indices)
+            for a, i, str1, sign in tab:
+                str1_indices[k] = str1
+                t1_this[tuple([a,i]+str1_indices)] += sign * ci0[str0_indices_tuple]
+        t1.append(t1_this)
+
+    total_dim = 0
+    for i in range(2, ndim):
+        if h1[i].ndim == 2:
+            h1[i] = h1[i].reshape((1,)+h1[i].shape)
+        total_dim += h1[i].shape[0]
+    fcinew = numpy.empty((total_dim,)+ci0.shape, dtype=fcivec.dtype)
+    n = 0
+    for i in range(2, ndim):
+        for x in range(h1[i].shape[0]):
+            fcinew[n] = numpy.dot(h1[i][x].reshape(-1),
+                                  t1[i].reshape(-1,fcivec.size)).reshape(fcinew.shape[1:])
+            n += 1
+    return fcinew.reshape((total_dim,)+fcivec.shape)
 
 def absorb_h1e(h1e, eri, norb, nelec, fac=1):
     '''Modify 2e Hamiltonian to include 1e Hamiltonian contribution.
@@ -169,7 +225,34 @@ def make_hdiag(h1, g2, norb, nparticle):
     print(f'make_hdiag: {time.time() - t0} seconds', flush=True)
     return hdiag.reshape(-1)
 
-def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1):
+def make_rdiag(r1, norb, nparticle):
+    ndim = len(norb)
+    dim = []
+    for i in range(ndim):
+        dim.append(cistring.num_strings(norb[i], nparticle[i]))
+    total_dim = 0
+    for i in range(ndim):
+        if r1[i] is not None:
+            if r1[i].ndim == 2:
+                r1[i] = r1[i].reshape((1,)+r1[i].shape)
+            total_dim += r1[i].shape[0]
+    rdiag = numpy.zeros((total_dim,)+tuple(dim))
+
+    n = 0
+    for i in range(ndim):
+        if r1[i] is not None:
+            occslist = cistring.gen_occslst(range(norb[i]), nparticle[i])
+            str0_indices = [slice(None)] * ndim
+            for str0, occ in enumerate(occslist):
+                str0_indices[i] = str0
+                for x in range(r1[i].shape[0]):
+                    rdiag[n+x][tuple(str0_indices)] += r1[i][x][occ,occ].sum()
+            n += r1[i].shape[0]
+
+    return rdiag.reshape(total_dim,-1)
+
+def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1,
+           r1=None, rdiag=None, f0=None):
     h2 = [[None] * len(norb) for _ in range(len(norb))]
     h2[0][0], h2[0][1], h2[1][1] = absorb_h1e(h1[:2], (g2[0][0], g2[0][1], g2[1][1]),
                                               norb[0], (nparticle[0], nparticle[1]), .5)
@@ -178,9 +261,6 @@ def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1):
             if i >= 2 or j >= 2:
                 h2[i][j] = g2[i][j]
 
-    def hop(c):
-        hc = contract(h1, h2, c, norb, nparticle)
-        return hc.reshape(-1)
     if hdiag is None:
         hdiag = make_hdiag(h1, g2, norb, nparticle)
     if ci0 is None:
@@ -197,17 +277,38 @@ def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1):
             ci0_[addr] = 1
             ci0.append(ci0_)
 
-    precond = lambda x, e, *args: x/(hdiag-e+1e-4)
-    t0 = time.time()
-    converged, e, c = lib.davidson1(lambda xs: [hop(x) for x in xs],
-                                    ci0, precond, max_cycle=100,
-                                    max_memory=256000, nroots=nroots, verbose=10)
-    print(f'davidson: {time.time() - t0} seconds', flush=True)
-    if converged[0]:
-        print('FCI Davidson converged!')
+    if r1 is None:
+        def hop(c):
+            hc = contract(h1, h2, c, norb, nparticle)
+            return hc.reshape(-1)
+        precond = lambda x, e, *args: x/(hdiag-e+1e-4)
+        t0 = time.time()
+        converged, e, c = lib.davidson1(lambda xs: [hop(x) for x in xs],
+                                        ci0, precond, max_cycle=200, max_space=24,
+                                        max_memory=480000, nroots=nroots, verbose=10)
+        print(f'davidson: {time.time() - t0} seconds', flush=True)
+        if converged[0]:
+            print('FCI Davidson converged!')
+        else:
+            print('FCI Davidson did not converge according to current setting.')
+        return e+ecore, c
     else:
-        print('FCI Davidson did not converge according to current setting.')
-    return e+ecore, c
+        def hop(c):
+            hc, rc = contract(h1, h2, c, norb, nparticle, r1=r1)
+            return hc.reshape(-1), rc.reshape(rc.shape[0],-1)
+        if rdiag is None:
+            rdiag = make_rdiag(r1, norb, nparticle)
+        t0 = time.time()
+        converged, e, c, f = cdavidson.davidson1(lambda xs: [list(t) for t in zip(*[hop(x) for x in xs])],
+                                                 ci0, f0.reshape(-1), hdiag, rdiag,
+                                                 max_cycle=200, max_space=24,
+                                                 max_memory=480000, nroots=nroots, verbose=10)
+        print(f'davidson: {time.time() - t0} seconds', flush=True)
+        if converged[0]:
+            print('C-FCI Davidson converged!')
+        else:
+            print('C-FCI Davidson did not converge according to current setting.')
+        return e+ecore, c, f
 
 def energy(h1, g2, fcivec, norb, nparticle, ecore=0):
     h2 = [[None] * len(norb) for _ in range(len(norb))]
@@ -283,7 +384,7 @@ def energy_decomp(h1, g2, fcivec, norb, nparticle):
                 done[i][j] = done[j][i] = True
 
 def entropy(indices, fcivec, norb, nparticle):
-    """Subspace von Neumann entropy.
+    r"""Subspace von Neumann entropy.
     indices means the indices you want for the subspace entropy.
     For example, if we have a system of [0, 1, 2, 3],
     indices = [2]
@@ -379,7 +480,9 @@ def symmetry_finder(mol):
     atom_coords = atom_coords - mass_center
     rot_const = rotation_const(mass, atom_coords, 'GHz')
     rotor_type = _get_rotor_type(rot_const)
+    symm = None
     if rotor_type == 'LINEAR':
+        symm = 'LINEAR'
         # if a linear molecule, detect if the molecule is along x/y/z axis
         if numpy.abs(atom_coords[:,0]).max() < 1e-6:
             if numpy.abs(atom_coords[:,1]).max() < 1e-6:
@@ -391,24 +494,28 @@ def symmetry_finder(mol):
                 axis = 0
         else:
             # if not along an axis, warn
-            print('This is molecule is linear, but was not put along x/y/z axis. Symmetry will be OFF.',
+            print('This molecule is linear, but was not put along x/y/z axis. Symmetry will be OFF.',
                   flush=True)
-            return False, False, None
+            return None, None
+        print(f'Linear molecule along {chr(axis+88)}', flush=True)
+    elif mol.natm == 3: # See if they are in the same plane
+        symm = 'PLANAR'
+        if numpy.abs(atom_coords[:,0]).max() < 1e-6:
+            axis = 0
+        elif numpy.abs(atom_coords[:,1]).max() < 1e-6:
+            axis = 1
+        elif numpy.abs(atom_coords[:,2]).max() < 1e-6:
+            axis = 2
+        else:
+            # if not in a plane, warn
+            print('This molecule is planar, but was not put in xy/yz/xz planes. Symmetry will be OFF.',
+                  flush=True)
+            return None, None
+        print(f'Planar molecule perpendicular to {chr(axis+88)}', flush=True)
     else:
-        print('Not a linear molecule. Symmetry will be OFF.', flush=True)
-        return False, False, None
-    print(f'Linear molecule along {chr(axis+88)}', flush=True)
-    is_scalar = False
-    if mol.natm == 2 and mol.mass[0] == mol.mass[1]:
-        is_scalar = True
-        for basis1 in mol.nuc[0]._basis.values():
-            for basis2 in mol.nuc[1]._basis.values():
-                if basis1 != basis2:
-                    is_scalar = False
-    if is_scalar:
-        print('Symmetric diatomic molecule', flush=True)
-    # if the linear molecule is a diatomic, see if it is symmetric
-    return True, is_scalar, axis
+        print('Not a molecule that symmetry is easy to exploit. Symmetry will be OFF.', flush=True)
+        return None, None
+    return symm, axis
 
 def FCI(mf, kernel=kernel, integrals=integrals, energy=energy):
     assert mf.unrestricted
@@ -486,7 +593,7 @@ def FCI(mf, kernel=kernel, integrals=integrals, energy=energy):
             return natocc, natorb
 
     if is_cneo and mol.natm > 1:
-        r1 = []
+        r1 = [None, None]
         for i in range(mol.nuc_num):
             r1n = []
             for x in range(mf.mf_nuc[i].int1e_r.shape[0]):
@@ -494,174 +601,30 @@ def FCI(mf, kernel=kernel, integrals=integrals, energy=energy):
                                               mf.mf_nuc[i].mo_coeff)))
             r1n = numpy.array(r1n)
             r1.append(r1n)
+        # get initial f from CNEO-HF
+        # NOTE: for high angular momentum basis, CNEO-HF guess can be bad. Zero guess?
+        f = numpy.zeros((mol.nuc_num, 3))
+        for i in range(mol.nuc_num):
+            ia = mol.nuc[i].atom_index
+            f[i] = mf.f[ia]
+        symm, axis = symmetry_finder(mol)
+        if symm:
+            if symm == 'LINEAR':
+                # retain only axis direction
+                f = f[:,axis]
+                for i in range(mol.nuc_num):
+                    r1[i+2] = r1[i+2][axis]
+            else:
+                f = numpy.delete(f, axis, axis=1)
+                # remove axis direction
+                for i in range(mol.nuc_num):
+                    r1[i+2] = numpy.delete(r1[i+2], axis, axis=0)
         class CCISolver(CISolver):
-            def position_analysis(self, f, h1, r1, g2, norb, nparticle, ecore):
-                if self.symmetry:
-                    f_ = numpy.zeros((len(norb)-2,3))
-                    f_[:,self.axis] = f
-                    if self.scalar:
-                        f_[1,self.axis] = -f_[0,self.axis]
-                    f = f_
-                else:
-                    f = f.reshape((len(norb)-2,3))
-                self.last_f = f
-                if self.hdiag is None:
-                    self.hdiag = make_hdiag(h1, g2, norb, nparticle)
-                    print(f'hdiag: {self.hdiag[:4]}', flush=True)
-                f1 = [None] * len(norb)
-                for i in range(len(norb)-2):
-                    f1[i+2] = numpy.einsum('xij,x->ij', r1[i], f[i])
-                fr = make_hdiag(f1, None, norb, nparticle)
-                f1[0] = h1[0]
-                f1[1] = h1[1]
-                for i in range(len(norb)-2):
-                    f1[i+2] += h1[i+2]
-                self.e, self.c = kernel(f1, g2, norb, nparticle, ecore,
-                                        self.c, self.hdiag + fr, self.nroots)
-                t0 = time.time()
-                dr = numpy.empty_like(f)
-                for i in range(len(norb)-2):
-                    rdm1 = make_rdm1(self.c[0], i+2, norb, nparticle)
-                    dr[i] = numpy.einsum('xij,ij->x', r1[i], rdm1)
-                print(f'dr: {time.time() - t0} seconds', flush=True)
-                print()
-                print(f'CNEO| {f=}')
-                print(f'CNEO| lowest eigenvalue of H+f(r-R)={self.e[0]}')
-                print(f'CNEO| max|dr|={numpy.abs(dr).max()}')
-                print()
-                if self.symmetry:
-                    if self.scalar:
-                        dr = dr[0,self.axis].item()
-                    else:
-                        dr = dr[:,self.axis].ravel()
-                else:
-                    dr = dr.ravel()
-                return dr
-
             def kernel(self, h1=h1, r1=r1, g2=g2, norb=norb, nparticle=nparticle,
                        ecore=ecore):
-                # get initial f from CNEO-HF
-                # NOTE: for high angular momentum basis, CNEO-HF guess can be bad
-                f = numpy.zeros((mol.nuc_num, 3))
-                for i in range(mol.nuc_num):
-                    ia = mol.nuc[i].atom_index
-                    f[i] = mf.f[ia]
-                self.c = None
-                self.hdiag = None
-                self.scalar = False
-                self.axis = None
-                if self.symmetry:
-                    self.symmetry, self.scalar, self.axis = symmetry_finder(mol)
-                skip_root = False
-                if self.symmetry and self.scalar:
-                    skip_root = True # because now using root_scalar
-                    f0 = f[0,self.axis].item()
-                    dr0 = self.position_analysis(f0, h1, r1, g2, norb, nparticle, ecore)
-                    if abs(dr0) < 1e-6:
-                        root = f0
-                    else:
-                        # first determine the bracket
-                        if abs(f0) < 1e-3:
-                            if f0 > 0:
-                                bracket = [0., 10.*f0]
-                            else:
-                                bracket = [10.*f0, 0.]
-                            dr1 = self.position_analysis(bracket[0], h1, r1, g2, norb, nparticle, ecore)
-                            dr2 = self.position_analysis(bracket[1], h1, r1, g2, norb, nparticle, ecore)
-                            while dr1 * dr2 > 0:
-                                bracket[0] -= 100.*abs(f0)
-                                bracket[1] += 100.*abs(f0)
-                                dr1 = self.position_analysis(bracket[0], h1, r1, g2, norb, nparticle, ecore)
-                                dr2 = self.position_analysis(bracket[1], h1, r1, g2, norb, nparticle, ecore)
-                        else:
-                            if f0 > 0:
-                                bracket = [0., f0]
-                                dr1 = self.position_analysis(bracket[0], h1, r1, g2, norb, nparticle, ecore)
-                                dr2 = dr0
-                            else:
-                                bracket = [f0, 0.]
-                                dr1 = dr0
-                                dr2 = self.position_analysis(bracket[1], h1, r1, g2, norb, nparticle, ecore)
-                            while dr1 * dr2 > 0:
-                                bracket[0] -= 0.1
-                                bracket[1] += 0.1
-                                dr1 = self.position_analysis(bracket[0], h1, r1, g2, norb, nparticle, ecore)
-                                dr2 = self.position_analysis(bracket[1], h1, r1, g2, norb, nparticle, ecore)
-                        print(f'Initial f range: {bracket}')
-                        sol = scipy.optimize.root_scalar(self.position_analysis,
-                                                         args=(h1, r1, g2, norb, nparticle, ecore),
-                                                         bracket=bracket, xtol=1e-6)
-                        if sol.converged:
-                            print('Lagrange multiplier optimization succeeded!')
-                        else:
-                            print('Lagrange multiplier optimization failed!')
-                        print(f'Root finding message: {sol.flag}')
-                        root = sol.root
-                    f = numpy.zeros((mol.nuc_num,3))
-                    f[0,self.axis] = root
-                    f[1,self.axis] = -root
-                else:
-                    if self.symmetry:
-                        # test if zero guess is a better guess
-                        dr0 = self.position_analysis(f[:,self.axis].ravel(), h1, r1, g2, norb, nparticle, ecore)
-                        if numpy.abs(dr0).max() < 1e-6:
-                            root = f[:,self.axis]
-                            skip_root = True
-                        else:
-                            dr1 = self.position_analysis(numpy.zeros_like(f[:,self.axis].ravel()),
-                                                         h1, r1, g2, norb, nparticle, ecore)
-                            if numpy.abs(dr1).max() < 1e-6:
-                                root = numpy.zeros_like(f[:,self.axis])
-                                skip_root = True
-                            else:
-                                if numpy.abs(dr1).max() < numpy.abs(dr0).max():
-                                    f = numpy.zeros_like(f)
-                                print(f'Initial f: {f}')
-                                sol = scipy.optimize.root(self.position_analysis, f[:,self.axis].ravel(),
-                                                          args=(h1, r1, g2, norb, nparticle, ecore),
-                                                          method='hybr', options={'eps': 1e-2})
-                                root = sol.x
-                        f = numpy.zeros((mol.nuc_num,3))
-                        f[:,self.axis] = root
-                    else:
-                        # test if zero guess is a better guess
-                        dr0 = self.position_analysis(f.ravel(), h1, r1, g2, norb, nparticle, ecore)
-                        if numpy.abs(dr0).max() < 1e-6:
-                            skip_root = True
-                        else:
-                            dr1 = self.position_analysis(numpy.zeros_like(f.ravel()),
-                                                         h1, r1, g2, norb, nparticle, ecore)
-                            if numpy.abs(dr1).max() < 1e-6:
-                                f = numpy.zeros_like(f)
-                                skip_root = True
-                            else:
-                                if numpy.abs(dr1).max() < numpy.abs(dr0).max():
-                                    f = numpy.zeros_like(f)
-                                print(f'Initial f: {f}')
-                                sol = scipy.optimize.root(self.position_analysis, f.ravel(),
-                                                          args=(h1, r1, g2, norb, nparticle, ecore),
-                                                          method='hybr', options={'eps': 1e-2})
-                                f = sol.x.reshape((mol.nuc_num,3))
-                    if not skip_root:
-                        if sol.success:
-                            print('Lagrange multiplier optimization succeeded!')
-                        else:
-                            print('Lagrange multiplier optimization failed!')
-                        print(f'Root finding message: {sol.message}')
-                print(f'CNEO| Final: Optimized f: {f}')
-                if not skip_root:
-                    if self.symmetry:
-                        print(f'CNEO| Final: Position deviation: {sol.fun}')
-                    else:
-                        print(f'CNEO| Final: Position deviation: {sol.fun.reshape((mol.nuc_num,3))}')
-                    print(f'CNEO| Final: Position deviation max: {numpy.abs(sol.fun).max()}')
-                print()
-                print(f'CNEO| Last f: {self.last_f}')
-                eigenvalue = self.e[0]
-                print(f'CNEO| Energy directly from the eigenvalue of H+f(r-R) matrix (with last f): {self.e[0]}')
-                self.e[0] = energy(h1, g2, self.c[0], norb, nparticle, ecore)
-                print(f'CNEO| Energy recalculated using c^T*H*c: {self.e[0]}, difference={self.e[0]-eigenvalue}')
-                return self.e[0], self.c[0], f
+                self.e, self.c, self.f = kernel(h1, g2, norb, nparticle, ecore,
+                                                nroots=self.nroots, r1=r1, f0=f)
+                return self.e[0], self.c[0], self.f
         cisolver = CCISolver()
     else:
         cisolver = CISolver()
