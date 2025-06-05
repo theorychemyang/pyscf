@@ -42,6 +42,26 @@ def copy(mol, deep=True):
 
     return newmol
 
+
+# Patch the verbose attribute because many like to change it after the initialization,
+# though the correct way is something like neo.M(atom=atom, verbose=5)
+gto.Mole.verbose = property(
+    lambda self: (
+        self.super_mol.verbose
+        if hasattr(self, 'super_mol') and hasattr(self.super_mol, 'verbose')
+        else (
+            self.__dict__.get('_verbose')
+            if '_verbose' in self.__dict__
+            else next(
+                (getattr(cls, 'verbose') for cls in type(self).__mro__
+                 if hasattr(cls, 'verbose') and not isinstance(getattr(cls, 'verbose'), property)),
+                None
+            )
+        )
+    ),
+    lambda self, value: setattr(self, '_verbose', value)
+)
+
 class Mole(gto.Mole):
     '''A class similar to gto.Mole to handle quantum nuclei in (C)NEO.
     It has an inner layer of mole's that are gto.Mole for electrons and
@@ -474,7 +494,7 @@ class Mole(gto.Mole):
             alpha = 2 * numpy.sqrt(2) * self.mass[atom_id]
             beta = numpy.sqrt(3)
             n = 12
-        m = re.search("(\d+)s(\d+)p(\d+)d(\d+)?f?", self.nuclear_basis)
+        m = re.search(r"(\d+)s(\d+)p(\d+)d(\d+)?f?", self.nuclear_basis)
         if m:
             if m.group(4) is None:
                 basis = gto.expand_etbs([(0, int(m.group(1)), alpha, beta),
