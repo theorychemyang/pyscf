@@ -6,6 +6,7 @@ import numpy
 from pyscf.neo import cphf, CDFT
 from pyscf.neo.grad import Gradients
 from pyscf.neo.hessian import gen_vind
+from pyscf import lib
 
 def solve_mo1(mf, mo_energy, mo_coeff, mo_occ, h1ao=None,
               fx=None, atmlst=None, max_memory=4000, verbose=None,
@@ -196,6 +197,7 @@ class GradwithEfield(Gradients):
             gs = gs[atmlst]
         return gs
 
+SCFwithEfield.Gradients = lib.class_as_method(GradwithEfield)
 
 if __name__ == '__main__':
     from pyscf import neo
@@ -205,7 +207,7 @@ if __name__ == '__main__':
     #mf.conv_tol = 1e-14
     mf.scf()
 
-    grad = GradwithEfield(mf)
+    grad = mf.Gradients()
     grad.grid_response = True
     g = grad.kernel()
     

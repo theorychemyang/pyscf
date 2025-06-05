@@ -42,6 +42,7 @@ class Pyscf_NEO(Calculator):
                  add_solvent=False,        # add implict solvent model ddCOSMO
                  pcm_eps=None,             # PCM solvent model, see pyscf.solvent.pcm
                  pcm_method=None,          # PCM solvent model, see pyscf.solvent.pcm
+                 efield=None,              # external electric field
                  run_tda=False,            # run TDA calculations
                  disp=False,               # add dispersion correction (such as d3, d3bj, d4)
                  add_vv10=False,           # add dispersion correction VV10
@@ -79,10 +80,11 @@ class Pyscf_NEO(Calculator):
         self.add_solvent = add_solvent
         self.pcm_eps = pcm_eps
         self.pcm_method = pcm_method # NEO-PCM can work with scanners
+        self.efield = efield
         self.run_tda = run_tda
         self.disp = disp
         self.stable_opt = stable_opt
-        if self.add_solvent or self.run_tda or self.stable_opt:
+        if self.add_solvent or self.run_tda or self.stable_opt or self.efield is not None:
             # TODO: see if some of them can work with scanners
             self.scanner_available = False
         else:
@@ -131,6 +133,10 @@ class Pyscf_NEO(Calculator):
             mf = mf.PCM()
             mf.with_solvent.eps = self.pcm_eps
             mf.with_solvent.method = self.pcm_method
+        if self.efield is not None:
+            from pyscf.neo.efield import SCFwithEfield
+            mf = SCFwithEfield(mol, xc=self.xc, epc=self.epc)
+            mf.efield = self.efield
         if self.atom_grid is not None:
             mf.components['e'].grids.atom_grid = self.atom_grid
         if self.add_vv10:
@@ -198,6 +204,7 @@ class Pyscf_DFT(Calculator):
                  add_solvent=False,        # add implict solvent model ddCOSMO
                  pcm_eps=None,             # PCM solvent model, see pyscf.solvent.pcm
                  pcm_method=None,          # PCM solvent model, see pyscf.solvent.pcm
+                 efield=None,              # external electric field
                  run_tda=False,            # run TDA calculations
                  disp=False,               # add dispersion correction (such as d3, d3bj, d4)
                  add_vv10=False,           # add dispersion correction VV10
@@ -229,10 +236,11 @@ class Pyscf_DFT(Calculator):
         self.pcm_eps = pcm_eps
         self.pcm_method = pcm_method
         self.add_solvent = add_solvent
+        self.efield = efield
         self.run_tda = run_tda
         self.disp = disp
         self.stable_opt = stable_opt
-        if self.add_solvent or self.run_tda or self.stable_opt:
+        if self.add_solvent or self.run_tda or self.stable_opt or self.efield is not None:
             # TODO: see if some of them can work with scanners
             self.scanner_available = False
         else:
@@ -279,6 +287,10 @@ class Pyscf_DFT(Calculator):
                 mf = dft.RKS(mol)
         if self.den_fit:
             mf = mf.density_fit(auxbasis=self.den_fit_basis)
+        if self.efield is not None:
+            from pyscf.prop.infrared.efield import SCFwithEfield
+            mf = SCFwithEfield(mol)
+            mf.efield = self.efield
         mf.xc = self.xc
         if self.pcm_eps is not None and self.pcm_method is not None:
             mf = mf.PCM()
