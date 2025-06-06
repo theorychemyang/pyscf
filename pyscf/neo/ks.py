@@ -297,12 +297,21 @@ class KS(hf.HF):
         for t, comp in self.mol.components.items():
             if not t.startswith('n'):
                 if self.unrestricted:
-                    mf = dft.UKS(comp, xc=self.xc_e)
+                    if self.epc is None and self.xc_e.upper() == 'HF':
+                        mf = scf.UHF(comp)
+                    else:
+                        mf = dft.UKS(comp, xc=self.xc_e)
                 else:
                     if getattr(comp, 'nhomo', None) is not None or comp.spin != 0:
-                        mf = dft.UKS(comp, xc=self.xc_e)
+                        if self.epc is None and self.xc_e.upper() == 'HF':
+                            mf = scf.UHF(comp)
+                        else:
+                            mf = dft.UKS(comp, xc=self.xc_e)
                     else:
-                        mf = dft.RKS(comp, xc=self.xc_e)
+                        if self.epc is None and self.xc_e.upper() == 'HF':
+                            mf = scf.RHF(comp)
+                        else:
+                            mf = dft.RKS(comp, xc=self.xc_e)
                 charge = 1.
                 if t.startswith('p'):
                     charge = -1.
@@ -542,12 +551,21 @@ class KS(hf.HF):
             for t, comp in self.mol.components.items():
                 if not t.startswith('n'):
                     if self.unrestricted:
-                        mf = dft.UKS(comp, xc=self.xc_e)
+                        if self.epc is None and self.xc_e.upper() == 'HF':
+                            mf = scf.UHF(comp)
+                        else:
+                            mf = dft.UKS(comp, xc=self.xc_e)
                     else:
                         if getattr(comp, 'nhomo', None) is not None or comp.spin != 0:
-                            mf = dft.UKS(comp, xc=self.xc_e)
+                            if self.epc is None and self.xc_e.upper() == 'HF':
+                                mf = scf.UHF(comp)
+                            else:
+                                mf = dft.UKS(comp, xc=self.xc_e)
                         else:
-                            mf = dft.RKS(comp, xc=self.xc_e)
+                            if self.epc is None and self.xc_e.upper() == 'HF':
+                                mf = scf.RHF(comp)
+                            else:
+                                mf = dft.RKS(comp, xc=self.xc_e)
                     charge = 1.
                     if t.startswith('p'):
                         charge = -1.
