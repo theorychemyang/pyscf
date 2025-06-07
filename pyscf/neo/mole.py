@@ -42,7 +42,6 @@ def copy(mol, deep=True):
 
     return newmol
 
-
 # Patch the verbose attribute because many like to change it after the initialization,
 # though the correct way is something like neo.M(atom=atom, verbose=5)
 gto.Mole.verbose = property(
@@ -60,6 +59,24 @@ gto.Mole.verbose = property(
         )
     ),
     lambda self, value: setattr(self, '_verbose', value)
+)
+
+# Let direct_vee respect the global setting too
+gto.Mole.direct_vee = property(
+    lambda self: (
+        self.super_mol.direct_vee
+        if hasattr(self, 'super_mol') and hasattr(self.super_mol, 'direct_vee')
+        else (
+            self.__dict__.get('_direct_vee')
+            if '_direct_vee' in self.__dict__
+            else next(
+                (getattr(cls, 'direct_vee') for cls in type(self).__mro__
+                 if hasattr(cls, 'direct_vee') and not isinstance(getattr(cls, 'direct_vee'), property)),
+                None
+            )
+        )
+    ),
+    lambda self, value: setattr(self, '_direct_vee', value)
 )
 
 class Mole(gto.Mole):

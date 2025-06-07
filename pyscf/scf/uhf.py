@@ -959,12 +959,21 @@ This is the Gaussian fit version as described in doi:10.1063/5.0004046.''')
         '''
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()
-        if (not omega and
+        if (not omega and not mol.direct_vee and
             (self._eri is not None or mol.incore_anyway or self._is_mem_enough())):
             if self._eri is None:
+                if mol.verbose >= logger.DEBUG:
+                    cput0 = (logger.process_clock(), logger.perf_counter())
                 self._eri = mol.intor('int2e', aosym='s8')
+                if mol.verbose >= logger.DEBUG:
+                    logger.timer(mol, 'Incore e-e ERI', *cput0)
+                    logger.debug(mol, f'    Memory usage: {self._eri.nbytes/1024**2:.3f} MB')
             vj, vk = hf.dot_eri_dm(self._eri, dm, hermi, with_j, with_k)
         else:
+            if not mol.direct_vee and not omega:
+                warnings.warn('Direct Vee is used for e-e ERIs, might be slow. '
+                              +f'PYSCF_MAX_MEMORY is set to {mol.max_memory} MB, '
+                              +f'required memory: {mol.nao_nr()**4/1e6=:.2f} MB')
             vj, vk = hf.SCF.get_jk(self, mol, dm, hermi, with_j, with_k, omega)
         return vj, vk
 

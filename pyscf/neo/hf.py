@@ -238,6 +238,7 @@ class ComponentSCF(Component):
         self.mass = mass
         self.is_nucleus = is_nucleus
         self.nuc_occ_state = nuc_occ_state
+        self._vint = None
 
     def undo_component(self):
         obj = lib.view(self, lib.drop_class(self.__class__, Component))
@@ -271,11 +272,55 @@ class ComponentSCF(Component):
         if self.is_nucleus: # Nucleus does not have self-type interaction
             if mol is None:
                 mol = self.mol
-            return numpy.zeros((mol.nao, mol.nao))
+            veff = numpy.zeros((mol.nao, mol.nao))
+            if isinstance(self, scf.hf.KohnShamDFT):
+                veff = lib.tag_array(veff, ecoul=0, exc=0, vj=veff.copy(), vk=veff.copy())
         else:
             if abs(self.charge) != 1.:
                 raise NotImplementedError('General charge J/K with tag_array')
-            return super().get_veff(mol, dm, dm_last, vhf_last, hermi)
+            if hasattr(vhf_last, 'vhf'):
+                veff = super().get_veff(mol, dm, dm_last, vhf_last.vhf, hermi)
+            else:
+                veff = super().get_veff(mol, dm, dm_last, vhf_last, hermi)
+
+        # Cached Coulomb/epc interaction from other components
+        if self._vint is not None:
+            vhf = veff.view(numpy.ndarray).copy()
+            if hasattr(veff, '__dict__'):
+                vhf = lib.tag_array(vhf, **veff.__dict__)
+
+            if hasattr(veff, 'vj'): # KS
+                exc = veff.exc
+                if hasattr(self._vint, 'vj'): # epc is ON
+                    vj = self._vint.vj
+                    assert hasattr(self._vint, 'exc') and hasattr(veff, 'exc')
+                    exc += self._vint.exc # pass epc correlation energy to exc
+                else: # epc is OFF
+                    vj = self._vint
+
+                # update ecoul
+                if hasattr(veff, 'ecoul') and veff.ecoul is not None:
+                    ecoul = veff.ecoul
+                    if isinstance(self, scf.uhf.UHF):
+                        if not isinstance(dm, numpy.ndarray):
+                            dm = numpy.asarray(dm)
+                        if dm.ndim == 2:  # RHF DM
+                            dm = numpy.repeat(dm[None]*.5, 2, axis=0)
+                        ground_state = (dm.ndim == 3 and dm.shape[0] == 2)
+                        if ground_state:
+                            ecoul += numpy.einsum('ij,ji', dm[0]+dm[1], vj).real * .5
+                    else:
+                        ground_state = (isinstance(dm, numpy.ndarray) and dm.ndim == 2)
+                        if ground_state:
+                            ecoul += numpy.einsum('ij,ji', dm, vj).real * .5
+                # Update overall veff, note that veff is a tag_array!
+                # The update of vj is a bit useless, because ecoul has already been evaluated.
+                veff = lib.tag_array(veff + self._vint, ecoul=ecoul, exc=exc,
+                                     vj=veff.vj+vj, vk=veff.vk, vhf=vhf)
+            else: # HF
+                assert not hasattr(self._vint, 'vj') # Must be KS when epc is enabled
+                veff = lib.tag_array(veff + self._vint, vhf=vhf)
+        return veff
 
     def get_occ(self, mo_energy=None, mo_coeff=None):
         '''Support fractional occupation. For nucleus, make sure it is a single particle'''
@@ -356,9 +401,9 @@ class ComponentSCF(Component):
             return dm
 
     def energy_tot(self, dm=None, h1e=None, vhf=None):
-        if self.is_nucleus:
-            raise AttributeError('energy_tot should not be called from ComponentSCF')
-        return super().energy_tot(dm, h1e, vhf) # backward compatibility for NEO-MP2
+        # Compatibility for mp.mp2.get_e_hf
+        warnings.warn('Calling energy_tot from a single component of multi-component SCF might be wrong!')
+        return super().energy_tot(dm, h1e, vhf)
 
     def scf(self, dm0=None, **kwargs):
         raise AttributeError('scf should not be called from ComponentSCF')
@@ -485,8 +530,10 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, vint=None, dm=None, cycle=-1,
              damp_factor=None, fock_last=None, diis_pos='both', diis_type=3):
     if h1e is None: h1e = mf.get_hcore()
     if dm is None: dm = mf.make_rdm1()
+    if vint is None:
+        vint = mf.get_vint(mf.mol, dm)
+        vhf = mf.get_veff(mf.mol, dm) # update vhf because vhf relies on _vint
     if vhf is None: vhf = mf.get_veff(mf.mol, dm)
-    if vint is None: vint = mf.get_vint(mf.mol, dm)
     f = {}
     for t, comp in mf.components.items():
         f[t] = numpy.asarray(h1e[t]) + vhf[t] + numpy.asarray(vint[t])
@@ -617,8 +664,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         dm = mf.get_init_guess(mol, dm0, **kwargs)
 
     h1e = mf.get_hcore(mol)
-    vhf = mf.get_veff(mol, dm)
     vint = mf.get_vint(mol, dm)
+    vhf = mf.get_veff(mol, dm)
     e_tot = mf.energy_tot(dm, h1e, vhf, vint)
     logger.info(mf, 'init E= %.15g', e_tot)
 
@@ -673,8 +720,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mo_energy, mo_coeff = mf.eig(fock, s1e)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         dm = mf.make_rdm1(mo_coeff, mo_occ)
-        vhf = mf.get_veff(mol, dm, dm_last, vhf)
         vint = mf.get_vint(mol, dm)
+        vhf = mf.get_veff(mol, dm, dm_last, vhf)
         e_tot = mf.energy_tot(dm, h1e, vhf, vint)
 
         # Here Fock matrix is h1e + vhf + vint, without DIIS.  Calling get_fock
@@ -721,8 +768,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mo_energy, mo_coeff = mf.eig(fock, s1e)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         dm, dm_last = mf.make_rdm1(mo_coeff, mo_occ), dm
-        vhf = mf.get_veff(mol, dm, dm_last, vhf)
         vint = mf.get_vint(mol, dm)
+        vhf = mf.get_veff(mol, dm, dm_last, vhf)
         e_tot, last_hf_e = mf.energy_tot(dm, h1e, vhf, vint), e_tot
 
         fock = mf.get_fock(h1e, s1e, vhf, vint, dm)
@@ -972,17 +1019,18 @@ class HF(scf.hf.SCF):
     def energy_elec(self, dm=None, h1e=None, vhf=None, vint=None):
         if dm is None: dm = self.make_rdm1()
         if h1e is None: h1e = self.get_hcore()
+        if vint is None:
+            vint = self.get_vint(self.mol, dm) # call this to update _vint in vhf
+            vhf = self.get_veff(self.mol, dm)
         if vhf is None: vhf = self.get_veff(self.mol, dm)
-        if vint is None: vint = self.get_vint(self.mol, dm)
         self.scf_summary['e1'] = 0
         self.scf_summary['e2'] = 0
         e_elec = 0
         e_coul = 0
         for t, comp in self.components.items():
             logger.debug(self, f'Component: {t}')
-            # vint acts as if a spin-insensitive one-body Hamiltonian
-            # .5 to remove double-counting
-            e_elec_t, e_coul_t = comp.energy_elec(dm[t], h1e[t] + vint[t] * .5, vhf[t])
+            # vint is already in vhf
+            e_elec_t, e_coul_t = comp.energy_elec(dm[t], h1e[t], vhf[t])
             e_elec += e_elec_t
             e_coul += e_coul_t
             self.scf_summary['e1'] += comp.scf_summary['e1']
@@ -1085,6 +1133,10 @@ class HF(scf.hf.SCF):
             v = interaction.get_vint(dm, **kwargs)
             for t in t_pair:
                 vint[t] += v[t]
+        # Transfer vj to vint cache
+        for t in self.components.keys():
+            self.components[t]._vint = vint[t]
+            vint[t] = 0
         return vint
 
     def mulliken_pop(self, mol=None, dm=None, s=None, verbose=logger.DEBUG):
@@ -1145,6 +1197,7 @@ class HF(scf.hf.SCF):
             # quantum nuc is the same, reset each component
             for t, comp in self.components.items():
                 comp.reset(self.mol.components[t])
+                comp._vint = None
             for t, comp in self.interactions.items():
                 comp._eri = None
         else:

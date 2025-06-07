@@ -8,6 +8,7 @@ import copy
 import numpy
 import warnings
 from pyscf import dft, lib, scf
+from pyscf.data import nist
 from pyscf.lib import logger
 from pyscf.dft.numint import (BLKSIZE, NBINS, eval_ao, eval_rho, _scale_ao,
                               _dot_ao_ao, _dot_ao_ao_sparse)
@@ -270,6 +271,7 @@ class InteractionCorrelation(hf.InteractionCoulomb):
         vxc_e = vxc_e + vxc_e.conj().T
 
         vxc = {}
+        # Assign epc correlation energy to electrons
         vxc['e'] = lib.tag_array(vj['e'] + vxc_e, exc=exc_sum, vj=vj['e'])
         vxc[n_type] = lib.tag_array(vj[n_type] + vxc_n, exc=0, vj=vj[n_type])
         return vxc
@@ -295,7 +297,17 @@ class KS(hf.HF):
         self.epc = epc # Electron-proton correlation
 
         for t, comp in self.mol.components.items():
-            if not t.startswith('n'):
+            if t.startswith('n'):
+                if self.epc is None:
+                    mf = scf.RHF(comp)
+                else:
+                    mf = dft.RKS(comp, xc='HF')
+                self.components[t] = hf.general_scf(mf,
+                                                    charge=-1. * self.mol.atom_charge(comp.atom_index),
+                                                    mass=self.mol.mass[comp.atom_index] * nist.ATOMIC_MASS / nist.E_MASS,
+                                                    is_nucleus=True,
+                                                    nuc_occ_state=0)
+            else:
                 if self.unrestricted:
                     if self.epc is None and self.xc_e.upper() == 'HF':
                         mf = scf.UHF(comp)
@@ -321,15 +333,20 @@ class KS(hf.HF):
         #####
         self._epc_n_types = None
         self._skip_epc = False
-        self._numint = self.components['e']._numint
+        if isinstance(self.components['e'], scf.hf.KohnShamDFT):
+            self._numint = self.components['e']._numint
+        else:
+            self._numint = None
         self.grids = None
         self._elec_grids_hash = None
 
     def energy_elec(self, dm=None, h1e=None, vhf=None, vint=None):
         if dm is None: dm = self.make_rdm1()
         if h1e is None: h1e = self.get_hcore()
+        if vint is None:
+            vint = self.get_vint(self.mol, dm)
+            vhf = self.get_veff(self.mol, dm)
         if vhf is None: vhf = self.get_veff(self.mol, dm)
-        if vint is None: vint = self.get_vint(self.mol, dm)
         self.scf_summary['e1'] = 0
         self.scf_summary['coul'] = 0
         self.scf_summary['exc'] = 0
@@ -337,23 +354,15 @@ class KS(hf.HF):
         e2 = 0
         for t, comp in self.components.items():
             logger.debug(self, f'Component: {t}')
-            # Assign epc correlation energy to electrons
-            if hasattr(vhf[t], 'exc') and hasattr(vint[t], 'exc'):
-                vhf[t].exc += vint[t].exc
-            if hasattr(vint[t], 'vj'):
-                vj = vint[t].vj
-            else:
-                vj = vint[t]
-            # vj acts as if a spin-insensitive one-body Hamiltonian
-            # .5 to remove double-counting
-            e_elec_t, e2_t = comp.energy_elec(dm[t], h1e[t] + vj * .5, vhf[t])
+            e_elec_t, e2_t = comp.energy_elec(dm[t], h1e[t], vhf[t])
             e_elec += e_elec_t
             e2 += e2_t
             self.scf_summary['e1'] += comp.scf_summary['e1']
-            # Nucleus is RHF and its scf_summary does not have coul or exc
             if hasattr(vhf[t], 'exc'):
                 self.scf_summary['coul'] += comp.scf_summary['coul']
                 self.scf_summary['exc'] += comp.scf_summary['exc']
+            elif 'e2' in comp.scf_summary:
+                self.scf_summary['coul'] += comp.scf_summary['e2']
         return e_elec, e2
 
     def get_vint_slow(self, mol=None, dm=None):
@@ -384,6 +393,10 @@ class KS(hf.HF):
                         vint[t] = lib.tag_array(vint[t] + v[t], exc=vint[t].exc, vj=vint[t].vj + v[t])
                     else:
                         vint[t] += v[t]
+        # Transfer vint to cache
+        for t in self.components.keys():
+            self.components[t]._vint = vint[t]
+            vint[t] = 0
         return vint
 
     def get_vint_fast(self, mol=None, dm=None):
@@ -528,10 +541,18 @@ class KS(hf.HF):
             vxc_n[n_type] = vxc_n[n_type] + vxc_n[n_type].conj().T
 
         vxc = vj
-        vxc['e'] = lib.tag_array(vj['e'] + vxc_e, exc=exc_sum, vj=vj['e'])
+        # Assign epc correlation energy to electrons
+        # vj is dummy (all zero). Actual vj is already transferred to _vint
+        vxc['e'] = lib.tag_array(self.components['e']._vint + vxc_e,
+                                 exc=exc_sum, vj=self.components['e']._vint)
         for n_type in n_types:
-            vxc[n_type] = lib.tag_array(vj[n_type] + vxc_n[n_type], exc=0, vj=vj[n_type])
+            vxc[n_type] = lib.tag_array(self.components[n_type]._vint + vxc_n[n_type],
+                                        exc=0, vj=self.components[n_type]._vint)
 
+        # Transfer vxc to vint cache
+        for t in self.components.keys():
+            self.components[t]._vint = vxc[t]
+            vxc[t] = 0
         return vxc
 
     get_vint = get_vint_fast
@@ -549,7 +570,17 @@ class KS(hf.HF):
         else:
             # quantum nuc is different, need to rebuild
             for t, comp in self.mol.components.items():
-                if not t.startswith('n'):
+                if t.startswith('n'):
+                    if self.epc is None:
+                        mf = scf.RHF(comp)
+                    else:
+                        mf = dft.RKS(comp, xc='HF')
+                    self.components[t] = hf.general_scf(mf,
+                                                        charge=-1. * self.mol.atom_charge(comp.atom_index),
+                                                        mass=self.mol.mass[comp.atom_index] * nist.ATOMIC_MASS / nist.E_MASS,
+                                                        is_nucleus=True,
+                                                        nuc_occ_state=0)
+                else:
                     if self.unrestricted:
                         if self.epc is None and self.xc_e.upper() == 'HF':
                             mf = scf.UHF(comp)
@@ -576,7 +607,10 @@ class KS(hf.HF):
         # EPC grids
         self._epc_n_types = None
         self._skip_epc = False
-        self._numint = self.components['e']._numint
+        if isinstance(self.components['e'], scf.hf.KohnShamDFT):
+            self._numint = self.components['e']._numint
+        else:
+            self._numint = None
         self.grids = None
         self._elec_grids_hash = None
         return self
