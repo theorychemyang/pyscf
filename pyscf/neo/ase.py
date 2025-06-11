@@ -208,12 +208,11 @@ class Pyscf_TDNEO(Pyscf_NEO):
                  cphf_conv_tol = 1e-8,
                  **kwargs):
         super().__init__(**kwargs)
-        if self.run_tda:
-            raise ValueError('cannot run TDA for TDDFT')
+        self.run_tda = False
         if not self.scanner_available:
             raise NotImplementedError('mf_scanner not initialized')
-        if (self.epc is not None) or self.unrestricted:
-            raise NotImplementedError('epc and unrestricted not supported for CNEO-TDDFT gradient')
+        if self.epc is not None:
+            raise NotImplementedError('epc not supported for CNEO-TDDFT gradient')
         
         self.scanner_available = False
         self.state = state
@@ -235,7 +234,6 @@ class Pyscf_TDNEO(Pyscf_NEO):
 
     def create_tdmf(self, mol):
         mf = self.create_mf(mol)
-        # mf.verbose = 5
         if self.is_davidson:
             td_mf = ctddft.CTDDFT(mf)
             td_mf.nstates = self.nstates
