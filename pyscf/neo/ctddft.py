@@ -134,8 +134,6 @@ class CTDBase(rhf.TDBase):
         return self.e, self.xy
 
     def nuc_grad_method(self):
-        if isinstance(self._scf.components['e'], scf.uhf.UHF):
-            raise NotImplementedError('unrestricted is not supported for td gradients')
         from pyscf.neo import tdgrad
         return tdgrad.Gradients(self)
 
@@ -160,6 +158,7 @@ class CTDDFT(CTDBase):
     def __init__(self, mf):
         CTDBase.__init__(self, mf)
         self.max_space = 100
+        self._keys = self._keys.union(['max_space'])
 
     def gen_vind(self, mf=None):
         if mf is None:
