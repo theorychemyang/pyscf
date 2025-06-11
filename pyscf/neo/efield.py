@@ -112,7 +112,7 @@ def dipole_grad(mf):
         h2ao = numpy.zeros((9, nao, nao))
         h2ao[:,:,p0:p1] += int1e_irp[:,:,p0:p1] # nable is on ket in int1e_irp
         h2ao[:,p0:p1] += int1e_irp[:,:,p0:p1].transpose(0, 2, 1)
-        de[a] -= numpy.einsum('xuv,uv->x', h2ao, dm['e']).reshape(3, 3) 
+        de[a] -= numpy.einsum('xuv,uv->x', h2ao, dm['e']).reshape(3, 3).T
 
         h1vo = numpy.einsum('xuv, ui, vj -> xij', h1ao['e'][a], mo_coeff[:,mo_occ>0], mo_coeff)
         de[a] -= 4 * numpy.einsum('xij,tji->xt', h1vo, mo1['e']) 

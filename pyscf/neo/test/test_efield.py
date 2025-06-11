@@ -8,7 +8,16 @@ from pyscf.neo.efield import polarizability, dipole_grad, SCFwithEfield, Gradwit
 
 class KnownValues(unittest.TestCase):
     def test_dipole_grad(self):
-        mol = neo.M(atom='H 0 0 0; F 0 0 0.9', basis='ccpvdz')
+        #mol = neo.M(atom='''O 0.0000 0.0000 0.0000;
+        #            H 0.75740 0.58680 0.0000;
+        #            H -0.75740 0.58680 0.0000;
+        #            ''', basis='ccpvdz')
+        mol = neo.M(atom='''C	0.5803070	0.4714570	0.4115280;
+                            Br	-1.2184760	-0.1875100	-0.0282200;
+                            Cl	1.8510530	-0.6893390	-0.0673470;
+                            F	0.7865210	1.6508530	-0.2040030;
+                            H	0.6182130	0.5951910	1.4994600;
+                    ''', basis='ccpvdz')
         mf = neo.CDFT(mol, xc='b3lyp')
         mf.run()
 
@@ -20,18 +29,37 @@ class KnownValues(unittest.TestCase):
         de2 = dipole_grad(mf)
         print(de2)
 
-        mol1 = neo.M(atom='H 0 0 -0.001; F 0 0 0.9', basis='ccpvdz')
+        #mol1 = neo.M(atom='''O 0.0000 0.0000 0.000;
+        #             H 0.75640 0.58680 0.000;
+        #             H -0.75740 0.58680 0.000;
+        #             ''', basis='ccpvdz')
+        mol1 = neo.M(atom='''C	0.5803070	0.4714570	0.4115280;
+                            Br	-1.2184760	-0.1875100	-0.0282200;
+                            Cl	1.8510530	-0.6893390	-0.0673470;
+                            F	0.7865210	1.6508530	-0.2040030;
+                            H	0.6172130	0.5951910	1.4994600;
+                     ''', basis='ccpvdz')
         mf1 = neo.CDFT(mol1, xc='b3lyp')
         mf1.scf()
 
-        mol2 = neo.M(atom='H 0 0 0.001; F 0 0 0.9', basis='ccpvdz')
+        #mol2 = neo.M(atom='''O 0.0000 0.0000 0.000;
+        #             H 0.75840 0.58680 0.000;
+        #             H -0.75740 0.58680 0.000;
+        #             ''', basis='ccpvdz')
+        mol2 = neo.M(atom='''C	0.5803070	0.4714570	0.4115280;
+                            Br	-1.2184760	-0.1875100	-0.0282200;
+                            Cl	1.8510530	-0.6893390	-0.0673470;
+                            F	0.7865210	1.6508530	-0.2040030;
+                            H	0.6192130	0.5951910	1.4994600;
+                     ''', basis='ccpvdz')
         mf2 = neo.CDFT(mol2, xc='b3lyp')
         mf2.scf()
 
-        de_finite_diff = (mf2.dip_moment(unit='au')[-1] - mf1.dip_moment(unit='au')[-1]) / 0.002 * lib.param.BOHR
+        de_finite_diff = (mf2.dip_moment(unit='au') - mf1.dip_moment(unit='au')) / 0.002 * lib.param.BOHR
+        #print(de_finite_diff)
 
-        self.assertAlmostEqual(de1[0,-1,-1], de_finite_diff, 5)
-        self.assertAlmostEqual(de2[0,-1,-1], de_finite_diff, 5)
+        self.assertAlmostEqual(abs(de1[-1, 0] - de_finite_diff).max(), 0, 5)
+        self.assertAlmostEqual(abs(de2[-1, 0] - de_finite_diff).max(), 0, 5)
         
 
     def test_polarizability(self):
