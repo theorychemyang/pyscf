@@ -5,7 +5,7 @@ import scipy
 from pyscf import lib
 from pyscf import ao2mo
 from pyscf.fci import cistring
-from pyscf import neo
+from pyscf import neo, scf
 from pyscf.neo import cdavidson
 import time
 
@@ -518,7 +518,7 @@ def symmetry_finder(mol):
     return symm, axis
 
 def FCI(mf, kernel=kernel, integrals=integrals, energy=energy):
-    assert mf.unrestricted
+    assert isinstance(mf.mf_elec, scf.uhf.UHF)
     norb_e = mf.mf_elec.mo_coeff[0].shape[1]
     mol = mf.mol
     nelec = mol.elec.nelec
