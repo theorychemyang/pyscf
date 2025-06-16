@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-export OMP_NUM_THREADS=1
-export PYTHONPATH=$(pwd):$PYTHONPATH
+export OMP_NUM_THREADS=4
+export PYTHONPATH=$(pwd):$PYTHONPATH 
 ulimit -s 20000
 
 mkdir -p pyscftmpdir
