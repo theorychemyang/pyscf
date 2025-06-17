@@ -996,24 +996,24 @@ class HF(scf.hf.SCF):
                 dm_guess[t] = comp.make_rdm1(mo_coeff, mo_occ)
         return dm_guess
 
-    def make_rdm1(self, mo_coeff=None, mo_occ=None):
+    def make_rdm1(self, mo_coeff=None, mo_occ=None, **kwargs):
         if mo_coeff is None: mo_coeff = self.mo_coeff
         if mo_occ is None: mo_occ = self.mo_occ
         dm = {}
         for t, comp in self.components.items():
             coeff = comp.mo_coeff if mo_coeff is None else mo_coeff[t]
             occ = comp.mo_occ if mo_occ is None else mo_occ[t]
-            dm[t] = comp.make_rdm1(coeff, occ)
+            dm[t] = comp.make_rdm1(coeff, occ, **kwargs)
         return dm
 
-    def make_rdm2(self, mo_coeff=None, mo_occ=None):
+    def make_rdm2(self, mo_coeff=None, mo_occ=None, **kwargs):
         if mo_coeff is None: mo_coeff = self.mo_coeff
         if mo_occ is None: mo_occ = self.mo_occ
         dm2 = {}
         for t, comp in self.components.items():
             coeff = comp.mo_coeff if mo_coeff is None else mo_coeff[t]
             occ = comp.mo_occ if mo_occ is None else mo_occ[t]
-            dm2[t] = comp.make_rdm2(coeff, occ)
+            dm2[t] = comp.make_rdm2(coeff, occ, **kwargs)
         return dm2
 
     def energy_elec(self, dm=None, h1e=None, vhf=None, vint=None):

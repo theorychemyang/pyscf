@@ -110,48 +110,29 @@ class NEOSCFWithSolvent(_Solvation):
         return e_tot, e_coul
 
     def nuc_grad_method(self):
-        grad_method = super().nuc_grad_method()
-        return self.with_solvent.nuc_grad_method(grad_method)
+        from pyscf.neo.pcm_grad import make_grad_object
+        return make_grad_object(self)
 
     Gradients = nuc_grad_method
 
     def Hessian(self):
-        hess_method = super().Hessian()
-        return self.with_solvent.Hessian(hess_method)
+        from pyscf.neo.pcm_hess import make_hess_object
+        return make_hess_object(self)
 
     def gen_response(self, *args, **kwargs):
         vind = super().gen_response(*args, **kwargs)
-        # * singlet=None is orbital hessian or CPHF type response function.
-        # Except TDDFT, this is the default case for all response calculations
-        # (such as stability analysis, SOSCF, polarizability and Hessian).
-        # * In TDDFT, this setting only affect RHF wfn. The UHF wfn does not
-        # depend on the setting of "singlet".
-        # * For RHF reference, the triplet excitation does not change the total
-        # electron density, thus does not lead to solvent response.
-        singlet = kwargs.get('singlet', True)
-        singlet = singlet or singlet is None
+        # Read comments in pyscf.solvent._attach_solvent
         def vind_with_solvent(dm1):
             v = vind(dm1)
             if self.with_solvent.equilibrium_solvation:
-                v_solvent = self.with_solvent._B_dot_x(dm1)
                 for t, comp in self.components.items():
                     if t == 'e' or t == 'p':
                         is_uhf = isinstance(comp, scf.uhf.UHF)
                         if is_uhf:
-                            v[t] += v_solvent[t][0] + v_solvent[t][1]
-                        elif singlet:
-                            v[t] += v_solvent[t]
-                        else:
-                            # The response of electron density should be strictly zero
-                            # for TDDFT triplet
-                            pass
-                    else:
-                        # ??? (C)NEO-TDDFT? Should nuclei have solvent response?
-                        # CNEO-TDDFT with frozen nuclei?
-                        if singlet:
-                            v[t] += v_solvent[t]
-                        else:
-                            raise NotImplementedError
+                            dm1[t] = dm1[t][0] + dm1[t][1]
+                v_solvent = self.with_solvent._B_dot_x(dm1)
+                for t, comp in self.components.items():
+                    v[t] += v_solvent[t]
             return v
         return vind_with_solvent
 

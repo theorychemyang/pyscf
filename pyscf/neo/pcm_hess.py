@@ -599,14 +599,25 @@ def analytical_grad_vmat(pcmobj, dqdx, mol, atmlst=None, verbose=None):
     t1 = log.timer_debug1('computing solvent grad veff', *t1)
     return dV_on_molecule_dx
 
-def make_hess_object(hess_method):
-    if hess_method.base.with_solvent.frozen:
+def make_hess_object(base_method):
+    from pyscf.solvent._attach_solvent import _Solvation
+    from pyscf.hessian.rhf import HessianBase
+    if isinstance(base_method, HessianBase):
+        # For backward compatibility. The input argument is a gradient object in
+        # previous implementations.
+        base_method = base_method.base
+
+    # Must be a solvent-attached method
+    assert isinstance(base_method, _Solvation)
+    with_solvent = base_method.with_solvent
+    if with_solvent.frozen:
         raise RuntimeError('Frozen solvent model is not avialbe for energy hessian')
 
-    name = (hess_method.base.with_solvent.__class__.__name__
-            + hess_method.__class__.__name__)
-    return lib.set_class(WithSolventHess(hess_method),
-                         (WithSolventHess, hess_method.__class__), name)
+    vac_hess = base_method.undo_solvent().Hessian()
+    vac_hess.base = base_method
+    name = with_solvent.__class__.__name__ + vac_hess.__class__.__name__
+    return lib.set_class(WithSolventHess(vac_hess),
+                         (WithSolventHess, vac_hess.__class__), name)
 
 class WithSolventHess:
     _keys = {'de_solvent', 'de_solute'}
@@ -630,7 +641,7 @@ class WithSolventHess:
     def kernel(self, *args, dm=None, atmlst=None, **kwargs):
         dm = kwargs.pop('dm', None)
         if dm is None:
-            dm = self.base.make_rdm1()
+            dm = self.base.make_rdm1(ao_repr=True)
         solvent = self.base.with_solvent
         if not solvent._intermediates:
             solvent.build()
@@ -676,7 +687,7 @@ class WithSolventHess:
         solvent = self.base.with_solvent
         if not solvent._intermediates:
             solvent.build()
-        dm = self.base.make_rdm1()
+        dm = self.base.make_rdm1(ao_repr=True)
         dm_cache = solvent._intermediates.get('dm', None)
         if dm_cache is not None and isinstance(dm_cache, dict):
             is_dm_similar = True
