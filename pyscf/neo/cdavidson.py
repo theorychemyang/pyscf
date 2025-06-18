@@ -160,9 +160,9 @@ def davidson1(a_and_r_op, x0, f0, adiag, rdiag,
             w, v = scipy.linalg.eigh(heff_mod)
             return v[:,0].T @ reff[:,:space,:space] @ v[:,0]
 
-        assert max_space >= 16
+        assert max_space >= 20
         f0_opt_on = False
-        if space >= 8:
+        if space >= 10:
             f0_opt_on = True
             #result = scipy.optimize.root(constraint_fn, f0, method='hybr')
             # Using root may cause divergent f when the subspace is small
@@ -203,17 +203,19 @@ def davidson1(a_and_r_op, x0, f0, adiag, rdiag,
         x0 = None
         x0 = _gen_x0(v, xs)
         if fresh_start:
-            prefer_lessio_in_a_and_r_x0 = False
-            if icyc > 0:
+            if icyc > 0 and prefer_lessio_in_a_and_r_x0:
                 log.debug('    Fresh start, go back to _gen_x0')
+            prefer_lessio_in_a_and_r_x0 = False
         if lessio or prefer_lessio_in_a_and_r_x0:
             ax0, rx0 = a_and_r_op(x0)
         else:
             t0 = logger.perf_counter()
             ax0 = _gen_x0(v, ax)
-            rx0 = []
+            assert nroots == 1 # NOTE: support lowest eigenvalue state constraint only!
+            assert v.shape[1] == 1
+            rx0 = [[]]
             for i in range(rdim):
-                rx0.append(_gen_x0(v, rx[i]))
+                rx0[0].append(_gen_x0(v, rx[i])[0])
             gen_ar0_time = logger.perf_counter() - t0
             if gen_ar0_time > ar_time:
                 prefer_lessio_in_a_and_r_x0 = True
@@ -224,7 +226,7 @@ def davidson1(a_and_r_op, x0, f0, adiag, rdiag,
         for k, ek in enumerate(e):
             xt[k] = ax0[k] - ek * x0[k]
             for i in range(rdim):
-                xt[k] += f0[i] * rx0[i][k]
+                xt[k] += f0[i] * rx0[k][i]
             dx_norm[k] = numpy.sqrt(dot(xt[k].conj(), xt[k]).real)
             conv[k] = abs(de[k]) < tol and dx_norm[k] < toloose \
                       and f0_opt_on and numpy.linalg.norm(r) < 1e-8
