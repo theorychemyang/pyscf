@@ -869,7 +869,10 @@ class HF(scf.hf.SCF):
         sorted_n_keys = sorted(key for key in self.components if key.startswith('n'))
         eri_ne = []
         for key in sorted_n_keys:
-            eri_ne.append(self.interactions[('e', key)]._eri.T)
+            if self.interactions[('e', key)]._eri is not None:
+                eri_ne.append(self.interactions[('e', key)]._eri.T)
+            else:
+                eri_ne.append(None)
         return eri_ne
 
     @property
