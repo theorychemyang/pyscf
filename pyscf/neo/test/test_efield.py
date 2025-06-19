@@ -60,7 +60,7 @@ class KnownValues(unittest.TestCase):
 
         self.assertAlmostEqual(abs(de1[-1, 0] - de_finite_diff).max(), 0, 5)
         self.assertAlmostEqual(abs(de2[-1, 0] - de_finite_diff).max(), 0, 5)
-        
+
 
     def test_polarizability(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 0.9', basis='ccpvdz')
@@ -98,7 +98,7 @@ class KnownValues(unittest.TestCase):
         mf2 = SCFwithEfield(mol2, xc='b3lyp')
         mf2.efield = numpy.array([0, 0, 0.01])
         e2 = mf2.scf()
-        
+
         de_fd = (e2-e1) / 0.002 * lib.param.BOHR
         self.assertAlmostEqual(de[0,-1], de_fd, 5)
 

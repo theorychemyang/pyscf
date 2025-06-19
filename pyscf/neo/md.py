@@ -105,13 +105,13 @@ def spectrum(acf, time_step=0.5, corr_depth=4096):
 
 def gen_init_vel(modes, masses, temperature=300):
     '''
-    Generate initial velocites for MD simulations. 
-    
+    Generate initial velocites for MD simulations.
+
     modes: normalized eigenvectors from mass-weighted Hessian matrix
-    
+
     Ref:  J. Chem. Theory Comput. 2023, 19, 9358-9368
     '''
-    n, m = modes.shape 
+    n, m = modes.shape
     natoms = int(n/3)
     indices = numpy.asarray(range(natoms))
 

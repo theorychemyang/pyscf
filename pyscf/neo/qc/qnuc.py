@@ -35,7 +35,7 @@ def dump_neo_qc_info(self, log):
     log.note("Hilbert space dimension: %g", 2**self.n_qubit_tot)
 
     Hamiltonian = self.hamiltonian
-    ham_dim = Hamiltonian.shape[0]
+    #ham_dim = Hamiltonian.shape[0]
     psi_HF = self.psi_hf
     S2_op = self.s2_op
     pos_op = self.r_op
@@ -648,7 +648,7 @@ def constrained_ucc_energy(t, tau, tau_dag, nt_amp, psi_HF, num_nuc, r_op):
     return E_add
 
 def JW_array_cneo(n_qubit_e, mf_nuc, op_id):
-    '''Output: Nested list of operators according to --> list[pid][k]
+    r'''Output: Nested list of operators according to --> list[pid][k]
     pid = particle identification, electrons are first (0)
     k = element of a set of creation/annihilation operators associated with pid
     i.e., k \in {a_1, a_2, ...} or
@@ -848,14 +848,14 @@ class QC_FCI_NEO(QC_NEO_BASE):
     >>> from pyscf import scf
     >>> from pyscf import neo
     >>> from pyscf.neo import qc
-    >>> mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G', 
+    >>> mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G',
     >>>             quantum_nuc = [0,1], nuc_basis = '1s1p', cart=True, spin=0)
     >>> mf = neo.HF(mol)
     >>> mf.scf()
     >>> qc_mf = qc.QC_FCI_NEO(mf)
     >>> qc_mf.kernel()
     ------- Quantum Computing Protocol -------
-    FCI Energy: -1.057564106860389  
+    FCI Energy: -1.057564106860389
     '''
 
     def __init__(self, mf):
@@ -876,7 +876,7 @@ class QC_FCI_NEO(QC_NEO_BASE):
 
         # diagonalize FCI Hamiltonian
         ham_kern = self.hamiltonian
-        ham_dim = ham_kern.shape[0]
+        #ham_dim = ham_kern.shape[0]
         E_FCI, C_FCI = numpy.linalg.eigh(ham_kern.todense()) #eigh should use dense matrix
 
         fci_idx, fci_pnum, fci_s2 = fci_index(C_FCI, self.nocc_so_e, self.mf_nuc,
@@ -938,7 +938,7 @@ class QC_CFCI_NEO(QC_NEO_BASE):
     >>> from pyscf import scf
     >>> from pyscf import neo
     >>> from pyscf.neo import qc
-    >>> mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G', 
+    >>> mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G',
     >>>             quantum_nuc = [1], nuc_basis = '2s1p', cart=True, spin=0)
     >>> mf = neo.HF(mol)
     >>> mf.scf()
@@ -947,11 +947,11 @@ class QC_CFCI_NEO(QC_NEO_BASE):
     ------- Quantum Computing Protocol -------
     Origin of each quantum nuclear position operator has been shifted
     to the corresponding nuclear basis function center
-    Lagrange multiplier starting guess: 
-    H [0. 0. 0.] 
+    Lagrange multiplier starting guess:
+    H [0. 0. 0.]
     opt.success: True
-    opt.message: The solution converged. 
-    Constrained FCI Energy: -1.096596826382109  
+    opt.message: The solution converged.
+    Constrained FCI Energy: -1.096596826382109
     '''
 
     def __init__(self, mf):
@@ -980,7 +980,7 @@ class QC_CFCI_NEO(QC_NEO_BASE):
         nocc_so_e = self.nocc_so_e
 
         ham_kern = self.hamiltonian
-        ham_dim = ham_kern.shape[0]
+        #ham_dim = ham_kern.shape[0]
         if isinstance(mf, neo.CDFT):
             f = copy.deepcopy(mf.f[mf_nuc[0].mol.atom_index])
             for i in range(1,len(mf_nuc)):
@@ -1069,18 +1069,18 @@ class QC_UCC_NEO(QC_NEO_BASE):
     >>> from pyscf import scf
     >>> from pyscf import neo
     >>> from pyscf.neo import qc
-    >>> mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G', 
+    >>> mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G',
     >>>             quantum_nuc = [0,1], nuc_basis = '1s1p', cart=True, spin=0)
     >>> mf = neo.HF(mol)
     >>> mf.scf()
     >>> qc_mf = qc.QC_UCC_NEO(mf)
     >>> qc_mf.kernel()
     ------- Quantum Computing Protocol -------
-    --- UCCSD Calculation --- 
+    --- UCCSD Calculation ---
     number of cluster amplitudes: 44
     res.success: True
-    res.message: Optimization terminated successfully. 
-    UCC Energy: -1.057505919249053  
+    res.message: Optimization terminated successfully.
+    UCC Energy: -1.057505919249053
     '''
 
     def __init__(self, mf):
@@ -1170,7 +1170,7 @@ class QC_CUCC_NEO(QC_NEO_BASE):
     >>> from pyscf import scf
     >>> from pyscf import neo
     >>> from pyscf.neo import qc
-    >>> mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G', 
+    >>> mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G',
     >>>             quantum_nuc = [1], nuc_basis = '2s1p', cart=True, spin=0)
     >>> mf = neo.CDFT(mol)
     >>> mf.mf_elec.xc = 'HF'
@@ -1180,11 +1180,11 @@ class QC_CUCC_NEO(QC_NEO_BASE):
     ------- Quantum Computing Protocol -------
     Origin of each quantum nuclear position operator has been shifted
     to the corresponding nuclear basis function center
-    --- Constrained UCCSD Calculation --- 
+    --- Constrained UCCSD Calculation ---
     number of cluster amplitudes: 25
     res.success: True
-    res.message: Optimization terminated successfully 
-    Constrained UCC Energy: -1.096545337919290  
+    res.message: Optimization terminated successfully
+    Constrained UCC Energy: -1.096545337919290
     '''
 
     def __init__(self, mf):

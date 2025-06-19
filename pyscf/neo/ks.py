@@ -132,8 +132,7 @@ def _hash_grids(grids):
             grids.coords[-1,-1].item() if grids.coords is not None else None,
             grids.weights.size if grids.weights is not None else None,
             grids.weights[0].item() if grids.weights is not None else None,
-            grids.weights[-1].item() if grids.weights is not None else None,
-        ))
+            grids.weights[-1].item() if grids.weights is not None else None))
 
 class InteractionCorrelation(hf.InteractionCoulomb):
     '''Inter-component Coulomb and correlation'''
@@ -304,7 +303,8 @@ class KS(hf.HF):
                     mf = dft.RKS(comp, xc='HF')
                 self.components[t] = hf.general_scf(mf,
                                                     charge=-1. * self.mol.atom_charge(comp.atom_index),
-                                                    mass=self.mol.mass[comp.atom_index] * nist.ATOMIC_MASS / nist.E_MASS,
+                                                    mass=self.mol.mass[comp.atom_index] * nist.ATOMIC_MASS
+                                                         / nist.E_MASS,
                                                     is_nucleus=True,
                                                     nuc_occ_state=0)
             else:
@@ -577,7 +577,8 @@ class KS(hf.HF):
                         mf = dft.RKS(comp, xc='HF')
                     self.components[t] = hf.general_scf(mf,
                                                         charge=-1. * self.mol.atom_charge(comp.atom_index),
-                                                        mass=self.mol.mass[comp.atom_index] * nist.ATOMIC_MASS / nist.E_MASS,
+                                                        mass=self.mol.mass[comp.atom_index] * nist.ATOMIC_MASS
+                                                             / nist.E_MASS,
                                                         is_nucleus=True,
                                                         nuc_occ_state=0)
                 else:

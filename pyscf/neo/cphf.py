@@ -301,8 +301,8 @@ def solve_withs1(fvind, mo_energy, mo_occ, h1, s1, with_f1=False,
             #mo1[t][:,viridx[t]] = hs[t][:,viridx[t]] / (e_i[t] - e_a[t][:,None])
             #if f1 is not None and t in f1:
             #    f1[t] -= r1mo[t] * scale[t]
-                # DEBUG: Verify nuclear r * mo1
-                #print(f'[DEBUG] norm(r * mo1) for {t}: {numpy.linalg.norm(r1mo[t])}')
+            #     DEBUG: Verify nuclear r * mo1
+            #    print(f'[DEBUG] norm(r * mo1) for {t}: {numpy.linalg.norm(r1mo[t])}')
 
             mo_e1[t] = hs[t][:,occidx[t],:]
             mo_e1[t] += mo1[t][:,occidx[t]] * (e_i[t][:,None] - e_i[t])

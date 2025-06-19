@@ -1210,7 +1210,8 @@ class HF(scf.hf.SCF):
                 if t.startswith('n'):
                     self.components[t] = general_scf(scf.RHF(comp),
                                                      charge=-1. * self.mol.atom_charge(comp.atom_index),
-                                                     mass=self.mol.mass[comp.atom_index] * nist.ATOMIC_MASS / nist.E_MASS,
+                                                     mass=self.mol.mass[comp.atom_index] * nist.ATOMIC_MASS
+                                                          / nist.E_MASS,
                                                      is_nucleus=True,
                                                      nuc_occ_state=0)
                 else:

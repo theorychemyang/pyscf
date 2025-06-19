@@ -95,7 +95,7 @@ def get_err_vec_orig(s, d, f):
         errvec = numpy.hstack(errvec)
 
     elif isinstance(f, numpy.ndarray) and f.ndim == s.ndim+1 and \
-        f.shape[0] == 2:  # for UHF
+            f.shape[0] == 2:  # for UHF
         errvec = numpy.hstack([
             get_err_vec_orig(s, d[0], f[0]).ravel(),
             get_err_vec_orig(s, d[1], f[1]).ravel()])
@@ -133,7 +133,7 @@ def get_err_vec_orth(s, d, f, Corth):
         errvec = numpy.hstack(errvec)
 
     elif isinstance(f, numpy.ndarray) and f.ndim == s.ndim+1 and \
-        f.shape[0] == 2:  # for UHF
+            f.shape[0] == 2:  # for UHF
         errvec = numpy.hstack([
             get_err_vec_orth(s, d[0], f[0], Corth[0]).ravel(),
             get_err_vec_orth(s, d[1], f[1], Corth[1]).ravel()])

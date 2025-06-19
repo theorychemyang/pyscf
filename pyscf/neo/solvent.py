@@ -17,7 +17,7 @@ from pyscf.solvent._attach_solvent import _Solvation
 
 
 def make_psi(pcmobj, dm, r_vdw, cached_pol, with_nuc=True):
-    '''
+    r'''
     get the \Psi vector through numerical integration
 
     Kwargs:
@@ -284,7 +284,8 @@ class DDCOSMO(ddcosmo.DDCOSMO):
             charge = self.mol.atom_charge(ia)
             dm_nuc[i] = dm[f'n{ia}']
             phi -= charge * ddcosmo.make_phi(self.pcm_nuc[i], dm_nuc[i], r_vdw, ui, ylm_1sph, with_nuc=False)
-        # minus sign for induced potential by quantum nuclei and the contributions from class nuclei are muted to avoid double counting
+        # minus sign for induced potential by quantum nuclei and the
+        # contributions from class nuclei are muted to avoid double counting
 
         Xvec = numpy.linalg.solve(Lmat, phi.ravel()).reshape(self.mol.natm,-1)
 

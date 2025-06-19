@@ -120,7 +120,7 @@ def UCC_energy(t, Hamiltonian, tau, tau_dag, nt_amp, psi_HF):
 def fci_wf_analysis(log, state, n_qubit_tot, str_lab, tol=1e-10):
     wf_dim = state.shape[0]
     basis_list = list(itertools.product([0,1], repeat=n_qubit_tot))
-    hilbert_dim = len(basis_list)
+    #hilbert_dim = len(basis_list)
     log.note("\n       ---" + str_lab + " Wave Function Data ---")
     log.note("  FCI coefficient            Basis State")
     for i in range(wf_dim):

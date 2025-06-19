@@ -2,7 +2,7 @@
 # Author: Kurt Brorsen (brorsenk@missouri.edu)
 
 import numpy
-from pyscf import lib, neo
+from pyscf import lib, neo, scf
 from pyscf import mp
 from timeit import default_timer as timer
 from pyscf.neo.ao2mo import ep_ovov
@@ -17,13 +17,13 @@ class MP2(lib.StreamObject):
         self.mp_n = []
         for i in range(self.mol.nuc_num):
             self.mp_n.append(mp.MP2(mf.mf_nuc[i]))
-  
+
 
         self.verbose = self.mol.verbose
         self.stdout = self.mol.stdout
         self.max_memory = mf.max_memory
 
-        if(self.mf.unrestricted==True):
+        if isinstance(mf.mf_elec, scf.uhf.UHF):
             raise NotImplementedError('NEO-MP2 is for RHF wave functions only')
 
 
@@ -51,7 +51,7 @@ class MP2(lib.StreamObject):
             print('time for ep ao2mo transform = ', finish-start)
 
             start = timer()
-            
+
             for i in range(e_nocc):
                 gi = numpy.asarray(eri_ep[i*e_nvir:(i+1)*e_nvir])
                 gi = gi.reshape(e_nvir, n_nocc, n_nvir)

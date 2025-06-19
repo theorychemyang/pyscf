@@ -65,7 +65,7 @@ class NEOSCFWithSolvent(_Solvation):
             vhf[t] = lib.tag_array(comp, e_solvent=e_solvent, v_solvent=v_solvent[t])
         return vhf
 
-    def get_fock(mf, h1e=None, s1e=None, vhf=None, vint=None, dm=None, cycle=-1,
+    def get_fock(self, h1e=None, s1e=None, vhf=None, vint=None, dm=None, cycle=-1,
                  diis=None, diis_start_cycle=None, level_shift_factor=None,
                  damp_factor=None, fock_last=None, diis_pos='both', diis_type=3):
         if dm is None: dm = self.make_rdm1()

@@ -179,7 +179,7 @@ class Pyscf_NEO(Calculator):
         if 'forces' in properties:
             self.results['forces'] = -de * Hartree / Bohr
 
-       #if 'dipole' in properties: # somehow ASE MD does not request dipole. How to enable?
+        #if 'dipole' in properties: # somehow ASE MD does not request dipole. How to enable?
         if True:
             self.results['dipole'] = mf.dip_moment()
 
@@ -339,7 +339,7 @@ class Pyscf_DFT(Calculator):
         if 'forces' in properties:
             self.results['forces'] = -de * Hartree / Bohr
 
-       #if 'dipole' in properties: # somehow ASE MD does not request dipole. How to enable?
+        #if 'dipole' in properties: # somehow ASE MD does not request dipole. How to enable?
         if True:
             self.results['dipole'] = mf.dip_moment()
 

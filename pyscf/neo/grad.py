@@ -219,7 +219,7 @@ def grad_epc(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         mol_n_t = comp.mol
         ia = mol_n_t.atom_index
         if mol_n_t.super_mol.atom_pure_symbol(ia) == 'H' and \
-            (isinstance(mf.epc, str) or ia in mf.epc['epc_nuc']):
+                (isinstance(mf.epc, str) or ia in mf.epc['epc_nuc']):
             n_types.append(t)
             mol_n[t] = mol_n_t
             non0tab_n[t] = ni.make_mask(mol_n_t, grids.coords)

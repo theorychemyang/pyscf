@@ -852,7 +852,7 @@ class Hessian(rhf_hessian.HessianBase):
             'unit: km/mol'
 
             modes = results["norm_mode"].reshape(-1, mol.natm * 3)
-            indices = numpy.asarray(range(mol.natm))
+            #indices = numpy.asarray(range(mol.natm))
 
             #im = numpy.repeat(mass[indices]**-0.5, 3)
             #modes = numpy.einsum('in,n->in', modes, im) # Un-mass-weight eigenvectors
@@ -867,7 +867,8 @@ class Hessian(rhf_hessian.HessianBase):
                 # Conversion factor from atomic units to (D/Angstrom)^2/amu.
                 # 1 (D/Angstrom)^2/amu = 42.255 km/mol
                 # import qcelemental as qcel
-                # conv = qcel.constants.conversion_factor("(e^2 * bohr^2)/(bohr^2 * atomic_unit_of_mass)", "debye^2 / (angstrom^2 * amu)")
+                # conv = qcel.constants.conversion_factor("(e^2 * bohr^2)/(bohr^2 * atomic_unit_of_mass)",
+                #                                         "debye^2 / (angstrom^2 * amu)")
                 # or
                 # from ase import units
                 # conv = (1.0 / units.Debye)**2 * units._amu / units._me

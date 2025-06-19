@@ -132,7 +132,7 @@ def contract(h1, h2, fcivec, norb, nparticle, dd_index=None, d_index=None,
     for k in range(ndim):
         for l in range(k+1, ndim):
             if (h2[k][l] is not None or h2[l][k] is not None) and d_index[k] is not None \
-                and d_index[l] is not None and not done[k][l]:
+                    and d_index[l] is not None and not done[k][l]:
                 m1 = cistring.num_strings(norb[k], nparticle[k]-1)
                 m2 = cistring.num_strings(norb[l], nparticle[l]-1)
                 dim2 = dim.copy()
