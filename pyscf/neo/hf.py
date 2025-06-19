@@ -866,28 +866,83 @@ class HF(scf.hf.SCF):
     @property
     def _eri_ne(self):
         warnings.warn(f"{self.__class__}._eri_ne will be removed in the future.")
-        sorted_n_keys = sorted(key for key in self.components if key.startswith('n'))
-        eri_ne = []
-        for key in sorted_n_keys:
-            if self.interactions[('e', key)]._eri is not None:
-                eri_ne.append(self.interactions[('e', key)]._eri.T)
-            else:
-                eri_ne.append(None)
-        return eri_ne
+        class ModifiableERINEList:
+            def __init__(self, parent_obj):
+                self.parent = parent_obj
+
+            def _get_sorted_n_keys(self):
+                return sorted(key for key in self.parent.components if key.startswith('n'))
+
+            def __getitem__(self, index):
+                sorted_n_keys = self._get_sorted_n_keys()
+                key = sorted_n_keys[index]
+                if self.parent.interactions[('e', key)]._eri is not None:
+                    return self.parent.interactions[('e', key)]._eri.T
+                else:
+                    return None
+
+            def __setitem__(self, index, value):
+                sorted_n_keys = self._get_sorted_n_keys()
+                key = sorted_n_keys[index]
+                if value is not None:
+                    self.parent.interactions[('e', key)]._eri = value.T
+                else:
+                    self.parent.interactions[('e', key)]._eri = None
+
+            def __len__(self):
+                return len(self._get_sorted_n_keys())
+
+            def __iter__(self):
+                for i in range(len(self)):
+                    yield self[i]
+
+        return ModifiableERINEList(self)
 
     @property
     def _eri_nn(self):
         warnings.warn(f"{self.__class__}._eri_nn will be removed in the future.")
-        sorted_n_keys = sorted(key for key in self.components if key.startswith('n'))
-        eri_nn = [None] * self.mol.nuc_num
-        for i in range(self.mol.nuc_num):
-            eri_nn[i] = [None] * self.mol.nuc_num
-        for i, k2 in enumerate(sorted_n_keys):
-            for j in range(i):
-                k1 = sorted_n_keys[j]
-                eri_nn[j][i] = self.interactions[(k1, k2)]._eri
-        return eri_nn
+        class ModifiableERINNRow:
+            def __init__(self, parent_obj, row_index):
+                self.parent = parent_obj
+                self.row_index = row_index
 
+            def _get_sorted_n_keys(self):
+                return sorted(key for key in self.parent.components if key.startswith('n'))
+
+            def __getitem__(self, col_index):
+                sorted_n_keys = self._get_sorted_n_keys()
+                if self.row_index >= col_index:
+                    return None
+                k1 = sorted_n_keys[self.row_index]
+                k2 = sorted_n_keys[col_index]
+                return self.parent.interactions[(k1, k2)]._eri
+
+            def __setitem__(self, col_index, value):
+                sorted_n_keys = self._get_sorted_n_keys()
+                if self.row_index >= col_index:
+                    raise ValueError(f"Cannot set element [{self.row_index}][{col_index}]."
+                                     +"Only upper triangle elements (i < j) can be set.")
+                k1 = sorted_n_keys[self.row_index]
+                k2 = sorted_n_keys[col_index]
+                self.parent.interactions[(k1, k2)]._eri = value
+
+            def __len__(self):
+                return len(self._get_sorted_n_keys())
+
+        class ModifiableERINNList:
+            def __init__(self, parent_obj):
+                self.parent = parent_obj
+
+            def _get_sorted_n_keys(self):
+                return sorted(key for key in self.parent.components if key.startswith('n'))
+
+            def __getitem__(self, index):
+                return ModifiableERINNRow(self.parent, index)
+
+            def __len__(self):
+                return len(self._get_sorted_n_keys())
+
+        return ModifiableERINNList(self)
 
     def dump_flags(self, verbose=None):
         super().dump_flags(verbose)
@@ -980,7 +1035,7 @@ class HF(scf.hf.SCF):
                               charge=mol.charge, spin=mol.spin, symmetry=mol.symmetry,
                               symmetry_subgroup=mol.symmetry_subgroup, cart=mol.cart,
                               magmom=mol.magmom)
-                if hasattr(comp, 'intor_symmetric_original'):
+                if hasattr(mol.components[t], 'intor_symmetric_original'):
                     assert t in mol_tmp.components
                     mol_tmp.components[t].nao = mol.components[t].nao
                     mol_tmp.components[t].intor_symmetric_original = \
