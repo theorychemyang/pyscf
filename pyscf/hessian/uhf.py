@@ -282,7 +282,7 @@ def solve_mo1(mf, mo_energy, mo_coeff, mo_occ, h1ao,
         h1vo = (numpy.vstack(h1voa), numpy.vstack(h1vob))
         s1vo = (numpy.vstack(s1voa), numpy.vstack(s1vob))
         tol = mf.conv_tol_cpscf * (ia1 - ia0)
-        mo1, e1 = ucphf.solve(fx, mo_energy, mo_occ, h1vo, s1vo, verbose=verbose,
+        mo1, e1 = ucphf.solve(fx, mo_energy, mo_occ, h1vo, s1vo,
                               max_cycle=max_cycle, level_shift=level_shift, tol=tol)
         mo1a = numpy.einsum('pq,xqi->xpi', mo_coeff[0], mo1[0]).reshape(-1,3,nao,nocca)
         mo1b = numpy.einsum('pq,xqi->xpi', mo_coeff[1], mo1[1]).reshape(-1,3,nao,noccb)
