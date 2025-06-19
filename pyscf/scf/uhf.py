@@ -973,7 +973,7 @@ This is the Gaussian fit version as described in doi:10.1063/5.0004046.''')
         else:
             if not mol.direct_vee and not omega:
                 warnings.warn('Direct Vee is used for e-e ERIs, might be slow. '
-                              +f'PYSCF_MAX_MEMORY is set to {mol.max_memory} MB, '
+                              +f'PYSCF_MAX_MEMORY is set to {self.max_memory} MB, '
                               +f'required memory: {mol.nao_nr()**4/1e6=:.2f} MB')
             vj, vk = hf.SCF.get_jk(self, mol, dm, hermi, with_j, with_k, omega)
         return vj, vk
