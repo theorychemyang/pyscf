@@ -3,8 +3,13 @@
 import numpy
 import unittest
 from pyscf import neo, gto, dft, lib
+try:
+    from pyscf.dispersion import dftd3
+except ImportError:
+    dftd3 = None
 
 class KnownValues(unittest.TestCase):
+    @unittest.skipIf(dftd3 is None, "requires the dftd3 library")
     def test_H2O(self):
         mol_ref = gto.M(atom='''O     0.0000   0.0000   0.0000;
                                 H     0.7574   0.5868   0.0000;
