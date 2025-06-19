@@ -2001,7 +2001,7 @@ def inertia_moment(mol, mass=None, coords=None):
     im = numpy.eye(3) * im.trace() - im
     return im
 
-def atom_mass_list(mol, isotope_avg=False):
+def atom_mass_list(mol, isotope_avg=False, common=False):
     '''A list of mass for all atoms in the molecule
 
     Kwargs:
@@ -2009,11 +2009,13 @@ def atom_mass_list(mol, isotope_avg=False):
             Whether to use the isotope average mass as the atomic mass
     '''
     if isotope_avg:
+        assert not common
         mass_table = elements.MASSES
-    else:
-        # changed this to make full quantum CNEO work better
-        #mass_table = elements.ISOTOPE_MAIN
+    elif common:
+        # To make full quantum CNEO work better
         mass_table = elements.COMMON_ISOTOPE_MASSES
+    else:
+        mass_table = elements.ISOTOPE_MAIN
 
     nucprop = mol.nucprop
     if nucprop:

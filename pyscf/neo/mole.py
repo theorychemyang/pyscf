@@ -229,10 +229,7 @@ class Mole(gto.Mole):
         '''Initialize nuclear masses including special isotopes'''
         if self.mass is None:
             # Use the most common isotope mass, not isotope_avg mass for quantum nuclei
-            # NOTE: the definition of gto.mole.atom_mass_list is modified.
-            # originally it returns elements.ISOTOPE_MAIN, now I change it
-            # to elements.COMMON_ISOTOPE_MASSES, which I think makes more sense
-            mass_commom = self.atom_mass_list(isotope_avg=False)
+            mass_commom = self.atom_mass_list(common=True)
             self.mass = self.atom_mass_list(isotope_avg=True)
             for i in range(self.natm):
                 if 'H+' in self.atom_symbol(i): # Deuterium (from Wikipedia)
