@@ -18,6 +18,7 @@ class KnownValues(unittest.TestCase):
         mf = neo.CDFT(mol, xc='b3lyp5', epc=None)
         self.assertAlmostEqual(mf.scf(), -93.33840228714486, 6)
         self.assertAlmostEqual(mf.f[0][-1], -0.040303732060570516, 5)
+        self.assertAlmostEqual(mf.dip_moment()[-1], -2.85726808, 5)
 
     def test_scf_epc17_1(self):
         mf = neo.CDFT(mol, xc='b3lyp5', epc='17-1')

@@ -322,6 +322,8 @@ class Mole(gto.Mole):
                     idx += 1
                     # Set nuclear charges of quantum nuclei to 0
                     e_mol._atm[i, gto.CHARGE_OF] = 0
+                    # Also label this nucleus as CNEO quantum nucleus
+                    e_mol._atm[i, gto.NUC_MOD_OF] = gto.NUC_CNEO
 
             # if e_mol._enuc is already evaluated, need to update it
             # because quantum nuclei just get changed to zero charges
@@ -340,6 +342,8 @@ class Mole(gto.Mole):
                     quantum_nuc_charge -= charge
                     # Set nuclear charges of quantum nuclei to 0
                     e_mol._atm[i, gto.CHARGE_OF] = 0
+                    # Also label this nucleus as CNEO quantum nucleus
+                    e_mol._atm[i, gto.NUC_MOD_OF] = gto.NUC_CNEO
             # Charge determines the number of electrons
             e_mol.charge += quantum_nuc_charge
             e_mol.nhomo = None
@@ -366,6 +370,8 @@ class Mole(gto.Mole):
                     quantum_nuc_charge -= charge
                     # Set nuclear charges of quantum nuclei to 0
                     p_mol._atm[i, gto.CHARGE_OF] = 0
+                    # Also label this nucleus as CNEO quantum nucleus
+                    p_mol._atm[i, gto.NUC_MOD_OF] = gto.NUC_CNEO
             # Charge determines the number of electrons
             p_mol.charge += quantum_nuc_charge
             p_mol.nhomo = None
@@ -405,6 +411,8 @@ class Mole(gto.Mole):
             if self._quantum_nuc[i]:
                 # Set nuclear charges of quantum nuclei to 0
                 n_mol._atm[i, gto.CHARGE_OF] = 0
+                # Also label this nucleus as CNEO quantum nucleus
+                n_mol._atm[i, gto.NUC_MOD_OF] = gto.NUC_CNEO
 
         # Avoid UHF. This calls nelec.setter, which modifies _nelectron and spin
         n_mol.nelec = (1,1)
@@ -559,6 +567,7 @@ class Mole(gto.Mole):
         for i in range(mol.natm):
             if mol._quantum_nuc[i]:
                 mol.components['e']._atm[i, gto.CHARGE_OF] = 0
+                mol.components['e']._atm[i, gto.NUC_MOD_OF] = gto.NUC_CNEO
 
         for i in range(mol.natm):
             if mol._quantum_nuc[i]:
@@ -592,6 +601,7 @@ class Mole(gto.Mole):
                     # ensure correct core charge, because got rebuilt
                     if mol._quantum_nuc[j]:
                         mol.components[f'n{i}']._atm[j, gto.CHARGE_OF] = 0
+                        mol.components[f'n{i}']._atm[i, gto.NUC_MOD_OF] = gto.NUC_CNEO
                 mol.components[f'n{i}'].nelec = (1,1)
 
         # When there are ghost atoms, hack the electronic mole, to remove the

@@ -84,14 +84,9 @@ class CDFT(ks.KS):
         if dm is None: dm = self.make_rdm1()
         log = logger.new_logger(mol, verbose)
 
-        # Suppress warning about nonzero charge (if neutral)
-        charge = self.components['e'].mol.charge
-        self.components['e'].mol.charge = self.mol.charge
         el_dip = self.components['e'].dip_moment(mol.components['e'],
                                                  dm['e'], unit=unit,
                                                  origin=origin, verbose=verbose-1)
-        self.components['e'].mol.charge = charge
-
         # Quantum nuclei
         if origin is None:
             origin = numpy.zeros(3)

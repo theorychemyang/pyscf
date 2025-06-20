@@ -92,6 +92,7 @@ NUC_GAUSS = 2
 # nucleus with fractional charges. It can be used to mimic MM particles
 NUC_FRAC_CHARGE = 3
 NUC_ECP = 4  # atoms with pseudo potential
+NUC_CNEO = -1 # CNEO quantum nuclei
 
 BASE = getattr(__config__, 'BASE', 0)
 NORMALIZE_GTO = getattr(__config__, 'NORMALIZE_GTO', True)
@@ -3207,6 +3208,9 @@ class MoleBase(lib.StreamObject):
     def atom_nelec_core(self, atm_id):
         '''Number of core electrons for pseudo potential.
         '''
+        # Special case for CNEO: do not falsely report atom with quantum nucleus as ECP
+        if self._atm[atm_id,NUC_MOD_OF] == NUC_CNEO:
+            return 0
         return charge(self.atom_symbol(atm_id)) - self.atom_charge(atm_id)
 
     def atom_coord(self, atm_id, unit='Bohr'):

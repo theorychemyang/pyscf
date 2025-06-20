@@ -15,6 +15,10 @@ from pyscf.data import nist
 from pyscf.lib import logger
 from pyscf.scf import _vhf, chkfile
 from pyscf.scf.hf import TIGHT_GRAD_CONV_TOL
+from pyscf import __config__
+
+WITH_META_LOWDIN = getattr(__config__, 'scf_analyze_with_meta_lowdin', True)
+PRE_ORTH_METHOD = getattr(__config__, 'scf_analyze_pre_orth_method', 'ANO')
 
 
 def dot_eri_dm(eri, dms, nao_v=None, eri_dot_dm=True):
@@ -327,7 +331,7 @@ class ComponentSCF(Component):
         if mo_energy is None: mo_energy = self.mo_energy
         if self.is_nucleus:
             e_idx = numpy.argsort(mo_energy)
-            mo_occ = numpy.zeros(mo_energy.size)
+            mo_occ = numpy.zeros_like(mo_energy)
             mo_occ[e_idx[self.nuc_occ_state]] = self.mol.nnuc # 1 or fractional
             return mo_occ
         else:
@@ -407,6 +411,28 @@ class ComponentSCF(Component):
 
     def scf(self, dm0=None, **kwargs):
         raise AttributeError('scf should not be called from ComponentSCF')
+
+    def mulliken_pop(self, mol=None, dm=None, s=None, verbose=logger.DEBUG):
+        if self.is_nucleus:
+            return None
+        return super().mulliken_pop(mol, dm, s, verbose)
+
+    def mulliken_meta(self, mol=None, dm=None, verbose=logger.DEBUG,
+                      pre_orth_method=PRE_ORTH_METHOD, s=None):
+        if self.is_nucleus:
+            return None
+        return super().mulliken_meta(mol, dm, verbose, pre_orth_method, s)
+
+    def dip_moment(self, mol=None, dm=None, unit='Debye', origin=None, verbose=logger.NOTE,
+                   **kwargs):
+        if self.is_nucleus:
+            return None
+        # Temporarily modify charge to supress warning about nonzero charge for a neutral molecule
+        charge = self.mol.charge
+        self.mol.charge = self.mol.super_mol.charge
+        dip = super().dip_moment(mol, dm, unit, origin=origin, verbose=verbose, **kwargs)
+        self.mol.charge = charge
+        return dip
 
     def to_gpu(self):
         obj = self.undo_component().to_gpu()
@@ -960,6 +986,10 @@ class HF(scf.hf.SCF):
     def check_sanity(self):
         return self.components['e'].check_sanity()
 
+    def build(self, mol=None):
+        if mol is None: mol = self.mol
+        return self.components['e'].build(mol=mol.components['e'])
+
     def eig(self, h, s):
         e = {}
         c = {}
@@ -1198,20 +1228,45 @@ class HF(scf.hf.SCF):
         return vint
 
     def mulliken_pop(self, mol=None, dm=None, s=None, verbose=logger.DEBUG):
+        # Electronic only
+        if hasattr(mol, 'components'):
+            mol = mol.components['e']
+        if isinstance(dm, dict) and 'e' in dm:
+            dm = dm['e']
+        if isinstance(s, dict) and 'e' in s:
+            s = s['e']
         return self.components['e'].mulliken_pop(mol, dm, s, verbose)
 
     def mulliken_meta(self, mol=None, dm=None, verbose=logger.DEBUG,
-                      pre_orth_method=None, s=None):
-        if pre_orth_method is not None:
-            return self.components['e'].mulliken_meta(mol, dm, verbose, pre_orth_method, s)
-        return self.components['e'].mulliken_meta(mol, dm, verbose, s=s)
+                      pre_orth_method=PRE_ORTH_METHOD, s=None):
+        # Electronic only
+        if hasattr(mol, 'components'):
+            mol = mol.components['e']
+        if isinstance(dm, dict) and 'e' in dm:
+            dm = dm['e']
+        if isinstance(s, dict) and 'e' in s:
+            s = s['e']
+        return self.components['e'].mulliken_meta(mol, dm, verbose, pre_orth_method, s)
+
+    def analyze(self, verbose=None, with_meta_lowdin=WITH_META_LOWDIN,
+                **kwargs):
+        if verbose is None: verbose = self.verbose
+        log = logger.new_logger(self, verbose)
+        pop_and_charge = {}
+        dip = {}
+        for t, comp in self.components.items():
+            log.note(f'\nAnalyze for {t}:')
+            pop_and_charge[t], dip[t] = comp.analyze(verbose, with_meta_lowdin, **kwargs)
+        # NOTE: dipole moment for each component reported here are incomplete
+        # and should not be used. Use dip_moment from cdft.
+        return pop_and_charge, dip
 
     def canonicalize(self, mo_coeff, mo_occ, fock=None):
-        raise NotImplementedError
+        raise NotImplementedError('Please perform canonicalization for each component individually.')
 
     def dip_moment(self, mol=None, dm=None, unit='Debye', origin=None,
                    verbose=logger.NOTE, **kwargs):
-        raise NotImplementedError # CDFT will have this
+        raise TypeError('Use CDFT to calculate total dipole moment.') # CDFT will have this
 
     def quad_moment(self, mol=None, dm=None, unit='DebyeAngstrom', origin=None,
                     verbose=logger.NOTE, **kwargs):
