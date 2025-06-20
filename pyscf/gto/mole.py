@@ -2021,8 +2021,8 @@ def atom_mass_list(mol, isotope_avg=False, common=False):
     if nucprop:
         mass = []
         for ia in range(mol.natm):
-            z = mol.atom_charge(ia)
             symb = mol.atom_symbol(ia)
+            z = charge(symb)
             stdsymb = _std_symbol(symb)
             if ia+1 in nucprop:
                 prop = nucprop[ia+1]
