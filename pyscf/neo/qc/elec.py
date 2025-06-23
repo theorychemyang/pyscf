@@ -19,7 +19,7 @@ def dump_elec_qc_info(self, log):
     log.note("virtual  spin-orbitals electrons: %g",nvirt_so)
     log.note("total    spin-orbitals electrons: %g",self.n_qubit)
     log.note("\ntotal qubits: %g",self.n_qubit)
-    log.note("Hilbert space dimension: %g",2**self.n_qubit)
+    log.note("Fock space dimension: %g",2**self.n_qubit)
 
     Hamiltonian = self.hamiltonian
     ham_dim = Hamiltonian.shape[0]
@@ -91,6 +91,27 @@ def number_operator_e(n_qubit_tot, n_qubit_e, create, destroy):
         Num_op += create[0][p] @ destroy[0][p]
     return Num_op
 
+def calc_1rdm_e(vector, create, destroy):
+    e_dim = len(create[0])
+    rho = numpy.zeros((e_dim, e_dim), dtype=complex)
+    vector = qc_lib.column_vec(vector)
+    for i in range(e_dim):
+        for j in range(e_dim):
+            rho[i,j] = (vector.conj().T @ create[0][i] @ destroy[0][j] @ vector).item()
+    return rho
+
+def vN_entropy_1rdm_e(log, vector, str_method, create, destroy, tol=1e-15):
+    S_vN = 0.0
+    preamble = "SvN 1RDM "
+    rho = calc_1rdm_e(vector, create, destroy)
+    label = preamble + str_method + " e: %15.8e"
+    e_rho = scipy.linalg.eigh(rho, eigvals_only=True)
+    for i in range(len(e_rho)):
+        if e_rho[i] > tol:
+            S_vN -= e_rho[i]*numpy.log(e_rho[i])
+    log.note(label, S_vN)
+    return
+
 def t1_op_e(nocc_so, nvirt_so, create, destroy):
     tau = []
     tau_dag = []
@@ -120,8 +141,12 @@ def t2_op_e(nocc_so, nvirt_so, create, destroy):
 def HF_state(n_occ, n_qubit):
     q0 = numpy.array([[1.0+0.0j],[0.0+0.0j]])
     q1 = numpy.array([[0.0+0.0j],[1.0+0.0j]])
-    if n_occ < 1:
-        raise NotImplementedError('No occupied qubits')
+    #if n_occ < 1:
+    #    raise NotImplementedError('No occupied qubits')
+    if n_occ == 0:
+        a = numpy.kron(q0,q0)
+        for i in range(2,n_qubit):
+            a = numpy.kron(a,q0)
     elif n_occ == 1:
         a = numpy.kron(q1,q0)
         for i in range(2,n_qubit):
@@ -375,6 +400,8 @@ class QC_FCI_ELEC(QC_ELEC_BASE):
             log.note("\n------------------- STATE %g -------------------\n", i)
             log.note("E FCI %g: %20.15f", i, self.e[i])
             qc_lib.fci_wf_analysis(log, self.c[i], self.n_qubit, '')
+            log.note("\n--- 1-RDM von Neumann Entropy Data ---")
+            vN_entropy_1rdm_e(log, self.c[i], 'FCI', self.create, self.destroy)
         return
 
 class QC_UCC_ELEC(QC_ELEC_BASE):
@@ -404,6 +431,7 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
         self.c = None
         self.num = None
         self.s2 = None
+        self.t = None
 
     def kernel(self, ucc_level=2):
         log = logger.new_logger(self.mf, self.verbose)
@@ -434,23 +462,25 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
         qc_lib.dump_ucc_level(log, ucc_level)
         log.note("number of cluster amplitudes: %g", nt_amp)
         res = minimize(lambda z: qc_lib.UCC_energy(z, ham_kern, tau, tau_dag, nt_amp,
-                                            psi_HF), t_amp, tol=None, method= 'BFGS')
-        theta = res.x
-        E_UCC = res.fun
+                                            psi_HF), t_amp, tol=None, method='BFGS')
         log.note("\nres.success: %s", res.success)
         log.note("res.message: %s \n", res.message)
         if res.success:
+            theta = res.x
+            E_UCC = res.fun
             psi_UCC = qc_lib.construct_UCC_wf(nt_amp, theta, tau, tau_dag, psi_HF)
-            E_UCC = numpy.real(psi_UCC.conj().T @ ham_kern @ psi_UCC).item()
             ucc_idx, ucc_pnum, ucc_s2 = fci_index_e(psi_UCC, nocc_so, self.num_op, S2_op)
 
             self.e = E_UCC
             self.c = psi_UCC
             self.num = ucc_pnum[0]
             self.s2 = ucc_s2[0]
+            self.t = theta
+            log.note("\nUCC Energy: %-20.15f", E_UCC)
+        else:
+            log.note("\nUCC Failed...")
 
         log.timer("UCC Procedure: ", time_kernel)
-        log.note("\nUCC Energy: %-20.15f", E_UCC)
         return E_UCC, psi_UCC, ucc_pnum[0], ucc_s2[0]
 
     def analyze(self, verbose=None):
@@ -465,4 +495,7 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
         log.note("E UCC: %-20.15f", self.e)
         log.note("<S_e^2>: %-20.15f", self.s2)
         log.note("Particles: %-11.7f \n", self.num)
+        log.note("Amplitudes: \n%s\n", self.t)
+        log.note("\n--- 1-RDM von Neumann Entropy Data ---")
+        vN_entropy_1rdm_e(log, self.c, 'UCC', self.create, self.destroy)
         return

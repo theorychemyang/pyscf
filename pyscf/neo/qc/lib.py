@@ -34,11 +34,13 @@ def dump_ucc_level(log, ucc_level, bool_con=False):
         log.note("\n--- %sUCCSD Calculation --- \n", str_con)
     elif ucc_level == 3:
         log.note("\n----%sUCCSD[T^ep] Calculation ----", str_con)
-        log.note("--- T^ep operator: t2_e*t1_p ---- \n")
+        log.note("--- T^ep operator 1: t2_e*t1_p ----")
+        log.note("--- T^ep operator 2: t1_e*t1_p1*t1_p2 ---- \n")
     elif ucc_level == 4:
         log.note("\n---- %sUCCSD[T^ep][Q^ep] Calculation -----", str_con)
-        log.note("------ T^ep operator: t2_e*t1_p --------")
-        log.note("--- Q^ep operator: t2_e*t1_p1*t1_p2 ---- \n")
+        log.note("------ T^ep operator 1: t2_e*t1_p --------")
+        log.note("------ T^ep operator 2: t1_e*t1_p1*t1_p2 -------")
+        log.note("------ Q^ep operator: t2_e*t1_p1*t1_p2 ------- \n")
     else:
         raise NotImplementedError('UCC level not available')
     return
@@ -117,6 +119,33 @@ def UCC_energy(t, Hamiltonian, tau, tau_dag, nt_amp, psi_HF):
     E = numpy.real(UCC_psi.conj().T @ Hamiltonian @ UCC_psi).item()
     return E
 
+def UCC_energy_shift(t, Hamiltonian, tau, tau_dag, nt_amp, psi_HF,\
+        num_nuc, axis, r_op, r_coeff, bool_S2, S2_op, S2_coeff, S2_target):
+
+    ham_dim = Hamiltonian.shape[0]
+    UCC_ansatz = sparse.csr_matrix((ham_dim, ham_dim), dtype=complex)
+    for i in range(nt_amp):
+        UCC_ansatz += t[i]*(tau[i]-tau_dag[i])
+    UCC_psi = sparse.linalg.expm_multiply(UCC_ansatz, psi_HF)
+    E = numpy.real(UCC_psi.conj().T @ Hamiltonian @ UCC_psi).item()
+
+    for k in range(num_nuc):
+        if axis is not None:
+            r_axis = numpy.real(UCC_psi.conj().T @ r_op[k,axis] @ UCC_psi).item()
+            r_sq = r_axis*r_axis
+        else:
+            r_x = numpy.real(UCC_psi.conj().T @ r_op[k,0] @ UCC_psi).item()
+            r_y = numpy.real(UCC_psi.conj().T @ r_op[k,1] @ UCC_psi).item()
+            r_z = numpy.real(UCC_psi.conj().T @ r_op[k,2] @ UCC_psi).item()
+            r_sq = r_x*r_x + r_y*r_y + r_z*r_z
+        E += r_coeff*r_sq
+    # here we add constraint contribution from electronic <S^2> if desired
+    if bool_S2:
+        S2 = numpy.real(UCC_psi.conj().T @ S2_op @ UCC_psi).item()
+        E += S2_coeff*(S2 - S2_target)**2
+    return E
+
+
 def fci_wf_analysis(log, state, n_qubit_tot, str_lab, tol=1e-10):
     wf_dim = state.shape[0]
     basis_list = list(itertools.product([0,1], repeat=n_qubit_tot))
@@ -137,3 +166,72 @@ def construct_UCC_wf(nt_amp, t_amp, tau, tau_dag, psi_HF):
     UCC_psi = sparse.linalg.expm_multiply(UCC_ansatz, psi_HF)
     return UCC_psi
 
+def column_vec(vector):
+    if vector.ndim == 1:
+        vector = vector[:, numpy.newaxis]
+    elif vector.shape[0] == 1:
+        vector = vector.T
+    return vector
+
+def pc_projection(n_qubit_e, n_qubit_p, nocc_e):
+    '''particle conserving projection'''
+    def qubit_state(val):
+        return numpy.array([1, 0]) if val == 0 else numpy.array([0, 1])
+
+    npqb = 0
+    for i in range(len(n_qubit_p)):
+        npqb += n_qubit_p[i]
+    n_qubit_tot = n_qubit_e + npqb
+    dim = 2**n_qubit_tot
+    tmp_state = []
+    final_state = []
+
+    # electrons
+    e_basis_states = []
+    for config in itertools.combinations(range(n_qubit_e), nocc_e):
+        state = numpy.zeros(n_qubit_e)
+        for idx in config:
+            state[idx] = 1
+        e_state = numpy.array([qubit_state(s) for s in state])
+        e_tensor_prod = e_state[0]
+        for qubit in e_state[1:]:
+            e_tensor_prod = numpy.kron(e_tensor_prod, qubit)         
+        e_basis_states.append(e_tensor_prod)
+
+    # protons
+    p_basis_list = []
+    for i in range(len(n_qubit_p)):
+        p_basis_states = []
+        for config in itertools.combinations(range(n_qubit_p[i]), 1):
+            state = numpy.zeros(n_qubit_p[i])
+            for idx in config:
+                state[idx] = 1
+            p_state = numpy.array([qubit_state(s) for s in state])
+            p_tensor_prod = p_state[0]
+            for qubit in p_state[1:]:
+                p_tensor_prod = numpy.kron(p_tensor_prod, qubit)         
+            p_basis_states.append(p_tensor_prod)
+        p_basis_list.append(p_basis_states)
+
+    # take first tensor product |e> \times |p1>
+    for i in range(len(e_basis_states)):
+        for j in range(len(p_basis_list[0])):
+            comp_state = numpy.kron(e_basis_states[i], p_basis_list[0][j])
+            final_state.append(comp_state)
+
+    # remaining tensor products
+    for k in range(1,len(n_qubit_p)):
+        new_tmp_state = []
+        for i in range(len(final_state)):
+            for j in range(len(p_basis_list[k])):
+                comp_state = numpy.kron(final_state[i],p_basis_list[k][j])
+                new_tmp_state.append(comp_state)
+        final_state = new_tmp_state
+
+    proj_op = sparse.csr_matrix((dim, dim), dtype=complex)
+    for i in range(len(final_state)):
+        vector = sparse.csr_matrix(final_state[i])
+        vector = column_vec(vector)
+        proj_op += vector @ vector.conj().T
+
+    return proj_op

@@ -14,7 +14,7 @@ class KnownValues(unittest.TestCase):
         mf.scf()
         qc_mf = qc.FCI(mf)
         e, c, n, s2 = qc_mf.kernel()
-        self.assertAlmostEqual(e[0], -1.057564106860389, 10)
+        self.assertAlmostEqual(e[0], -1.057677072326754, 10)
         self.assertAlmostEqual(n[0],  4.00000, 8)
         self.assertAlmostEqual(s2[0], 0.0000000, 8)
 
@@ -25,7 +25,7 @@ class KnownValues(unittest.TestCase):
         mf.scf()
         qc_mf = qc.CFCI(mf)
         e, c, n, s2 = qc_mf.kernel()
-        self.assertAlmostEqual(e, -1.096596826382109, 10)
+        self.assertAlmostEqual(e, -1.096593699077798, 10)
         self.assertAlmostEqual(n,  3.00000, 8)
         self.assertAlmostEqual(s2, 0.0000000, 8)
 
@@ -36,7 +36,7 @@ class KnownValues(unittest.TestCase):
         mf.scf()
         qc_mf = qc.UCC(mf)
         e, c, n, s2 = qc_mf.kernel()
-        self.assertAlmostEqual(e, -1.057505919249053, 10)
+        self.assertAlmostEqual(e, -1.057617041568029, 10)
         self.assertAlmostEqual(n,  4.00000, 8)
         self.assertAlmostEqual(s2, 0.0000000, 8)
 
@@ -48,7 +48,7 @@ class KnownValues(unittest.TestCase):
         mf.scf()
         qc_mf = qc.CUCC(mf)
         e, c, n, s2 = qc_mf.kernel()
-        self.assertAlmostEqual(e, -1.096545337919290, 8)
+        self.assertAlmostEqual(e, -1.096541479568951, 8)
         self.assertAlmostEqual(n,  3.00000, 8)
         self.assertAlmostEqual(s2, 0.0000000, 8)
 
