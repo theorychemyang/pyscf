@@ -4,20 +4,24 @@ Multi-component molecular structure to handle quantum nuclei, electrons, and pos
 '''
 
 import contextlib
+import copy as cp
 import numpy
 import os
 import re
+import sys
 import warnings
 from pyscf import gto
+from pyscf.gto.mole import DUMPINPUT, ARGPARSE
 from pyscf.data import nist
 from pyscf.lib import logger, param
+from pyscf.lib.exceptions import PointGroupSymmetryError
 
 
-def M(**kwargs):
+def M(*args, **kwargs):
     r'''This is a shortcut to build up Mole object.
     '''
     mol = Mole()
-    mol.build(**kwargs)
+    mol.build(*args, **kwargs)
     return mol
 
 def copy(mol, deep=True):
@@ -31,8 +35,7 @@ def copy(mol, deep=True):
 
     newmol.mass = numpy.copy(mol.mass)
     # Extra things for neo.Mole
-    import copy
-    newmol._quantum_nuc = copy.deepcopy(mol._quantum_nuc)
+    newmol._quantum_nuc = cp.deepcopy(mol._quantum_nuc)
 
     # Components
     newmol.components = {}
@@ -139,7 +142,8 @@ class Mole(gto.Mole):
         '''Number of quantum nuclei'''
         return self._n_quantum_nuc
 
-    def build(self, quantum_nuc=None, nuc_basis=None, q_nuc_occ=None,
+    def build(self, dump_input=DUMPINPUT, parse_arg=ARGPARSE,
+              quantum_nuc=None, nuc_basis=None, q_nuc_occ=None,
               mm_mol=None, positron_charge=None, positron_spin=None, **kwargs):
         '''assign which nuclei are treated quantum mechanically by quantum_nuc (list)
 
@@ -159,7 +163,17 @@ class Mole(gto.Mole):
             **kwargs :
                 Arguments passed to parent Mole.build()
         '''
-        super().build(**kwargs)
+        if isinstance(dump_input, str):
+            sys.stderr.write('Assigning the first argument %s to mol.atom\n' %
+                             dump_input)
+            dump_input, kwargs['atom'] = True, dump_input
+
+        # Do not yet build the symmetry
+        symmetry = kwargs.get('symmetry', None)
+        if symmetry is not None:
+            kwargs['symmetry'] = False
+        # Delay dump_input
+        super().build(False, parse_arg, **kwargs)
 
         # Do not dump_input or parse_arg for components
         kwargs['dump_input'] = False
@@ -195,6 +209,10 @@ class Mole(gto.Mole):
 
         # Setup quantum nuclei
         if quantum_nuc is not None:
+            try:
+                None in quantum_nuc
+            except TypeError:
+                raise RuntimeError('quantum_nuc should be a list')
             self._setup_quantum_nuclei(quantum_nuc)
 
         # Intialize masses
@@ -203,6 +221,74 @@ class Mole(gto.Mole):
         # Build components
         self._build_components(q_nuc_occ, **kwargs)
 
+        # Build symmetry now
+        if symmetry is not None:
+            self.symmetry = symmetry
+            if self.symmetry:
+                self._build_symmetry_mc()
+
+        # Dump input now
+        if dump_input and self.verbose > logger.NOTE:
+            self.dump_input()
+
+        return self
+
+    def _build_symmetry_mc(self):
+        if 'e' not in self.components:
+            raise RuntimeError('Should not build symmetry when components are not ready.')
+        if 'p' in self.components:
+            raise NotImplementedError('No symmetry for positron yet.')
+        # This symmetry detection is a bit stricter than the original one.
+        # Two atoms are considered equivalent if they have: the same charge/symbol,
+        # the same electronic basis, the same mass, and the same nuclear basis.
+        # To achieve this distinction:
+        # 1. Label _atom
+        # 2. Add mass and nuclear basis information to _basis
+        _basis_bak = cp.deepcopy(self._basis)
+        _atom_bak = cp.deepcopy(self._atom)
+        for i in range(self.natm):
+            if self._quantum_nuc[i]:
+                modified_symbol = self.atom_symbol(i) + str(i)
+                self._basis[modified_symbol] = cp.deepcopy(_basis_bak[self.atom_symbol(i)])
+                self._basis[modified_symbol].append(self.mass[i].item())
+                n_mol = self.components[f'n{i}']
+                self._basis[modified_symbol].append(n_mol._basis[modified_symbol])
+                self._atom[i] = list(self._atom[i])
+                self._atom[i][0] = modified_symbol
+                self._atom[i] = tuple(self._atom[i])
+        self._build_symmetry()
+        self._basis, _basis_bak = _basis_bak, self._basis
+        self._atom, _atom_bak = _atom_bak, self._atom
+        for t, comp in self.components.items():
+            if t == 'e':
+                comp.symmetry = self.symmetry
+                # copy results from super_mol
+                comp.topgroup = self.topgroup
+                comp._symm_orig = self._symm_orig
+                comp._symm_axes = self._symm_axes
+                comp.groupname = self.groupname
+                comp.symm_orb = self.symm_orb
+                comp.irrep_id = self.irrep_id
+                comp.irrep_name = self.irrep_name
+            elif t.startswith('n'):
+                comp.symmetry = True
+                # detect symmetry and build
+                _basis_bak2 = cp.deepcopy(comp._basis)
+                comp._basis = cp.deepcopy(_basis_bak)
+                comp._atom, _atom_bak = _atom_bak, comp._atom
+                modified_symbol = comp.atom_symbol(comp.atom_index)
+                # Denote that nuclear basis at the specific atom is actually
+                # being used for this particular nuclear component, while others
+                # are in _basis merely for symmetry detection purpose
+                comp._basis[modified_symbol].append(9999)
+                comp._build_symmetry()
+                comp._basis = _basis_bak2
+                comp._atom, _atom_bak = _atom_bak, comp._atom
+                _basis_bak2 = None
+            else:
+                raise RuntimeError(f'Unrecognized component name {t}')
+        _atom_bak = None
+        _basis_bak = None
         return self
 
     def _setup_quantum_nuclei(self, quantum_nuc):
@@ -387,7 +473,7 @@ class Mole(gto.Mole):
         # Automatically label quantum nuclei to prevent spawning multiple basis
         # functions at different positions
         modified_symbol = self.atom_symbol(atom_id) + str(atom_id)
-        modified_atom = self._atom.copy()
+        modified_atom = cp.deepcopy(self._atom)
         modified_atom[atom_id] = list(modified_atom[atom_id])
         modified_atom[atom_id][0] = modified_symbol
         modified_atom[atom_id] = tuple(modified_atom[atom_id])
@@ -491,12 +577,12 @@ class Mole(gto.Mole):
             ratio = 1.0
             if 'H+' in self.atom_symbol(atom_id): # H+ for deuterium
                 ratio = numpy.sqrt((2.01410177811 - nist.E_MASS/nist.ATOMIC_MASS)
-                                   / (1.007825 - nist.E_MASS/nist.ATOMIC_MASS))
+                                   / (1.007825 - nist.E_MASS/nist.ATOMIC_MASS)).item()
             elif 'H*' in self.atom_symbol(atom_id): # H* for muonium
-                ratio = numpy.sqrt(0.1134289259 / (1.007825  - nist.E_MASS / nist.ATOMIC_MASS))
+                ratio = numpy.sqrt(0.1134289259 / (1.007825  - nist.E_MASS / nist.ATOMIC_MASS)).item()
             elif 'H#' in self.atom_symbol(atom_id): # H# for HeMu
                 ratio = numpy.sqrt((4.002603254 - 2 * nist.E_MASS / nist.ATOMIC_MASS + 0.1134289259)
-                                   / (1.007825  - nist.E_MASS / nist.ATOMIC_MASS))
+                                   / (1.007825  - nist.E_MASS / nist.ATOMIC_MASS)).item()
             if ratio != 1.0:
                 for x in basis:
                     x[1][0] *= ratio
@@ -556,7 +642,7 @@ class Mole(gto.Mole):
         charge = self.components['e'].charge
         self.components['e'].charge = mol.charge
         mol.components['e'] = self.components['e'].set_geom_(atoms_or_coords, unit=unit,
-                                                             symmetry=symmetry,
+                                                             symmetry=False,
                                                              inplace=inplace)
         mol.components['e'].charge = self.components['e'].charge = charge
 
@@ -575,14 +661,14 @@ class Mole(gto.Mole):
                 charge = n_mol.charge
                 n_mol.charge = mol.charge
                 modified_symbol = mol.components['e'].atom_symbol(i) + str(i)
-                modified_atom = mol.components['e']._atom.copy()
+                modified_atom = cp.deepcopy(mol.components['e']._atom)
                 modified_atom[i] = list(modified_atom[i])
                 modified_atom[i][0] = modified_symbol
                 modified_atom[i] = tuple(modified_atom[i])
                 # In this way, nuc mole must get rebuilt.
                 # It is possible to pass a numpy.ndarray such that no rebuild
                 # is needed, but in rare cases even numpy.ndarray can trigger
-                # a rebuild. (because of symmetry flag)
+                # a rebuild.
                 # In that case, nuc mole will again lose basis information.
                 # Therefore, here we choose a way to ensure nuclear basis is
                 # correctly assigned (and no duplication).
@@ -590,7 +676,7 @@ class Mole(gto.Mole):
                     with contextlib.redirect_stderr(devnull):
                         mol.components[f'n{i}'] = n_mol.set_geom_(modified_atom,
                                                                   unit='bohr',
-                                                                  symmetry=symmetry,
+                                                                  symmetry=False,
                                                                   inplace=inplace)
                 mol.components[f'n{i}'].charge = n_mol.charge = charge
 
@@ -662,8 +748,11 @@ class Mole(gto.Mole):
             mol._env[ptr+1] = unit * atoms_or_coords[:,1]
             mol._env[ptr+2] = unit * atoms_or_coords[:,2]
         else:
-            mol.symmetry = symmetry
+            mol.symmetry = False
             gto.Mole.build(mol, dump_input=False, parse_arg=False)
+            mol.symmetry = symmetry
+            if mol.symmetry:
+                mol._build_symmetry_mc()
 
         if mol.verbose >= logger.INFO:
             logger.info(mol, 'New geometry')

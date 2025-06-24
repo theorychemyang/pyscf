@@ -127,7 +127,7 @@ C    SP
                  ['H3', ( 0, 0, 0)]]
         basis = {'H2':'sto3g', 'H3':'6-31g', 'H0':'sto3g', 'H1': '6-31g'}
         atmgroup = gto.mole.atom_types(atoms, basis)
-        self.assertEqual(atmgroup, {'H2': [2], 'H3': [3], 'H0': [0], 'H1': [1]})
+        self.assertEqual(atmgroup, {'H0': [0, 2], 'H1': [1, 3]})
 
     def test_input_symmetry(self):
         mol = gto.M(atom='H 0 0 -1; H 0 0 1', symmetry='D2h')

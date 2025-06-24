@@ -480,6 +480,9 @@ class Gradients(rhf_grad.GradientsBase):
             g_mm = 0
         return g_qm + g_mm
 
+    def symmetrize(self, de, atmlst=None):
+        return rhf_grad.symmetrize(self.mol.components['e'], de, atmlst)
+
     def kernel(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         cput0 = (logger.process_clock(), logger.perf_counter())
         if mo_energy is None: mo_energy = self.base.mo_energy

@@ -294,7 +294,16 @@ def atom_types(atoms, basis=None, magmom=None):
                     else:
                         atmgroup[stdsymb] = [ia]
                 else:
-                    atmgroup[a[0]] = [ia]
+                    found = False
+                    for symb, b in basis.items():
+                        if symb in atmgroup \
+                                and _std_symbol(symb) == stdsymb \
+                                and b == basis[a[0]]:
+                            atmgroup[symb].append(ia)
+                            found = True
+                            break
+                    if not found:
+                        atmgroup[a[0]] = [ia]
             elif stdsymb in atmgroup:
                 atmgroup[stdsymb].append(ia)
             else:

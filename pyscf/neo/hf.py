@@ -8,7 +8,6 @@ import copy
 import ctypes
 import h5py
 import numpy
-import scipy
 import warnings
 from pyscf import df, gto, lib, neo, scf
 from pyscf.data import nist
@@ -358,10 +357,47 @@ class ComponentSCF(Component):
                     occ_sort = numpy.argsort(mo_energy[rest_idx].round(9), kind='stable')
                     occ_idx  = rest_idx[occ_sort[:nelec_float//2]]
                     mo_occ[occ_idx] = self.mol.nnuc
+
                 assert numpy.sum(mo_occ > 0) == 1 # ensure singly occupied
+
+                vir_idx = (mo_occ==0)
+                if self.verbose >= logger.INFO and numpy.count_nonzero(vir_idx) > 0:
+                    ehomo = max(mo_energy[~vir_idx])
+                    elumo = min(mo_energy[ vir_idx])
+                    noccs = []
+                    for i, ir in enumerate(mol.irrep_id):
+                        irname = mol.irrep_name[i]
+                        ir_idx = (orbsym == ir)
+
+                        noccs.append(int(mo_occ[ir_idx].sum()))
+                        if ehomo in mo_energy[ir_idx]:
+                            irhomo = irname
+                        if elumo in mo_energy[ir_idx]:
+                            irlumo = irname
+                    logger.info(self, 'CNEO NUC HOMO (%s) = %.15g  LUMO (%s) = %.15g',
+                                irhomo, ehomo, irlumo, elumo)
+
+                    logger.debug(self, 'CNEO NUC irrep_nelec = %s', noccs)
+                    scf.hf_symm._dump_mo_energy(mol, mo_energy, mo_occ, ehomo, elumo, orbsym,
+                                                title='CNEO NUC ', verbose=self.verbose)
             else:
                 e_idx = numpy.argsort(mo_energy)
+                e_sort = mo_energy[e_idx]
+                nmo = mo_energy.size
+                nocc = 1 # singly occupied nuclear orbital
                 mo_occ[e_idx[self.nuc_occ_state]] = self.mol.nnuc # 1 or fractional
+                if self.verbose >= logger.INFO and nocc < nmo:
+                    if e_sort[nocc-1]+1e-3 > e_sort[nocc]:
+                        logger.warn(self, 'CNEO NUC HOMO %.15g == LUMO %.15g',
+                                    e_sort[nocc-1], e_sort[nocc])
+                    else:
+                        logger.info(self, '  CNEO NUC HOMO = %.15g  LUMO = %.15g',
+                                    e_sort[nocc-1], e_sort[nocc])
+
+                if self.verbose >= logger.DEBUG:
+                    numpy.set_printoptions(threshold=nmo)
+                    logger.debug(self, '  CNEO NUC mo_energy =\n%s', mo_energy)
+                    numpy.set_printoptions(threshold=1000)
             return mo_occ
         else:
             if self.mol.nhomo is None:
@@ -388,21 +424,21 @@ class ComponentSCF(Component):
                     mo_occ[0,e_idx_a[:n_a]] = 1
                 if self.verbose >= logger.INFO and n_a < nmo and n_b > 0 and n_b < nmo:
                     if e_sort_a[n_a-1]+1e-3 > e_sort_a[n_a]:
-                        logger.warn(mf, 'alpha nocc = %d  HOMO %.15g >= LUMO %.15g',
+                        logger.warn(self, 'alpha nocc = %d  HOMO %.15g >= LUMO %.15g',
                                     n_a, e_sort_a[n_a-1], e_sort_a[n_a])
                     else:
-                        logger.info(mf, '  alpha nocc = %d  HOMO = %.15g  LUMO = %.15g',
+                        logger.info(self, '  alpha nocc = %d  HOMO = %.15g  LUMO = %.15g',
                                     n_a, e_sort_a[n_a-1], e_sort_a[n_a])
 
                     if e_sort_b[n_b-1]+1e-3 > e_sort_b[n_b]:
-                        logger.warn(mf, 'beta  nocc = %d  HOMO %.15g >= LUMO %.15g',
+                        logger.warn(self, 'beta  nocc = %d  HOMO %.15g >= LUMO %.15g',
                                     n_b, e_sort_b[n_b-1], e_sort_b[n_b])
                     else:
-                        logger.info(mf, '  beta  nocc = %d  HOMO = %.15g  LUMO = %.15g',
+                        logger.info(self, '  beta  nocc = %d  HOMO = %.15g  LUMO = %.15g',
                                     n_b, e_sort_b[n_b-1], e_sort_b[n_b])
 
                     if e_sort_a[n_a-1]+1e-3 > e_sort_b[n_b]:
-                        logger.warn(mf, 'system HOMO %.15g >= system LUMO %.15g',
+                        logger.warn(self, 'system HOMO %.15g >= system LUMO %.15g',
                                     e_sort_b[n_a-1], e_sort_b[n_b])
 
                     numpy.set_printoptions(threshold=nmo)
@@ -603,15 +639,23 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, vint=None, dm=None, cycle=-1,
     f0 = None
     if isinstance(mf, neo.CDFT):
         if diis_pos == 'pre' or diis_pos == 'both' or (cycle < 0 and diis is None):
-            # optimize f in cNEO
+            # optimize the Lagrange multiplier in CNEO
             for t, comp in mf.components.items():
                 if t.startswith('n'):
                     ia = comp.mol.atom_index
-                    opt = scipy.optimize.root(mf.position_analysis, mf.f[ia],
-                                              args=(comp, f[t], s1e[t]), method='hybr')
-                    logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
-                                 (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
-                    logger.debug(mf, 'Position deviation: %s', opt.fun)
+                    opt = neo.cdft.solve_constraint(comp, f[t], s1e[t], mf.f[ia])
+                    mf.f[ia] = opt.x
+                    if opt.success:
+                        logger.debug(mf, 'CNEO NUC constraint optimization succeeded.')
+                        logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                                     (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
+                        logger.debug(mf, 'Position deviation: %s', opt.fun)
+                    else:
+                        logger.debug(mf, 'CNEO NUC constraint optimization failed!')
+                        logger.debug(mf, f'scipy.optimize.root message: {opt.message}')
+                        logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                                     (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
+                        logger.debug(mf, 'Position deviation: %s', opt.fun)
 
         # For DIIS type 1, preserve original matrices
         if diis_type == 1:
@@ -694,11 +738,19 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, vint=None, dm=None, cycle=-1,
         for t, comp in mf.components.items():
             if t.startswith('n'):
                 ia = comp.mol.atom_index
-                opt = scipy.optimize.root(mf.position_analysis, mf.f[ia],
-                                          args=(comp, f0[t], s1e[t]), method='hybr')
-                logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
-                             (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
-                logger.debug(mf, 'Position deviation: %s', opt.fun)
+                opt = neo.cdft.solve_constraint(comp, f0[t], s1e[t], mf.f[ia])
+                mf.f[ia] = opt.x
+                if opt.success:
+                    logger.debug(mf, 'CNEO NUC constraint optimization succeeded.')
+                    logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                                 (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
+                    logger.debug(mf, 'Position deviation: %s', opt.fun)
+                else:
+                    logger.debug(mf, 'CNEO NUC constraint optimization failed!')
+                    logger.debug(mf, f'scipy.optimize.root message: {opt.message}')
+                    logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                                 (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
+                    logger.debug(mf, 'Position deviation: %s', opt.fun)
 
         fock_add = mf.get_fock_add_cdft()
         for t in fock_add:
