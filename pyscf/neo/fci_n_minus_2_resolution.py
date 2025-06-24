@@ -9,7 +9,8 @@ from pyscf.neo import cdavidson
 from pyscf.neo.fci_n_resolution import make_hdiag, make_rdiag
 from pyscf.neo.fci_n_resolution import FCI as _FCI
 from pyscf.fci.fci_uhf_slow_n_minus_2_resolution import gen_des_des_str_index
-import time
+from pyscf.lib import logger
+from pyscf.lib import misc
 
 def contract(h1, h2, fcivec, norb, nparticle, dd_index=None, d_index=None,
              r1=None):
@@ -252,7 +253,14 @@ def contract_1e(h1, fcivec, norb, nparticle, d_index=None):
     return fcinew.reshape((total_dim,)+fcivec.shape)
 
 def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1,
-           r1=None, rdiag=None, f0=None):
+           r1=None, rdiag=None, f0=None, conv_tol=1e-12, lindep=1e-14,
+           max_cycle=250, max_space=24, max_memory=260000, verbose=logger.DEBUG1,
+           constraint_start_space=4, auto_bounds=True, gtol=1e-12, rtol=1e-12):
+    if isinstance(verbose, logger.Logger):
+        log = verbose
+    else:
+        log = logger.Logger(misc.StreamObject.stdout, verbose)
+
     h2 = [[None] * len(norb) for _ in range(len(norb))]
     for i in range(len(norb)):
         for j in range(len(norb)):
@@ -265,16 +273,16 @@ def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1,
     if hdiag is None:
         hdiag = make_hdiag(h1, g2, norb, nparticle)
     if ci0 is None:
-        print('N-2 resolution method')
+        log.debug('N-2 resolution method')
         dim = []
         for i in range(len(norb)):
             dim.append(cistring.num_strings(norb[i], nparticle[i]))
-        print(f'FCI vector shape: {dim}', flush=True)
-        print(f'FCI dimension: {hdiag.size}', flush=True)
+        log.debug(f'FCI vector shape: {dim}')
+        log.debug(f'FCI dimension: {hdiag.size}')
         addrs = numpy.argpartition(hdiag, nroots-1)[:nroots]
         ci0 = []
         for addr in addrs:
-            print(f'{hdiag[addr]=}', flush=True)
+            log.debug(f'{hdiag[addr]=}')
             ci0_ = numpy.zeros(hdiag.size)
             ci0_[addr] = 1
             ci0.append(ci0_)
@@ -284,15 +292,18 @@ def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1,
             hc = contract(h1, h2, c, norb, nparticle)
             return hc.reshape(-1)
         precond = lambda x, e, *args: x/(hdiag-e+1e-4)
-        t0 = time.time()
+        t0 = logger.perf_counter()
         converged, e, c = lib.davidson1(lambda xs: [hop(x) for x in xs],
-                                        ci0, precond, max_cycle=200, max_space=24,
-                                        max_memory=480000, nroots=nroots, verbose=10)
-        print(f'davidson: {time.time() - t0} seconds', flush=True)
+                                        ci0, precond, tol=conv_tol, lindep=lindep,
+                                        max_cycle=max_cycle, max_space=max_space,
+                                        max_memory=max_memory, nroots=nroots,
+                                        verbose=verbose)
+        log.debug(f'davidson: {logger.perf_counter() - t0} seconds')
         if converged[0]:
-            print('FCI Davidson converged!')
+            log.note(f'FCI Davidson converged! Energy = {e[0]+ecore:.15g}')
         else:
-            print('FCI Davidson did not converge according to current setting.')
+            log.note('FCI Davidson did not converge according to current setting.')
+            log.note(f'Energy = {e[0]+ecore:.15g}')
         return e+ecore, c
     else:
         def hop(c):
@@ -300,16 +311,21 @@ def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1,
             return hc.reshape(-1), rc.reshape(rc.shape[0],-1)
         if rdiag is None:
             rdiag = make_rdiag(r1, norb, nparticle)
-        t0 = time.time()
+        t0 = logger.perf_counter()
         converged, e, c, f = cdavidson.davidson1(lambda xs: [list(t) for t in zip(*[hop(x) for x in xs])],
                                                  ci0, f0.reshape(-1), hdiag, rdiag,
-                                                 max_cycle=200, max_space=24,
-                                                 max_memory=480000, nroots=nroots, verbose=10)
-        print(f'davidson: {time.time() - t0} seconds', flush=True)
+                                                 tol=conv_tol, lindep=lindep,
+                                                 max_cycle=max_cycle, max_space=max_space,
+                                                 max_memory=max_memory, nroots=nroots,
+                                                 verbose=verbose,
+                                                 constraint_start_space=constraint_start_space,
+                                                 auto_bounds=auto_bounds, gtol=gtol, rtol=rtol)
+        log.debug(f'davidson: {logger.perf_counter() - t0} seconds')
         if converged[0]:
-            print('C-FCI Davidson converged!')
+            log.note(f'C-FCI Davidson converged! Energy = {e[0]+ecore:.15g}')
         else:
-            print('C-FCI Davidson did not converge according to current setting.')
+            log.note('C-FCI Davidson did not converge according to current setting.')
+            log.note(f'Energy = {e[0]+ecore:.15g}')
         return e+ecore, c, f
 
 def energy(h1, g2, fcivec, norb, nparticle, ecore=0):
@@ -402,9 +418,9 @@ if __name__ == '__main__':
     mf.conv_tol_grad = 1e-7
     mf.kernel()
     print(f'HF energy: {mf.e_tot}', flush=True)
-    t0 = time.time()
+    t0 = logger.perf_counter()
     e0 = _FCI(mf).kernel()[0]
-    print(f'N resolution FCI energy: {e0}, time: {time.time() - t0} s')
-    t0 = time.time()
+    print(f'N resolution FCI energy: {e0}, time: {logger.perf_counter() - t0} s')
+    t0 = logger.perf_counter()
     e1 = FCI(mf).kernel()[0]
-    print(f'N-2 resolution FCI energy: {e1}, difference: {e1 - e0}, time: {time.time() - t0} s')
+    print(f'N-2 resolution FCI energy: {e1}, difference: {e1 - e0}, time: {logger.perf_counter() - t0} s')

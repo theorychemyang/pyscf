@@ -7,7 +7,8 @@ from pyscf import ao2mo
 from pyscf.fci import cistring
 from pyscf import neo, scf
 from pyscf.neo import cdavidson
-import time
+from pyscf.lib import logger
+from pyscf.lib import misc
 
 def contract(h1, h2, fcivec, norb, nparticle, link_index=None, r1=None):
     ndim = len(norb)
@@ -169,8 +170,13 @@ def absorb_h1e(h1e, eri, norb, nelec, fac=1):
         h2e_bb[k,k,:,:] += f1e_b
     return (h2e_aa * fac, h2e_ab * fac, h2e_bb * fac)
 
-def make_hdiag(h1, g2, norb, nparticle):
-    t0 = time.time()
+def make_hdiag(h1, g2, norb, nparticle, verbose=logger.DEBUG1):
+    if isinstance(verbose, logger.Logger):
+        log = verbose
+    else:
+        log = logger.Logger(misc.StreamObject.stdout, verbose)
+
+    t0 = logger.perf_counter()
     ndim = len(norb)
     dim = []
     for i in range(ndim):
@@ -222,7 +228,7 @@ def make_hdiag(h1, g2, norb, nparticle):
                         str0_indices[l] = str1
                         hdiag[tuple(str0_indices)] += e2
                 done[k][l] = done[l][k] = True
-    print(f'make_hdiag: {time.time() - t0} seconds', flush=True)
+    log.debug(f'make_hdiag: {logger.perf_counter() - t0} seconds')
     return hdiag.reshape(-1)
 
 def make_rdiag(r1, norb, nparticle):
@@ -252,7 +258,14 @@ def make_rdiag(r1, norb, nparticle):
     return rdiag.reshape(total_dim,-1)
 
 def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1,
-           r1=None, rdiag=None, f0=None):
+           r1=None, rdiag=None, f0=None, conv_tol=1e-12, lindep=1e-14,
+           max_cycle=250, max_space=24, max_memory=260000, verbose=logger.DEBUG1,
+           constraint_start_space=4, auto_bounds=True, gtol=1e-12, rtol=1e-12):
+    if isinstance(verbose, logger.Logger):
+        log = verbose
+    else:
+        log = logger.Logger(misc.StreamObject.stdout, verbose)
+
     h2 = [[None] * len(norb) for _ in range(len(norb))]
     h2[0][0], h2[0][1], h2[1][1] = absorb_h1e(h1[:2], (g2[0][0], g2[0][1], g2[1][1]),
                                               norb[0], (nparticle[0], nparticle[1]), .5)
@@ -267,12 +280,12 @@ def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1,
         dim = []
         for i in range(len(norb)):
             dim.append(cistring.num_strings(norb[i], nparticle[i]))
-        print(f'FCI vector shape: {dim}', flush=True)
-        print(f'FCI dimension: {hdiag.size}', flush=True)
+        log.debug(f'FCI vector shape: {dim}')
+        log.debug(f'FCI dimension: {hdiag.size}')
         addrs = numpy.argpartition(hdiag, nroots-1)[:nroots]
         ci0 = []
         for addr in addrs:
-            print(f'{hdiag[addr]=}', flush=True)
+            log.debug(f'{hdiag[addr]=}')
             ci0_ = numpy.zeros(hdiag.size)
             ci0_[addr] = 1
             ci0.append(ci0_)
@@ -282,15 +295,18 @@ def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1,
             hc = contract(h1, h2, c, norb, nparticle)
             return hc.reshape(-1)
         precond = lambda x, e, *args: x/(hdiag-e+1e-4)
-        t0 = time.time()
+        t0 = logger.perf_counter()
         converged, e, c = lib.davidson1(lambda xs: [hop(x) for x in xs],
-                                        ci0, precond, max_cycle=200, max_space=24,
-                                        max_memory=480000, nroots=nroots, verbose=10)
-        print(f'davidson: {time.time() - t0} seconds', flush=True)
+                                        ci0, precond, tol=conv_tol, lindep=lindep,
+                                        max_cycle=max_cycle, max_space=max_space,
+                                        max_memory=max_memory, nroots=nroots,
+                                        verbose=verbose)
+        log.debug(f'davidson: {logger.perf_counter() - t0} seconds')
         if converged[0]:
-            print('FCI Davidson converged!')
+            log.note(f'FCI Davidson converged! Energy = {e[0]+ecore:.15g}')
         else:
-            print('FCI Davidson did not converge according to current setting.')
+            log.note('FCI Davidson did not converge according to current setting.')
+            log.note(f'Energy = {e[0]+ecore:.15g}')
         return e+ecore, c
     else:
         def hop(c):
@@ -298,16 +314,21 @@ def kernel(h1, g2, norb, nparticle, ecore=0, ci0=None, hdiag=None, nroots=1,
             return hc.reshape(-1), rc.reshape(rc.shape[0],-1)
         if rdiag is None:
             rdiag = make_rdiag(r1, norb, nparticle)
-        t0 = time.time()
+        t0 = logger.perf_counter()
         converged, e, c, f = cdavidson.davidson1(lambda xs: [list(t) for t in zip(*[hop(x) for x in xs])],
                                                  ci0, f0.reshape(-1), hdiag, rdiag,
-                                                 max_cycle=200, max_space=24,
-                                                 max_memory=480000, nroots=nroots, verbose=10)
-        print(f'davidson: {time.time() - t0} seconds', flush=True)
+                                                 tol=conv_tol, lindep=lindep,
+                                                 max_cycle=max_cycle, max_space=max_space,
+                                                 max_memory=max_memory, nroots=nroots,
+                                                 verbose=verbose,
+                                                 constraint_start_space=constraint_start_space,
+                                                 auto_bounds=auto_bounds, gtol=gtol, rtol=rtol)
+        log.debug(f'davidson: {logger.perf_counter() - t0} seconds')
         if converged[0]:
-            print('C-FCI Davidson converged!')
+            log.note(f'C-FCI Davidson converged! Energy = {e[0]+ecore:.15g}')
         else:
-            print('C-FCI Davidson did not converge according to current setting.')
+            log.note('C-FCI Davidson did not converge according to current setting.')
+            log.note(f'Energy = {e[0]+ecore:.15g}')
         return e+ecore, c, f
 
 def energy(h1, g2, fcivec, norb, nparticle, ecore=0):
@@ -367,20 +388,25 @@ def make_rdm2(fcivec, index1, index2, norb, nparticle):
                                                  fcivec[str0_indices_tuple].reshape(-1))
     return rdm2
 
-def energy_decomp(h1, g2, fcivec, norb, nparticle):
+def energy_decomp(h1, g2, fcivec, norb, nparticle, verbose=logger.NOTE):
+    if isinstance(verbose, logger.Logger):
+        log = verbose
+    else:
+        log = logger.Logger(misc.StreamObject.stdout, verbose)
+
     ndim = len(norb)
     for i in range(ndim):
         if h1[i] is not None:
             rdm1 = make_rdm1(fcivec, i, norb, nparticle)
             e1 = numpy.dot(h1[i].reshape(-1), rdm1.reshape(-1))
-            print(f'1-body energy for {i}-th particle: {e1}')
+            log.note(f'1-body energy for {i}-th particle: {e1}')
     done = [[False] * ndim for _ in range(ndim)]
     for i in range(ndim):
         for j in range(ndim):
             if i != j and g2[i][j] is not None and not done[i][j]:
                 rdm2 = make_rdm2(fcivec, i, j, norb, nparticle)
                 e2 = numpy.dot(g2[i][j].reshape(-1), rdm2.reshape(-1))
-                print(f'2-body energy between {i}-th particle and {j}-th particle: {e2}')
+                log.note(f'2-body energy between {i}-th particle and {j}-th particle: {e2}')
                 done[i][j] = done[j][i] = True
 
 def entropy(indices, fcivec, norb, nparticle):
@@ -471,8 +497,16 @@ def integrals(mf):
             g2[j+2][i+2] = eri_nn
     return h1, g2
 
-def symmetry_finder(mol):
+def symmetry_finder(mol, verbose=logger.DEBUG1):
+    '''A very simple symmetry finder that does not use point-group symmetry
+    or symmetry axes'''
     from pyscf.hessian.thermo import rotation_const, _get_rotor_type
+
+    if isinstance(verbose, logger.Logger):
+        log = verbose
+    else:
+        log = logger.Logger(misc.StreamObject.stdout, verbose)
+
     # find if this is a linear molecule
     mass = mol.mass
     atom_coords = mol.atom_coords()
@@ -494,10 +528,9 @@ def symmetry_finder(mol):
                 axis = 0
         else:
             # if not along an axis, warn
-            print('This molecule is linear, but was not put along x/y/z axis. Symmetry will be OFF.',
-                  flush=True)
+            log.note('This molecule is linear, but was not put along x/y/z axis. Symmetry will be OFF.')
             return None, None
-        print(f'Linear molecule along {chr(axis+88)}', flush=True)
+        log.debug(f'Linear molecule along {chr(axis+88)}')
     elif mol.natm == 3: # See if they are in the same plane
         symm = 'PLANAR'
         if numpy.abs(atom_coords[:,0]).max() < 1e-6:
@@ -508,17 +541,22 @@ def symmetry_finder(mol):
             axis = 2
         else:
             # if not in a plane, warn
-            print('This molecule is planar, but was not put in xy/yz/xz planes. Symmetry will be OFF.',
-                  flush=True)
+            log.note('This molecule is planar, but was not put in xy/yz/xz planes. Symmetry will be OFF.')
             return None, None
-        print(f'Planar molecule perpendicular to {chr(axis+88)}', flush=True)
+        log.debug(f'Planar molecule perpendicular to {chr(axis+88)}')
     else:
-        print('Not a molecule that symmetry is easy to exploit. Symmetry will be OFF.', flush=True)
+        log.note('Not a molecule that symmetry is easy to exploit. Symmetry will be OFF.')
         return None, None
     return symm, axis
 
-def FCI(mf, kernel=kernel, integrals=integrals, energy=energy):
+def FCI(mf, kernel=kernel, integrals=integrals, energy=energy, fci_verbose=logger.DEBUG1):
     assert isinstance(mf.mf_elec, scf.uhf.UHF)
+
+    if isinstance(fci_verbose, logger.Logger):
+        log = fci_verbose
+    else:
+        log = logger.Logger(misc.StreamObject.stdout, fci_verbose)
+
     norb_e = mf.mf_elec.mo_coeff[0].shape[1]
     mol = mf.mol
     nelec = mol.elec.nelec
@@ -528,28 +566,51 @@ def FCI(mf, kernel=kernel, integrals=integrals, energy=energy):
         norb_n = mf.mf_nuc[i].mo_coeff.shape[1]
         norb.append(norb_n)
         nparticle.append(1)
-    print(f'{norb=}', flush=True)
-    print(f'{nparticle=}', flush=True)
+    log.debug(f'{norb=}')
+    log.debug(f'{nparticle=}')
 
     is_cneo = False
     if isinstance(mf, neo.CDFT):
         is_cneo = True
-        print('CNEO-FCI')
+        log.debug('CNEO-FCI')
     else:
-        print('Unconstrained NEO-FCI')
+        log.debug('Unconstrained NEO-FCI')
 
     h1, g2 = integrals(mf)
 
     ecore = mf.mf_elec.energy_nuc()
 
     class CISolver():
-        def __init__(self, nroots=1, symmetry=True):
-            self.nroots = nroots
-            self.symmetry = symmetry
+        def __init__(self):
+            # pyscf.fci uses 1e-10, and the default of lib.davidson1 is 1e-12.
+            # Choose a tight convergence
+            self.conv_tol = 1e-12
+            self.lindep = 1e-14 # Default
+            # CNEO-FCI usually requires <100 for easy cases, and for challenging cases
+            # it can use more than 100 cycles. Set 250 as the default in case one might
+            # want to experiment with other parameters that can sometimes cause >200 cycles.
+            self.max_cycle = 250
+            self.max_space = 24 # double the default value. More memory, but better convergence
+            self.max_memory = 260000 # 260000 is good for H2 cc-pV6Z & PB6H
+            self.verbose = logger.DEBUG1
+            self.nroots = 1
+            # NOTE: `symmetry` here is a very basic symmetry implementation to reduce the
+            # dimensionality of the position constraint, and it does not utilize the new position
+            # deviation matrices along symmetry axes. It requires the molecule to be aligned to
+            # major axes in the Cartesian coordinate.
+            # TODO: adapt to the new symmetry code of CNEO-DFT.
+            # TODO: implement the FCI code that utilizes wave function symmetry?
+            self.symmetry = True
         def kernel(self, h1=h1, g2=g2, norb=norb, nparticle=nparticle,
                    ecore=ecore):
             self.e, self.c = kernel(h1, g2, norb, nparticle, ecore,
-                                    nroots=self.nroots)
+                                    nroots=self.nroots,
+                                    conv_tol=self.conv_tol,
+                                    lindep=self.lindep,
+                                    max_cycle=self.max_cycle,
+                                    max_space=self.max_space,
+                                    max_memory=self.max_memory,
+                                    verbose=self.verbose)
             return self.e[0], self.c[0]
         def entropy(self, indices, fcivec=None, norb=norb, nparticle=nparticle):
             if fcivec is None:
@@ -588,7 +649,7 @@ def FCI(mf, kernel=kernel, integrals=integrals, energy=energy):
             eigval, eigvec = numpy.linalg.eigh(rdm1)
             natocc = numpy.flip(eigval)
             w = natocc[natocc>1e-16]
-            print(f'Natocc entropy: {-(w * numpy.log(w)).sum()}')
+            logger.note(self, f'Natocc entropy: {-(w * numpy.log(w)).sum()}')
             natorb = lib.dot(coeff, numpy.fliplr(eigvec))
             return natocc, natorb
 
@@ -620,10 +681,35 @@ def FCI(mf, kernel=kernel, integrals=integrals, energy=energy):
                 for i in range(mol.nuc_num):
                     r1[i+2] = numpy.delete(r1[i+2], axis, axis=0)
         class CCISolver(CISolver):
+            def __init__(self):
+                super().__init__()
+                # Minimal start_space is 2, but 4 is usually more advisable
+                # because in the cases when f is large, space 2 or 3 often reach
+                # the bound and the optimization is basically wasted.
+                self.constraint_start_space = 4
+                # Bound the optimization to avoid insane Lagrange multiplier values
+                self.auto_bounds = True
+                # gtol=1e-12 here is usually tight enough to result in <1e-15 r error
+                # for hydrogen. gtol=1e-15 in neo.cdft is for heavy nuclei, but we
+                # probably won't care about heavy nuclei in FCI.
+                self.gtol = 1e-12
+                # rtol can be tighter but in most cases the convergence is already
+                # much tighter than 1e-12. rtol is mostly useful when linear dependency
+                # occurs, and in that case 1e-9 r error should not be considered converged.
+                self.rtol = 1e-12
             def kernel(self, h1=h1, r1=r1, g2=g2, norb=norb, nparticle=nparticle,
                        ecore=ecore):
                 self.e, self.c, self.f = kernel(h1, g2, norb, nparticle, ecore,
-                                                nroots=self.nroots, r1=r1, f0=f)
+                                                nroots=self.nroots, r1=r1, f0=f,
+                                                conv_tol=self.conv_tol,
+                                                lindep=self.lindep,
+                                                max_cycle=self.max_cycle,
+                                                max_space=self.max_space,
+                                                max_memory=self.max_memory,
+                                                verbose=self.verbose,
+                                                constraint_start_space=self.constraint_start_space,
+                                                auto_bounds=self.auto_bounds,
+                                                gtol=self.gtol, rtol=self.rtol)
                 return self.e[0], self.c[0], self.f
         cisolver = CCISolver()
     else:

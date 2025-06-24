@@ -1,6 +1,7 @@
 import numpy
 import scipy.linalg
 import scipy.optimize
+from pyscf import lib
 from pyscf.lib import logger
 from pyscf.lib import misc
 from pyscf.lib.linalg_helper import (DAVIDSON_LINDEP, MAX_MEMORY,
@@ -14,7 +15,7 @@ from pyscf.lib.linalg_helper import (DAVIDSON_LINDEP, MAX_MEMORY,
                                      _sort_elast, _Xlist)
 
 def davidson(a_and_r_op, x0, f0, adiag, rdiag,
-             tol=1e-12, max_cycle=200, max_space=24,
+             tol=1e-12, max_cycle=250, max_space=24,
              lindep=DAVIDSON_LINDEP, max_memory=MAX_MEMORY,
              dot=numpy.dot, callback=None,
              nroots=1, lessio=False, pick=None, verbose=logger.WARN,
@@ -29,12 +30,13 @@ def davidson(a_and_r_op, x0, f0, adiag, rdiag,
         return e, x, f
 
 def davidson1(a_and_r_op, x0, f0, adiag, rdiag,
-              tol=1e-12, max_cycle=200, max_space=24,
+              tol=1e-12, max_cycle=250, max_space=24,
               lindep=DAVIDSON_LINDEP, max_memory=MAX_MEMORY,
               dot=numpy.dot, callback=None,
               nroots=1, lessio=False, pick=None, verbose=logger.WARN,
               follow_state=FOLLOW_STATE, tol_residual=None,
-              fill_heff=_fill_heff_hermitian):
+              fill_heff=_fill_heff_hermitian, constraint_start_space=4,
+              auto_bounds=True, gtol=1e-12, rtol=1e-12):
     if isinstance(verbose, logger.Logger):
         log = verbose
     else:
@@ -64,7 +66,8 @@ def davidson1(a_and_r_op, x0, f0, adiag, rdiag,
         rdim = 1
         rdiag = rdiag.reshape(1,rdiag.size)
     # additional rx and rxt
-    _incore = max_memory*1e6/x0[0].nbytes > max_space*(2+rdim)+nroots*(3+rdim)
+    log.debug1(f'Memory requirement for incore: {x0[0].nbytes*(max_space*(2+rdim)+nroots*4)/1e6:.1f} MB')
+    _incore = max_memory*1e6/x0[0].nbytes > max_space*(2+rdim)+nroots*4
     lessio = lessio and not _incore
     log.debug1('max_cycle %d  max_space %d  max_memory %d  incore %s',
                max_cycle, max_space, max_memory, _incore)
@@ -77,6 +80,18 @@ def davidson1(a_and_r_op, x0, f0, adiag, rdiag,
     conv = numpy.zeros(nroots, dtype=bool)
     emin = None
     prefer_lessio_in_a_and_r_x0 = False
+
+    bounds = None
+    if auto_bounds:
+        bounds = []
+        zero_bound = (-1.0, 1.0)
+        for x in f0:
+            if abs(x) < 0.1:
+                bounds.append(zero_bound)
+            else:
+                bounds.append((x - 10.0*abs(x), x + 10.0*abs(x)))
+        lb, ub = zip(*bounds)
+        bounds = (lb, ub)
 
     for icyc in range(max_cycle):
         if fresh_start:
@@ -160,16 +175,20 @@ def davidson1(a_and_r_op, x0, f0, adiag, rdiag,
             w, v = scipy.linalg.eigh(heff_mod)
             return v[:,0].T @ reff[:,:space,:space] @ v[:,0]
 
-        assert max_space >= 20
         f0_opt_on = False
-        if space >= 10:
+        if space >= constraint_start_space:
             f0_opt_on = True
-            #result = scipy.optimize.root(constraint_fn, f0, method='hybr')
             # Using root may cause divergent f when the subspace is small
-            result = scipy.optimize.minimize(lambda f: numpy.linalg.norm(constraint_fn(f))**2 * 1e8,
-                                             f0, method='L-BFGS-B')
+            #result = scipy.optimize.root(constraint_fn, f0, method='hybr')
+            # Minimize can help a bit, but should supply bounds for more robustness
+            #result = scipy.optimize.minimize(lambda f: numpy.linalg.norm(constraint_fn(f))**2 * 1e8,
+            #                                 f0, method='L-BFGS-B')
+            # Least squares with bounds is the most robust
+            result = scipy.optimize.least_squares(constraint_fn, f0, bounds=bounds, gtol=gtol)
             f0 = result.x
             log.debug(f'    Lagrange multiplier optimized: {f0}')
+            if not result.success:
+                log.warn(f'scipy.optimize.least_squares failed! {result.message}')
         else:
             log.debug(f'        Lagrange multiplier fixed: {f0}')
         heff_final = heff[:space,:space] + numpy.einsum('i,ijk->jk', f0, reff[:,:space,:space])
@@ -229,7 +248,7 @@ def davidson1(a_and_r_op, x0, f0, adiag, rdiag,
                 xt[k] += f0[i] * rx0[k][i]
             dx_norm[k] = numpy.sqrt(dot(xt[k].conj(), xt[k]).real)
             conv[k] = abs(de[k]) < tol and dx_norm[k] < toloose \
-                      and f0_opt_on and numpy.linalg.norm(r) < 1e-8
+                      and f0_opt_on and numpy.abs(r).max() < rtol
             if conv[k] and not conv_last[k]:
                 log.debug('root %d converged  |r|= %4.3g  e= %s  max|de|= %4.3g',
                           k, dx_norm[k], ek, de[k])
@@ -273,11 +292,13 @@ def davidson1(a_and_r_op, x0, f0, adiag, rdiag,
                       dx_norm)
             conv = dx_norm < toloose
             for k, convk in enumerate(conv):
-                conv[k] = convk and f0_opt_on and numpy.linalg.norm(r) < 1e-8
+                conv[k] = convk and f0_opt_on and numpy.abs(r).max() < rtol
             break
 
         max_dx_last = max_dx_norm
         fresh_start = space+nroots > max_space
+        if fresh_start:
+            log.debug1(f'Memory usage: {lib.current_memory()[0]:.1f} MB')
 
         if callable(callback):
             callback(locals())
@@ -376,7 +397,7 @@ if __name__ == '__main__':
     print(f"adiag: {adiag.shape}")
     print(f"rdiag: {rdiag.shape}")
 
-    eigenvalue, eigenvector, f = davidson(a_and_r_op, x0, f0, adiag, rdiag, verbose=10, max_cycle=200, max_space=24)
+    eigenvalue, eigenvector, f = davidson(a_and_r_op, x0, f0, adiag, rdiag, verbose=6, max_cycle=250, max_space=24)
     print(f"Lowest eigenvalue without f*r: {eigenvalue}")
     print("\nVerifying Davidson solution:")
     verify_solution(eigenvector, f, eigenvalue)
