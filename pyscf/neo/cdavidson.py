@@ -78,6 +78,17 @@ def davidson1(a_and_r_op, x0, f0, adiag, rdiag,
     emin = None
     prefer_lessio_in_a_and_r_x0 = False
 
+    bounds = []
+    zero_bound = (-1.0, 1.0)
+    lstol = 1e-12
+    for x in f0:
+        if abs(x) < 0.1:
+            bounds.append(zero_bound)
+        else:
+            bounds.append((x - 10.0*abs(x), x + 10.0*abs(x)))
+    lb, ub = zip(*bounds)
+    bounds = (lb, ub)
+
     for icyc in range(max_cycle):
         if fresh_start:
             if _incore:
@@ -162,12 +173,14 @@ def davidson1(a_and_r_op, x0, f0, adiag, rdiag,
 
         assert max_space >= 20
         f0_opt_on = False
-        if space >= 10:
+        if space >= 4:
             f0_opt_on = True
             #result = scipy.optimize.root(constraint_fn, f0, method='hybr')
             # Using root may cause divergent f when the subspace is small
-            result = scipy.optimize.minimize(lambda f: numpy.linalg.norm(constraint_fn(f))**2 * 1e8,
-                                             f0, method='L-BFGS-B')
+            #result = scipy.optimize.minimize(lambda f: numpy.linalg.norm(constraint_fn(f))**2 * 1e8,
+            #                                 f0, method='L-BFGS-B')
+            result = scipy.optimize.least_squares(constraint_fn, f0, bounds=bounds, ftol=lstol,
+                                                  xtol=lstol, gtol=lstol)
             f0 = result.x
             log.debug(f'    Lagrange multiplier optimized: {f0}')
         else:
@@ -229,7 +242,7 @@ def davidson1(a_and_r_op, x0, f0, adiag, rdiag,
                 xt[k] += f0[i] * rx0[k][i]
             dx_norm[k] = numpy.sqrt(dot(xt[k].conj(), xt[k]).real)
             conv[k] = abs(de[k]) < tol and dx_norm[k] < toloose \
-                      and f0_opt_on and numpy.linalg.norm(r) < 1e-8
+                      and f0_opt_on and all(abs(r) < 1e-12) #and numpy.linalg.norm(r) < 1e-8
             if conv[k] and not conv_last[k]:
                 log.debug('root %d converged  |r|= %4.3g  e= %s  max|de|= %4.3g',
                           k, dx_norm[k], ek, de[k])
