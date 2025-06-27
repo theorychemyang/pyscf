@@ -78,7 +78,8 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None):
             deviation = numpy.einsum('xij,ji->x', mf.int1e_r, dm)
         return deviation
 
-    opt = scipy.optimize.root(position_deviation, f_lagrange_guess, method='hybr')
+    #opt = scipy.optimize.root(position_deviation, f_lagrange_guess, method='hybr')
+    opt = scipy.optimize.least_squares(position_deviation, f_lagrange_guess, gtol=1e-15)
 
     if mf.int1e_r_symm is not None:
         # Recover the full dimensional f_lagrange

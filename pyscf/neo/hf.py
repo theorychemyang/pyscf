@@ -651,11 +651,11 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, vint=None, dm=None, cycle=-1,
                                      (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
                         logger.debug(mf, 'Position deviation: %s', opt.fun)
                     else:
-                        logger.debug(mf, 'CNEO NUC constraint optimization failed!')
-                        logger.debug(mf, f'scipy.optimize.root message: {opt.message}')
-                        logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
-                                     (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
-                        logger.debug(mf, 'Position deviation: %s', opt.fun)
+                        logger.warn(mf, 'CNEO NUC constraint optimization failed!')
+                        logger.warn(mf, f'scipy.optimize.least_squares message: {opt.message}')
+                        logger.warn(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                                    (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
+                        logger.warn(mf, 'Position deviation: %s', opt.fun)
 
         # For DIIS type 1, preserve original matrices
         if diis_type == 1:
@@ -746,11 +746,11 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, vint=None, dm=None, cycle=-1,
                                  (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
                     logger.debug(mf, 'Position deviation: %s', opt.fun)
                 else:
-                    logger.debug(mf, 'CNEO NUC constraint optimization failed!')
-                    logger.debug(mf, f'scipy.optimize.root message: {opt.message}')
-                    logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
-                                 (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
-                    logger.debug(mf, 'Position deviation: %s', opt.fun)
+                    logger.warn(mf, 'CNEO NUC constraint optimization failed!')
+                    logger.warn(mf, f'scipy.optimize.least_squares message: {opt.message}')
+                    logger.warn(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                                (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
+                    logger.warn(mf, 'Position deviation: %s', opt.fun)
 
         fock_add = mf.get_fock_add_cdft()
         for t in fock_add:
