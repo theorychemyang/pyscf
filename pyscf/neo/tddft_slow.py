@@ -1,7 +1,7 @@
 from pyscf.tdscf import rhf, uhf
 from pyscf import ao2mo
 from pyscf import lib
-from pyscf.neo.tddft import get_epc_iajb_rhf, get_epc_iajb_uhf
+from pyscf.neo.tddft import get_epc_iajb_rhf, get_epc_iajb_uhf, _normalize
 from pyscf.data import nist
 from pyscf.lib import logger
 from pyscf import neo, scf
@@ -80,17 +80,25 @@ def get_c_int(interaction, coeff_o, coeff_v):
     cv_2 = coeff_v[t2]
     scale = interaction.mf1.charge * interaction.mf2.charge
 
-    if isinstance(co_1, list):
+    if interaction.mf1_unrestricted:
+        assert not interaction.mf2_unrestricted
         coeffs = (co_1[0], cv_1[0], co_2, cv_2)
-        c_1 = scale*ao2mo.incore.general(eri, coeffs,compact=False)
+        c_1 = scale*ao2mo.incore.general(eri, coeffs, compact=False)
         coeffs = (co_1[1], cv_1[1], co_2, cv_2)
-        c_2 = scale*ao2mo.incore.general(eri, coeffs,compact=False)
+        c_2 = scale*ao2mo.incore.general(eri, coeffs, compact=False)
+        return [c_1, c_2]
+    elif interaction.mf2_unrestricted:
+        assert not interaction.mf1_unrestricted
+        coeffs = (co_1, cv_1, co_2[0], cv_2[0])
+        c_1 = scale*ao2mo.incore.general(eri, coeffs, compact=False)
+        coeffs = (co_1, cv_1, co_2[1], cv_2[1])
+        c_2 = scale*ao2mo.incore.general(eri, coeffs, compact=False)
         return [c_1, c_2]
     else:
         coeffs = (co_1, cv_1, co_2, cv_2)
-        c = scale*ao2mo.incore.general(eri, coeffs,compact=False)
+        c = scale*ao2mo.incore.general(eri, coeffs, compact=False)
         return c
-        
+
 def get_abc_no_epc(mf):
     a = {}
     b = {}
@@ -129,9 +137,9 @@ def get_epc_iajb(mf):
         iajb, iajb_int = get_epc_iajb_uhf(mf, reshape=True)
     else:
         iajb, iajb_int = get_epc_iajb_rhf(mf, reshape=True)
-    
+
     return iajb, iajb_int
-    
+
 def add_epc(a, iajb):
     '''
     to accommodate both restrcted and unrestricted
@@ -144,7 +152,7 @@ def add_epc(a, iajb):
         a += iajb
 
     return a
-    
+
 def get_abc(mf):
     a, b, c = get_abc_no_epc(mf)
     if isinstance(mf, neo.KS):
@@ -222,18 +230,18 @@ def get_td_mat(mf):
     return get_full_mat(diag, cross)
 
 
-class TDBase(lib.StreamObject):
+class TDDirect(lib.StreamObject):
     '''Full td matrix diagonlization
 
     Examples::
 
     >>> from pyscf import neo
     >>> from pyscf.neo import tddft_slow
-    >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g', 
+    >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g',
                     quantum_nuc = ['H'], nuc_basis = 'pb4d')
     >>> mf = neo.HF(mol)
     >>> mf.scf()
-    >>> td_mf = tddft_slow.TDBase(mf)
+    >>> td_mf = tddft_slow.TDDirect(mf)
     >>> td_mf.kernel(nstates=5)
     Excited State energies (eV)
     [0.62060056 0.62060056 0.69023232 1.24762232 1.33973627]
@@ -244,11 +252,10 @@ class TDBase(lib.StreamObject):
         self.stdout = mf.components['e'].stdout
         self.mol = mf.mol
         self._scf = mf
-        self.unrestricted = mf.unrestricted
         self.nstates = nstates
         self.td_mat = None
         self.e = None
-        self.x1 = None
+        self.xy = None
 
     @property
     def nroots(self):
@@ -261,12 +268,12 @@ class TDBase(lib.StreamObject):
     def e_tot(self):
         '''Excited state energies'''
         return self._scf.e_tot + self.e
-    
+
     def get_td_mat(self):
         if self.td_mat is None:
             self.td_mat = get_td_mat(self._scf)
         return self.td_mat
-    
+
     def kernel(self, nstates=None):
         cpu0 = (logger.process_clock(), logger.perf_counter())
         if nstates is None:
@@ -275,13 +282,13 @@ class TDBase(lib.StreamObject):
             self.nstates = nstates
 
         log = logger.Logger(self.stdout, self.verbose)
-        
+
         m = self.get_td_mat()
         w, x1 = eig_mat(m, nroots = nstates)
-        
-        self.e = w
-        self.x1 = x1
 
-        log.timer('TDDFT full diagonalization', *cpu0)
+        self.e = w
+        self.xy = _normalize(x1.T, self._scf.mo_occ, log)
+
+        log.timer('NEO-TDDFT full diagonalization', *cpu0)
         logger.note(self, 'Excited State energies (eV)\n%s', self.e * nist.HARTREE2EV)
-        return self.e, self.x1
+        return self.e, self.xy

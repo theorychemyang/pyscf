@@ -8,8 +8,6 @@ from pyscf.lib import logger
 from pyscf import __config__
 import numpy
 
-REAL_EIG_THRESHOLD = getattr(__config__, 'tdscf_rhf_TDDFT_pick_eig_threshold', 1e-4)
-
 def get_ab(mf):
     if isinstance(mf, neo.KS):
         if mf.epc is not None:
@@ -18,7 +16,7 @@ def get_ab(mf):
             b = _b['e']
         else:
             a, b = tddft_slow.get_ab_elec(mf.components['e'])
-    else:    
+    else:
         a, b = tddft_slow.get_ab_elec(mf.components['e'])
     if isinstance(a, tuple):
         a = list(a)
@@ -57,51 +55,25 @@ def _normalize(x1, mo_occ):
 
     return xy
 
-def as_scanner(td):
-
-    if isinstance(td, lib.SinglePointScanner):
-        return td
-
-    logger.info(td, 'Set %s as a scanner', td.__class__)
-
-    class CNEO_TD_Scanner(td.__class__, lib.SinglePointScanner):
-        def __init__(self, td):
-            self.__dict__.update(td.__dict__)
-            self._scf = td._scf.as_scanner()
-        def __call__(self, mol_or_geom, **kwargs):
-            if isinstance(mol_or_geom, neo.Mole):
-                mol = mol_or_geom
-            else:
-                mol = self.mol.set_geom_(mol_or_geom, inplace=False)
-
-            self.reset(mol)
-
-            mf_scanner = self._scf
-            mf_e = mf_scanner(mol)
-            self.kernel(**kwargs)
-            return self.e + mf_e
-    return CNEO_TD_Scanner(td)
-
-    
-class CTDBase(rhf.TDBase):
+class CTDDirect(rhf.TDBase):
     ''' Frozen nuclear orbital CNEO-TDDFT: full matrix diagonalization
     Examples:
 
     >>> from pyscf import neo
     >>> from pyscf.neo import ctddft
-    >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g', 
+    >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g',
                     quantum_nuc = ['H'], nuc_basis = 'pb4d')
     >>> mf = neo.CDFT(mol, xc='hf')
     >>> mf.scf()
-    >>> td_mf = ctddft.CTDBase(mf)
+    >>> td_mf = ctddft.CTDDirect(mf)
     >>> td_mf.kernel(nstates=5)
     Excited State energies (eV)
     [ 6.82308887  7.68777851  7.68777851 10.05706016 10.05706016]
     '''
-        
+
     def get_ab(self):
         return get_ab(self._scf)
-    
+
     def get_full(self):
         a, b = self.get_ab()
         if isinstance(a, list):
@@ -128,7 +100,7 @@ class CTDBase(rhf.TDBase):
         mo_occ = self._scf.mo_occ['e']
         self.xy = _normalize(x1, mo_occ)
 
-        log.timer('TDDFT', *cpu0)
+        log.timer('CNEO-TDDFT full matrix diagonalization', *cpu0)
         self._finalize()
 
         return self.e, self.xy
@@ -137,16 +109,14 @@ class CTDBase(rhf.TDBase):
         from pyscf.neo import tdgrad
         return tdgrad.Gradients(self)
 
-    as_scanner = as_scanner
-    
 
-class CTDDFT(CTDBase):
+class CTDDFT(CTDDirect):
     ''' Frozen nuclear orbital CNEO-TDDFT: Davidson
     Examples:
 
     >>> from pyscf import neo
     >>> from pyscf.neo import ctddft
-    >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g', 
+    >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g',
                     quantum_nuc = ['H'], nuc_basis = 'pb4d')
     >>> mf = neo.CDFT(mol, xc='hf')
     >>> mf.scf()
@@ -155,9 +125,11 @@ class CTDDFT(CTDBase):
     Excited State energies (eV)
     [ 6.82308887  7.68777851  7.68777851 10.05706016 10.05706016]
     '''
+    max_space = getattr(__config__, 'tdscf_rhf_TDA_max_space', 40)
+    conv_tol = getattr(__config__, 'tdscf_rhf_TDA_conv_tol', 1e-6)
+
     def __init__(self, mf):
-        CTDBase.__init__(self, mf)
-        self.max_space = 100
+        super().__init__(mf)
         self._keys = self._keys.union(['max_space'])
 
     def gen_vind(self, mf=None):
@@ -167,10 +139,10 @@ class CTDDFT(CTDBase):
             raise NotImplementedError('epc is not implemented for CNEO-TDDFT davidson')
         return TDDFT(mf.components['e']).gen_vind()
 
-    def init_guess(self, mf, nstates=None, wfnsym=None):
+    def get_init_guess(self, mf, nstates=None, wfnsym=None):
         mf_elec = mf.components['e']
-        return TDDFT(mf_elec).init_guess(mf_elec, nstates, wfnsym)
-    
+        return TDDFT(mf_elec).get_init_guess(mf_elec, nstates, wfnsym)
+
     def kernel(self, x0=None, nstates=None):
         '''
         Modified from tdscf.rhf/uhf
@@ -189,11 +161,11 @@ class CTDDFT(CTDBase):
         vind, hdiag = self.gen_vind(self._scf)
         precond = self.get_precond(hdiag)
         if x0 is None:
-            x0 = self.init_guess(self._scf, self.nstates)
+            x0 = self.get_init_guess(self._scf, self.nstates)
 
         # We only need positive eigenvalues
         def pickeig(w, v, nroots, envs):
-            realidx = numpy.where((abs(w.imag) < REAL_EIG_THRESHOLD) &
+            realidx = numpy.where((abs(w.imag) < rhf.REAL_EIG_THRESHOLD) &
                                   (w.real > self.positive_eig_threshold))[0]
             # If the complex eigenvalue has small imaginary part, both the
             # real part and the imaginary part of the eigenvector can
@@ -208,14 +180,14 @@ class CTDDFT(CTDBase):
                                     max_cycle=self.max_cycle,
                                     max_space=self.max_space, pick=pickeig,
                                     verbose=log)
-        
+
         self.e = numpy.array(w)
         self.xy = _normalize(x1, self._scf.mo_occ['e'])
 
-        log.timer('TDDFT', *cpu0)
+        log.timer('CNEO-TDDFT Davidson', *cpu0)
         self._finalize()
 
         return self.e, self.xy
 
-neo.cdft.CDFT.TDBase = lib.class_as_method(CTDBase)
+neo.cdft.CDFT.TDDirect = lib.class_as_method(CTDDirect)
 neo.cdft.CDFT.TDDFT = lib.class_as_method(CTDDFT)

@@ -196,16 +196,10 @@ class Pyscf_NEO(Calculator):
 class Pyscf_TDNEO(Pyscf_NEO):
     '''CNEO-TDDFT PySCF calculator'''
     implemented_properties = ['energy', 'forces', 'ground_energy', 'excited_energies']
-    def __init__(self, state=1, 
-                 nstates=3, 
+    def __init__(self, state=1,
+                 nstates=3,
                  is_davidson = False,
-                 td_conv_tol = 1e-5,
-                 lindep = 1e-12,
-                 max_cycle = 100,
-                 max_space = 100,
-                 positive_eig_threshold = 1e-3,
-                 cphf_max_cycle = 50,
-                 cphf_conv_tol = 1e-8,
+                 max_space = 40,
                  **kwargs):
         super().__init__(**kwargs)
         self.run_tda = False
@@ -213,18 +207,12 @@ class Pyscf_TDNEO(Pyscf_NEO):
             raise NotImplementedError('mf_scanner not initialized')
         if self.epc is not None:
             raise NotImplementedError('epc not supported for CNEO-TDDFT gradient')
-        
+
         self.scanner_available = False
         self.state = state
         self.nstates = nstates
         self.is_davidson = is_davidson
-        self.td_conv_tol = td_conv_tol
-        self.lindep = lindep
-        self.max_cycle = max_cycle
         self.max_space = max_space
-        self.positive_eig_threshold = positive_eig_threshold
-        self.cphf_max_cycle = cphf_max_cycle
-        self.cphf_conv_tol = cphf_conv_tol
 
         mol = neo.M(atom='H 0 0 0; F 0 0 0.9')
         td_mf, td_grad = self.create_tdmf(mol)
@@ -237,28 +225,22 @@ class Pyscf_TDNEO(Pyscf_NEO):
         if self.is_davidson:
             td_mf = ctddft.CTDDFT(mf)
             td_mf.nstates = self.nstates
-            td_mf.max_cycle = self.max_cycle
             td_mf.max_space = self.max_space
-            td_mf.lindep = self.lindep
-            td_mf.conv_tol = self.td_conv_tol
-            td_mf.positive_eig_threshold = self.positive_eig_threshold
         else:
-            td_mf = ctddft.CTDBase(mf)
+            td_mf = ctddft.CTDDirect(mf)
             td_mf.nstates = self.nstates
 
         td_grad = tdgrad.Gradients(td_mf)
-        td_grad.cphf_max_cycle = self.cphf_max_cycle
-        td_grad.cphf_conv_tol = self.cphf_conv_tol
         td_grad.state = self.state
 
         return td_mf, td_grad
-    
+
     def calculate(self, atoms, properties, system_changes):
         Calculator.calculate(self, atoms, properties, system_changes)
         mol = self.get_mol_from_atoms(atoms)
         if not self.scanner_available:
             raise ValueError('td scanner not initialized')
-        
+
         if 'forces' in properties:
             e_tot, de = self.td_grad_scanner(mol)
             td_mf = self.td_grad_scanner.base

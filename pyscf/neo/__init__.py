@@ -15,6 +15,9 @@ from pyscf.neo.mp2 import MP2
 from pyscf.neo.fci_n_minus_2_resolution import FCI
 from pyscf.neo.efield import SCFwithEfield, GradwithEfield, polarizability
 from pyscf.neo import pcm
+from pyscf.neo.addons import *
+from pyscf.neo.ctddft import CTDDirect, CTDDFT
+from pyscf.neo.tdgrad import Gradients as TDGradients
 
 def PCM(method_or_mol, solvent_obj=None, dm=None):
     if isinstance(method_or_mol, Mole):

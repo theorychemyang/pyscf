@@ -1,170 +1,12 @@
-from pyscf import neo, scf
+from pyscf import neo, scf, gto
+from pyscf.tdscf import TDDFT
+from pyscf.neo import cphf
 from pyscf.lib import logger
 from pyscf import lib
 from pyscf.scf.jk import get_jk
 from pyscf.grad import tdrks, tdrhf, tduks
 from functools import reduce
 import numpy
-
-def solve_nos1(fvind, mo_energy, mo_occ, h1, with_f1=False,
-               max_cycle=30, tol=1e-9, hermi=False, verbose=logger.WARN,
-               level_shift = 0):
-    '''
-    Solver for coupled Z-vector equation in CNEO-TDDFT gradient
-
-    Modified from neo.cphf.solve_withs1
-    '''
-    log = logger.new_logger(verbose=verbose)
-    t0 = (logger.process_clock(), logger.perf_counter())
-
-    occidx = {}
-    viridx = {}
-    e_i = {}
-    e_a = {}
-    e_ai = {}
-    nocc = {}
-    nvir = {}
-    hs = {}
-    scale = {}
-    mo1base = []
-    is_component_unrestricted = {}
-    nov = {}
-    total_mo1 = 0
-    total_f1 = 0
-    sorted_keys = sorted(mo_occ.keys())
-
-    for t in sorted_keys:
-        mo_occ[t] = numpy.asarray(mo_occ[t])
-        if mo_occ[t].ndim > 1: # unrestricted
-            assert not t.startswith('n')
-            assert mo_occ[t].shape[0] == 2
-            is_component_unrestricted[t] = True
-            occidx[t] = []
-            viridx[t] = []
-            nocc[t] = []
-            nvir[t] = []
-            e_a[t] = []
-            e_i[t] = []
-            e_ai[t] = []
-            hs[t] = []
-            nov[t] = []
-            for i in range(2):
-                occidx[t].append(mo_occ[t][i] > 0)
-                viridx[t].append(mo_occ[t][i] == 0)
-                nocc[t].append(numpy.count_nonzero(occidx[t][i]))
-                nvir[t].append(numpy.count_nonzero(viridx[t][i]))
-                e_a[t].append(mo_energy[t][i][viridx[t][i]])
-                e_i[t].append(mo_energy[t][i][occidx[t][i]])
-                e_ai[t].append(1. / lib.direct_sum('a-i->ai', e_a[t][i], e_i[t][i]))
-
-                hs[t].append(h1[t][i].reshape(-1,nvir[t][i],nocc[t][i]))
-                hs[t][i] *= -e_ai[t][i]
-                mo1base.append(hs[t][i].reshape(-1,nvir[t][i]*nocc[t][i]))
-            nov[t] = nvir[t][0] * nocc[t][0] + nvir[t][1] * nocc[t][1]
-            total_mo1 += nov[t]
-        else:
-            is_component_unrestricted[t] = False
-            occidx[t] = mo_occ[t] > 0
-            viridx[t] = mo_occ[t] == 0
-            e_a[t] = mo_energy[t][viridx[t]]
-            e_i[t] = mo_energy[t][occidx[t]]
-            e_ai[t] = 1. / lib.direct_sum('a-i->ai', e_a[t], e_i[t])
-            nvir[t], nocc[t] = e_ai[t].shape
-            if with_f1 and t.startswith('n'):
-                scale[t] = (e_a[t][0] + level_shift - e_i[t][-1]) * 100.  # see neo.cphf.solve_withs1
-                total_f1 += 3
-
-            hs[t] = h1[t].reshape(-1,nvir[t],nocc[t])
-            hs[t] *= -e_ai[t]
-            mo1base.append(hs[t].reshape(-1,nvir[t]*nocc[t]))
-            nov[t] = nvir[t] * nocc[t]
-            total_mo1 += nov[t]
-
-    if with_f1:
-        nset = mo1base[0].shape[0]
-        for t in sorted_keys:
-            if t.startswith('n'):
-                mo1base.append(numpy.zeros((nset,3)))
-    mo1base = numpy.hstack(mo1base)
-
-    def vind_vo(mo1_and_f1):
-        mo1_and_f1 = mo1_and_f1.reshape(-1,total_mo1+total_f1)
-        mo1_array = mo1_and_f1[:,:total_mo1]
-        mo1 = {}
-        offset = 0
-        for t in sorted_keys:
-            mo1[t] = mo1_array[:,offset:offset+nov[t]]
-            offset += nov[t]
-        f1 = None
-        if with_f1:
-            f1_array = mo1_and_f1[:,total_mo1:]
-            f1 = {}
-            offset = 0
-            for t in sorted_keys:
-                if t.startswith('n'):
-                    f1[t] = f1_array[:,offset:offset+3]
-                    offset += 3
-        v, r = fvind(mo1, f1=f1)
-        for t in v:
-            v[t] = v[t].reshape(-1, nov[t])
-            if is_component_unrestricted[t]:
-                nvira, nvirb = nvir[t]
-                nocca, noccb = nocc[t]
-                eai_a, eai_b = e_ai[t]
-                v1a = v[t][:,:nvira*nocca].reshape(-1,nvira,nocca)
-                v1b = v[t][:,nvira*nocca:].reshape(-1,nvirb,noccb)
-                v1a *= eai_a
-                v1b *= eai_b
-                v1a = v1a.reshape(-1,nvira*nocca)
-                v1b = v1b.reshape(-1,nvirb*noccb)
-                v[t] = numpy.hstack([v1a, v1b])
-            else:
-                v[t] = v[t].reshape(-1, nvir[t], nocc[t])
-                v[t] *= e_ai[t]
-                v[t] = v[t].reshape(-1, nov[t])
-        if with_f1 and r is not None:
-            for t in r:
-                # NOTE: this scale factor is somewhat empirical. The goal is
-                # to try to bring the position constraint equation r * mo1 = 0
-                # to be of a similar magnitude as compared to the conventional
-                # CPHF equations.
-                r[t] = r[t] * scale[t] - f1[t]
-                r[t] = r[t].reshape(-1,3)
-                # NOTE: f1 got subtracted because krylov solver solves (1+a)x=b
-            return numpy.hstack([v[k] for k in sorted_keys]
-                                + [r[k] for k in sorted_keys if k in r]).ravel()
-        return numpy.hstack([v[k] for k in sorted_keys]).ravel()
-    
-    mo1_and_f1 = lib.krylov(vind_vo, mo1base.ravel(),
-                            tol=tol, max_cycle=max_cycle, hermi=hermi, verbose=log)
-    mo1_and_f1 = mo1_and_f1.reshape(-1,total_mo1+total_f1)
-    mo1_array = mo1_and_f1[:,:total_mo1]
-    mo1 = {}
-    offset = 0
-    for t in sorted_keys:
-        mo1[t] = mo1_array[:,offset:offset+nov[t]]
-        offset += nov[t]
-        if is_component_unrestricted[t]:
-            mo1[t] = mo1[t].reshape(-1, nov[t])
-            nvira, nvirb = nvir[t]
-            nocca, noccb = nocc[t]
-            mo1a = mo1[t][:,:nvira*nocca].reshape(-1,nvira,nocca)
-            mo1b = mo1[t][:,nvira*nocca:].reshape(-1,nvirb,noccb)
-            mo1[t] = [mo1a, mo1b]
-        else:
-            mo1[t] = mo1[t].reshape(-1, nvir[t], nocc[t])
-    f1 = None
-    if with_f1:
-        f1_array = mo1_and_f1[:,total_mo1:]
-        f1 = {}
-        offset = 0
-        for t in sorted_keys:
-            if t.startswith('n'):
-                f1[t] = f1_array[:,offset:offset+3]
-                offset += 3
-    log.timer('krylov solver in CNEO-TDDFT', *t0)
-
-    return mo1, None, f1
 
 def position_analysis(z1, int1e_r_vo):
 
@@ -183,19 +25,21 @@ def get_fock_add_cdft(f1n, int1e_r_ao, fac=2.0):
 
 def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
               max_memory=2000, verbose=logger.INFO):
-    
+
     log = logger.new_logger(td_grad, verbose)
     time0 = logger.process_clock(), logger.perf_counter()
 
     mf = td_grad.base._scf
     if not isinstance(mf,neo.CDFT):
         raise TypeError('td grad is only supported for cneo')
+    if mf.epc is not None:
+        raise NotImplementedError('epc is not implemented in analytic td gradients')
     mol = td_grad.mol
     mf_e = mf.components['e']
     mol_e = mol.components['e']
 
     assert not isinstance(mf_e,scf.uhf.UHF)
-    
+
     mo_coeff = mf.mo_coeff
     mo_occ = mf.mo_occ
     orbv = {}
@@ -235,28 +79,16 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
     dmzoo = reduce(numpy.dot, (orbo['e'], doo, orbo['e'].T))
     dmzoo+= reduce(numpy.dot, (orbv['e'], dvv, orbv['e'].T))
 
-    if mf.epc is not None:
-        raise NotImplementedError('epc is not implemented in analytic td gradients')
-    td_grad_e = tdrks.Gradients(mf_e.TDDFT())
-    ni = mf_e._numint
-    ni.libxc.test_deriv_order(mf_e.xc, 3, raise_error=True)
-    omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf_e.xc, mol_e.spin)
-    f1vo, f1oo, vxc1, k1ao = \
-            tdrks._contract_xc_kernel(td_grad_e, mf_e.xc, dmxpy,
-                                dmzoo, True, True, singlet, max_memory)
+    td_grad_e = (TDDFT(mf_e)).Gradients()
 
-    if ni.libxc.is_hybrid_xc(mf_e.xc):
-        dm = (dmzoo, dmxpy+dmxpy.T, dmxmy-dmxmy.T)
-        vj, vk = mf_e.get_jk(mol_e, dm, hermi=0)
-        vk *= hyb
-        if omega != 0:
-            vk += mf_e.get_k(mol_e, dm, hermi=0, omega=omega) * (alpha-hyb)
-        veff0doo = vj[0] * 2 - vk[0] + f1oo[0] + k1ao[0] * 2
+    if mf.xc_e.upper() == 'HF': # TDRHF
+        vj, vk = mf_e.get_jk(mol, (dmzoo, dmxpy+dmxpy.T, dmxmy-dmxmy.T), hermi=0)
+        veff0doo = vj[0] * 2 - vk[0]
         wvo_e = reduce(numpy.dot, (orbv['e'].T, veff0doo, orbo['e'])) * 2
         if singlet:
-            veff = vj[1] * 2 - vk[1] + f1vo[0] * 2
+            veff = vj[1] * 2 - vk[1]
         else:
-            veff = f1vo[0] - vk[1]
+            veff = -vk[1]
         veff0mop = reduce(numpy.dot, (mo_coeff['e'].T, veff, mo_coeff['e']))
         wvo_e -= numpy.einsum('ki,ai->ak', veff0mop[:nocc['e'],:nocc['e']], xpy) * 2
         wvo_e += numpy.einsum('ac,ai->ci', veff0mop[nocc['e']:,nocc['e']:], xpy) * 2
@@ -264,18 +96,46 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
         veff0mom = reduce(numpy.dot, (mo_coeff['e'].T, veff, mo_coeff['e']))
         wvo_e -= numpy.einsum('ki,ai->ak', veff0mom[:nocc['e'],:nocc['e']], xmy) * 2
         wvo_e += numpy.einsum('ac,ai->ci', veff0mom[nocc['e']:,nocc['e']:], xmy) * 2
-    else:
-        vj = mf_e.get_j(mol_e, (dmzoo, dmxpy+dmxpy.T), hermi=1)
-        veff0doo = vj[0] * 2 + f1oo[0] + k1ao[0] * 2
-        wvo_e = reduce(numpy.dot, (orbv['e'].T, veff0doo, orbo['e'])) * 2
-        if singlet:
-            veff = vj[1] * 2 + f1vo[0] * 2
+
+    else:   #TDRKS
+        ni = mf_e._numint
+        ni.libxc.test_deriv_order(mf_e.xc, 3, raise_error=True)
+        omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf_e.xc, mol_e.spin)
+        f1vo, f1oo, vxc1, k1ao = \
+                tdrks._contract_xc_kernel(td_grad_e, mf_e.xc, dmxpy,
+                                    dmzoo, True, True, singlet, max_memory)
+
+        if ni.libxc.is_hybrid_xc(mf_e.xc):
+            dm = (dmzoo, dmxpy+dmxpy.T, dmxmy-dmxmy.T)
+            vj, vk = mf_e.get_jk(mol_e, dm, hermi=0)
+            vk *= hyb
+            if omega != 0:
+                vk += mf_e.get_k(mol_e, dm, hermi=0, omega=omega) * (alpha-hyb)
+            veff0doo = vj[0] * 2 - vk[0] + f1oo[0] + k1ao[0] * 2
+            wvo_e = reduce(numpy.dot, (orbv['e'].T, veff0doo, orbo['e'])) * 2
+            if singlet:
+                veff = vj[1] * 2 - vk[1] + f1vo[0] * 2
+            else:
+                veff = f1vo[0] - vk[1]
+            veff0mop = reduce(numpy.dot, (mo_coeff['e'].T, veff, mo_coeff['e']))
+            wvo_e -= numpy.einsum('ki,ai->ak', veff0mop[:nocc['e'],:nocc['e']], xpy) * 2
+            wvo_e += numpy.einsum('ac,ai->ci', veff0mop[nocc['e']:,nocc['e']:], xpy) * 2
+            veff = -vk[2]
+            veff0mom = reduce(numpy.dot, (mo_coeff['e'].T, veff, mo_coeff['e']))
+            wvo_e -= numpy.einsum('ki,ai->ak', veff0mom[:nocc['e'],:nocc['e']], xmy) * 2
+            wvo_e += numpy.einsum('ac,ai->ci', veff0mom[nocc['e']:,nocc['e']:], xmy) * 2
         else:
-            veff = f1vo[0]
-        veff0mop = reduce(numpy.dot, (mo_coeff['e'].T, veff, mo_coeff['e']))
-        wvo_e -= numpy.einsum('ki,ai->ak', veff0mop[:nocc['e'],:nocc['e']], xpy) * 2
-        wvo_e += numpy.einsum('ac,ai->ci', veff0mop[nocc['e']:,nocc['e']:], xpy) * 2
-        veff0mom = numpy.zeros((nmo_e,nmo_e))
+            vj = mf_e.get_j(mol_e, (dmzoo, dmxpy+dmxpy.T), hermi=1)
+            veff0doo = vj[0] * 2 + f1oo[0] + k1ao[0] * 2
+            wvo_e = reduce(numpy.dot, (orbv['e'].T, veff0doo, orbo['e'])) * 2
+            if singlet:
+                veff = vj[1] * 2 + f1vo[0] * 2
+            else:
+                veff = f1vo[0]
+            veff0mop = reduce(numpy.dot, (mo_coeff['e'].T, veff, mo_coeff['e']))
+            wvo_e -= numpy.einsum('ki,ai->ak', veff0mop[:nocc['e'],:nocc['e']], xpy) * 2
+            wvo_e += numpy.einsum('ac,ai->ci', veff0mop[nocc['e']:,nocc['e']:], xpy) * 2
+            veff0mom = numpy.zeros((nmo_e,nmo_e))
 
     wvo = {}
     wvo['e'] = wvo_e
@@ -312,8 +172,8 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
         rfn = position_analysis(mo1, int1e_r_vo)
 
         return v1, rfn
-    
-    z1, mo_e1, f1 = solve_nos1(fvind, mf.mo_energy, mo_occ, wvo,
+
+    z1, mo_e1, f1 = cphf.solve_nos1(fvind, mf.mo_energy, mo_occ, wvo,
                                           with_f1 = True,
                                           max_cycle=td_grad.cphf_max_cycle,
                                           tol=td_grad.cphf_conv_tol,
@@ -360,43 +220,56 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
     hcore_deriv = {}
     for t, comp in mf_grad.components.items():
         hcore_deriv[t] = comp.hcore_generator()
-    
+
     s1_e = mf_grad_e.get_ovlp(mol_e)
 
     dmz1doo = z1ao_e + dmzoo
     oo0 = reduce(numpy.dot, (orbo_e, orbo_e.T))
 
-    if ni.libxc.is_hybrid_xc(mf_e.xc):
-        dm = (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T, dmxmy-dmxmy.T)
-        vj, vk = td_grad_e.get_jk(mol_e, dm)
-        vk *= hyb
-        if omega != 0:
-            vk += td_grad_e.get_k(mol_e, dm, omega=omega) * (alpha-hyb)
+    if mf.xc_e.upper() == 'HF':
+        vj, vk = td_grad_e.get_jk(mol_e, (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T,
+                                  dmxmy-dmxmy.T))
         vj = vj.reshape(-1,3,nao_e,nao_e)
         vk = vk.reshape(-1,3,nao_e,nao_e)
         veff1 = -vk
         if singlet:
             veff1 += vj * 2
         else:
-            veff1[:2] += vj[:2] * 2
+            veff1[:2] += vj[:2]*2
+
     else:
-        vj = td_grad_e.get_j(mol_e, (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T))
-        vj = vj.reshape(-1,3,nao_e,nao_e)
-        veff1 = numpy.zeros((4,3,nao_e,nao_e))
-        if singlet:
-            veff1[:3] = vj * 2
+
+        if ni.libxc.is_hybrid_xc(mf_e.xc):
+            dm = (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T, dmxmy-dmxmy.T)
+            vj, vk = td_grad_e.get_jk(mol_e, dm)
+            vk *= hyb
+            if omega != 0:
+                vk += td_grad_e.get_k(mol_e, dm, omega=omega) * (alpha-hyb)
+            vj = vj.reshape(-1,3,nao_e,nao_e)
+            vk = vk.reshape(-1,3,nao_e,nao_e)
+            veff1 = -vk
+            if singlet:
+                veff1 += vj * 2
+            else:
+                veff1[:2] += vj[:2] * 2
         else:
-            veff1[:2] = vj[:2] * 2
+            vj = td_grad_e.get_j(mol_e, (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T))
+            vj = vj.reshape(-1,3,nao_e,nao_e)
+            veff1 = numpy.zeros((4,3,nao_e,nao_e))
+            if singlet:
+                veff1[:3] = vj * 2
+            else:
+                veff1[:2] = vj[:2] * 2
 
-    fxcz1 = tdrks._contract_xc_kernel(td_grad_e, mf_e.xc, z1ao_e, None,
-                                False, False, True, max_memory)[0]
+        fxcz1 = tdrks._contract_xc_kernel(td_grad_e, mf_e.xc, z1ao_e, None,
+                                    False, False, True, max_memory)[0]
 
-    veff1[0] += vxc1[1:]
-    veff1[1] +=(f1oo[1:] + fxcz1[1:] + k1ao[1:]*2)*2 # *2 for dmz1doo+dmz1oo.T
-    if singlet:
-        veff1[2] += f1vo[1:] * 2
-    else:
-        veff1[2] += f1vo[1:]
+        veff1[0] += vxc1[1:]
+        veff1[1] +=(f1oo[1:] + fxcz1[1:] + k1ao[1:]*2)*2 # *2 for dmz1doo+dmz1oo.T
+        if singlet:
+            veff1[2] += f1vo[1:] * 2
+        else:
+            veff1[2] += f1vo[1:]
     time1 = log.timer('2e AO integral derivatives', *time1)
 
     dm_gs = mf.make_rdm1()
@@ -436,7 +309,7 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
                 v1en = [_v * charge for _v in v1en]
                 h1ao_e[:,p0:p1] += v1en[0]
                 h1ao_e[:,:,p0:p1] += v1en[0].transpose(0,2,1)
-            
+
                 z1ao_e += v1en[1]
                 h1ao_n = hcore_deriv[t1](ka)
 
@@ -482,7 +355,7 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
     mf_e = mf.components['e']
     assert isinstance(mf_e, scf.uhf.UHF)
     mol_e = mol.components['e']
-    td_grad_e = mf_e.TDDFT().Gradients()
+    td_grad_e = TDDFT(mf_e).Gradients()
 
     mo_coeff = mf.mo_coeff
     mo_energy = mf.mo_energy
@@ -560,29 +433,15 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
     dmzooa+= reduce(numpy.dot, (orbva, dvva, orbva.T))
     dmzoob+= reduce(numpy.dot, (orbvb, dvvb, orbvb.T))
 
-    ni = mf_e._numint
-    ni.libxc.test_deriv_order(mf_e.xc, 3, raise_error=True)
-    omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf_e.xc, mol_e.spin)
-    rho0, vxc, fxc = ni.cache_xc_kernel(mf_e.mol, mf_e.grids, mf_e.xc,
-                                        mo_coeff['e'], mo_occ['e'], spin=1)
-    f1vo, f1oo, vxc1, k1ao = \
-            tduks._contract_xc_kernel(td_grad_e, mf_e.xc, (dmxpya,dmxpyb),
-                                (dmzooa,dmzoob), True, True, max_memory)
-
-    if ni.libxc.is_hybrid_xc(mf_e.xc):
-        dm = (dmzooa, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
-              dmzoob, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T)
-        vj, vk = mf_e.get_jk(mol_e, dm, hermi=0)
-        vk *= hyb
-        if omega != 0:
-            vk += mf.get_k(mol_e, dm, hermi=0, omega=omega) * (alpha-hyb)
+    if mf.xc_e.upper() == 'HF':
+        vj, vk = mf_e.get_jk(mol_e, (dmzooa, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
+                             dmzoob, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T), hermi=0)
         vj = vj.reshape(2,3,nao_e,nao_e)
         vk = vk.reshape(2,3,nao_e,nao_e)
-
-        veff0doo = vj[0,0]+vj[1,0] - vk[:,0] + f1oo[:,0] + k1ao[:,0] * 2
+        veff0doo = vj[0,0]+vj[1,0] - vk[:,0]
         wvoa = reduce(numpy.dot, (orbva.T, veff0doo[0], orboa)) * 2
         wvob = reduce(numpy.dot, (orbvb.T, veff0doo[1], orbob)) * 2
-        veff = vj[0,1]+vj[1,1] - vk[:,1] + f1vo[:,0] * 2
+        veff = vj[0,1]+vj[1,1] - vk[:,1]
         veff0mopa = reduce(numpy.dot, (mo_coeff['e'][0].T, veff[0], mo_coeff['e'][0]))
         veff0mopb = reduce(numpy.dot, (mo_coeff['e'][1].T, veff[1], mo_coeff['e'][1]))
         wvoa -= numpy.einsum('ki,ai->ak', veff0mopa[:nocca,:nocca], xpya) * 2
@@ -596,23 +455,61 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
         wvob -= numpy.einsum('ki,ai->ak', veff0momb[:noccb,:noccb], xmyb) * 2
         wvoa += numpy.einsum('ac,ai->ci', veff0moma[nocca:,nocca:], xmya) * 2
         wvob += numpy.einsum('ac,ai->ci', veff0momb[noccb:,noccb:], xmyb) * 2
-    else:
-        dm = (dmzooa, dmxpya+dmxpya.T,
-              dmzoob, dmxpyb+dmxpyb.T)
-        vj = mf.get_j(mol_e, dm, hermi=1).reshape(2,2,nao_e,nao_e)
 
-        veff0doo = vj[0,0]+vj[1,0] + f1oo[:,0] + k1ao[:,0] * 2
-        wvoa = reduce(numpy.dot, (orbva.T, veff0doo[0], orboa)) * 2
-        wvob = reduce(numpy.dot, (orbvb.T, veff0doo[1], orbob)) * 2
-        veff = vj[0,1]+vj[1,1] + f1vo[:,0] * 2
-        veff0mopa = reduce(numpy.dot, (mo_coeff['e'][0].T, veff[0], mo_coeff['e'][0]))
-        veff0mopb = reduce(numpy.dot, (mo_coeff['e'][1].T, veff[1], mo_coeff['e'][1]))
-        wvoa -= numpy.einsum('ki,ai->ak', veff0mopa[:nocca,:nocca], xpya) * 2
-        wvob -= numpy.einsum('ki,ai->ak', veff0mopb[:noccb,:noccb], xpyb) * 2
-        wvoa += numpy.einsum('ac,ai->ci', veff0mopa[nocca:,nocca:], xpya) * 2
-        wvob += numpy.einsum('ac,ai->ci', veff0mopb[noccb:,noccb:], xpyb) * 2
-        veff0moma = numpy.zeros((nmoa,nmoa))
-        veff0momb = numpy.zeros((nmob,nmob))
+    else:
+        ni = mf_e._numint
+        ni.libxc.test_deriv_order(mf_e.xc, 3, raise_error=True)
+        omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf_e.xc, mol_e.spin)
+        rho0, vxc, fxc = ni.cache_xc_kernel(mf_e.mol, mf_e.grids, mf_e.xc,
+                                            mo_coeff['e'], mo_occ['e'], spin=1)
+        f1vo, f1oo, vxc1, k1ao = \
+                tduks._contract_xc_kernel(td_grad_e, mf_e.xc, (dmxpya,dmxpyb),
+                                    (dmzooa,dmzoob), True, True, max_memory)
+
+        if ni.libxc.is_hybrid_xc(mf_e.xc):
+            dm = (dmzooa, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
+                dmzoob, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T)
+            vj, vk = mf_e.get_jk(mol_e, dm, hermi=0)
+            vk *= hyb
+            if omega != 0:
+                vk += mf.get_k(mol_e, dm, hermi=0, omega=omega) * (alpha-hyb)
+            vj = vj.reshape(2,3,nao_e,nao_e)
+            vk = vk.reshape(2,3,nao_e,nao_e)
+
+            veff0doo = vj[0,0]+vj[1,0] - vk[:,0] + f1oo[:,0] + k1ao[:,0] * 2
+            wvoa = reduce(numpy.dot, (orbva.T, veff0doo[0], orboa)) * 2
+            wvob = reduce(numpy.dot, (orbvb.T, veff0doo[1], orbob)) * 2
+            veff = vj[0,1]+vj[1,1] - vk[:,1] + f1vo[:,0] * 2
+            veff0mopa = reduce(numpy.dot, (mo_coeff['e'][0].T, veff[0], mo_coeff['e'][0]))
+            veff0mopb = reduce(numpy.dot, (mo_coeff['e'][1].T, veff[1], mo_coeff['e'][1]))
+            wvoa -= numpy.einsum('ki,ai->ak', veff0mopa[:nocca,:nocca], xpya) * 2
+            wvob -= numpy.einsum('ki,ai->ak', veff0mopb[:noccb,:noccb], xpyb) * 2
+            wvoa += numpy.einsum('ac,ai->ci', veff0mopa[nocca:,nocca:], xpya) * 2
+            wvob += numpy.einsum('ac,ai->ci', veff0mopb[noccb:,noccb:], xpyb) * 2
+            veff = -vk[:,2]
+            veff0moma = reduce(numpy.dot, (mo_coeff['e'][0].T, veff[0], mo_coeff['e'][0]))
+            veff0momb = reduce(numpy.dot, (mo_coeff['e'][1].T, veff[1], mo_coeff['e'][1]))
+            wvoa -= numpy.einsum('ki,ai->ak', veff0moma[:nocca,:nocca], xmya) * 2
+            wvob -= numpy.einsum('ki,ai->ak', veff0momb[:noccb,:noccb], xmyb) * 2
+            wvoa += numpy.einsum('ac,ai->ci', veff0moma[nocca:,nocca:], xmya) * 2
+            wvob += numpy.einsum('ac,ai->ci', veff0momb[noccb:,noccb:], xmyb) * 2
+        else:
+            dm = (dmzooa, dmxpya+dmxpya.T,
+                dmzoob, dmxpyb+dmxpyb.T)
+            vj = mf.get_j(mol_e, dm, hermi=1).reshape(2,2,nao_e,nao_e)
+
+            veff0doo = vj[0,0]+vj[1,0] + f1oo[:,0] + k1ao[:,0] * 2
+            wvoa = reduce(numpy.dot, (orbva.T, veff0doo[0], orboa)) * 2
+            wvob = reduce(numpy.dot, (orbvb.T, veff0doo[1], orbob)) * 2
+            veff = vj[0,1]+vj[1,1] + f1vo[:,0] * 2
+            veff0mopa = reduce(numpy.dot, (mo_coeff['e'][0].T, veff[0], mo_coeff['e'][0]))
+            veff0mopb = reduce(numpy.dot, (mo_coeff['e'][1].T, veff[1], mo_coeff['e'][1]))
+            wvoa -= numpy.einsum('ki,ai->ak', veff0mopa[:nocca,:nocca], xpya) * 2
+            wvob -= numpy.einsum('ki,ai->ak', veff0mopb[:noccb,:noccb], xpyb) * 2
+            wvoa += numpy.einsum('ac,ai->ci', veff0mopa[nocca:,nocca:], xpya) * 2
+            wvob += numpy.einsum('ac,ai->ci', veff0mopb[noccb:,noccb:], xpyb) * 2
+            veff0moma = numpy.zeros((nmoa,nmoa))
+            veff0momb = numpy.zeros((nmob,nmob))
 
     wvo = {}
     wvo['e'] = (wvoa, wvob)
@@ -649,7 +546,7 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
                 mo1[t] = mo1[t].reshape(nvir[t],nocc[t])
                 dm_t = reduce(numpy.dot, (orbv[t], mo1[t]*2, orbo[t].T))
                 dm[t] = dm_t + dm_t.T
-                
+
         v1ao = vresp(dm)
         v1 = {}
         v1a = reduce(numpy.dot, (orbva.T, v1ao['e'][0], orboa))
@@ -669,14 +566,14 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
         rfn = position_analysis(mo1, int1e_r_vo)
 
         return v1, rfn
-    
-    z1, mo_e1, f1 = solve_nos1(fvind, mo_energy, mo_occ, wvo,
+
+    z1, mo_e1, f1 = cphf.solve_nos1(fvind, mo_energy, mo_occ, wvo,
                           with_f1=True,
                           max_cycle=td_grad.cphf_max_cycle,
                           tol=td_grad.cphf_conv_tol,
                           verbose=verbose)
     time1 = log.timer('Z-vector using UCPHF solver', *time0)
-    
+
     dm_z = {}
     z1a, z1b = z1['e']
     z1a = z1a.reshape(nvira, nocca)
@@ -747,29 +644,38 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
     oo0b = reduce(numpy.dot, (orbob, orbob.T))
     as_dm1 = oo0a + oo0b + (dmz1dooa + dmz1doob) * .5
 
-    if ni.libxc.is_hybrid_xc(mf_e.xc):
-        dm = (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
-              oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T)
-        vj, vk = td_grad_e.get_jk(mol_e, dm)
+    if mf.xc_e.upper() == 'HF':
+        vj, vk = td_grad.get_jk(mol, (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
+                                  oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T))
         vj = vj.reshape(2,4,3,nao_e,nao_e)
-        vk = vk.reshape(2,4,3,nao_e,nao_e) * hyb
-        if omega != 0:
-            vk += td_grad.get_k(mol, dm, omega=omega).reshape(2,4,3,nao_e,nao_e) * (alpha-hyb)
-        veff1 = vj[0] + vj[1] - vk
+        vk = vk.reshape(2,4,3,nao_e,nao_e)
+        veff1a, veff1b = vj[0] + vj[1] - vk
+
     else:
-        dm = (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T,
-              oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T)
-        vj = td_grad.get_j(mol, dm).reshape(2,3,3,nao_e,nao_e)
-        veff1 = numpy.zeros((2,4,3,nao_e,nao_e))
-        veff1[:,:3] = vj[0] + vj[1]
+        if ni.libxc.is_hybrid_xc(mf_e.xc):
+            dm = (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
+                oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T)
+            vj, vk = td_grad_e.get_jk(mol_e, dm)
+            vj = vj.reshape(2,4,3,nao_e,nao_e)
+            vk = vk.reshape(2,4,3,nao_e,nao_e) * hyb
+            if omega != 0:
+                vk += td_grad.get_k(mol, dm, omega=omega).reshape(2,4,3,nao_e,nao_e) * (alpha-hyb)
+            veff1 = vj[0] + vj[1] - vk
+        else:
+            dm = (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T,
+                oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T)
+            vj = td_grad.get_j(mol, dm).reshape(2,3,3,nao_e,nao_e)
+            veff1 = numpy.zeros((2,4,3,nao_e,nao_e))
+            veff1[:,:3] = vj[0] + vj[1]
 
-    fxcz1 = tduks._contract_xc_kernel(td_grad_e, mf_e.xc, z1ao, None,
-                                False, False, max_memory)[0]
+        fxcz1 = tduks._contract_xc_kernel(td_grad_e, mf_e.xc, z1ao, None,
+                                    False, False, max_memory)[0]
 
-    veff1[:,0] += vxc1[:,1:]
-    veff1[:,1] +=(f1oo[:,1:] + fxcz1[:,1:] + k1ao[:,1:]*2)*2 # *2 for dmz1doo+dmz1oo.T
-    veff1[:,2] += f1vo[:,1:] * 2
-    veff1a, veff1b = veff1
+        veff1[:,0] += vxc1[:,1:]
+        veff1[:,1] +=(f1oo[:,1:] + fxcz1[:,1:] + k1ao[:,1:]*2)*2 # *2 for dmz1doo+dmz1oo.T
+        veff1[:,2] += f1vo[:,1:] * 2
+        veff1a, veff1b = veff1
+
     time1 = log.timer('2e AO integral derivatives', *time1)
 
     if atmlst is None:
@@ -824,7 +730,7 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
                 v1en = [_v * charge for _v in v1en]
                 h1ao_e[:,p0:p1] += v1en[0]
                 h1ao_e[:,:,p0:p1] += v1en[0].transpose(0,2,1)
-            
+
                 z1ao_e += v1en[1]
                 h1ao_n = hcore_deriv[t1](ka)
 
@@ -862,49 +768,63 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
 
 
 def as_scanner(td_grad, state=1):
-    '''
+    '''Generating a nuclear gradients scanner/solver (for geometry optimizer).
+
+    The returned solver is a function. This function requires one argument
+    "mol" as input and returns energy and first order nuclear derivatives.
+
     Modified from grad.tdrhf.as_scanner
     '''
-    from pyscf import neo
     if isinstance(td_grad, lib.GradScanner):
         return td_grad
-    
+
     if state == 0:
         return td_grad.base._scf.nuc_grad_method().as_scanner()
 
     logger.info(td_grad, 'Create scanner for %s', td_grad.__class__)
+    name = td_grad.__class__.__name__ + CTDSCF_GradScanner.__name_mixin__
+    return lib.set_class(CTDSCF_GradScanner(td_grad, state),
+                         (CTDSCF_GradScanner, td_grad.__class__), name)
 
-    class CTDSCF_GradScanner(td_grad.__class__, lib.GradScanner):
-        def __init__(self, g, state):
-            lib.GradScanner.__init__(self, g)
-            if state is not None:
-                self.state = state
-            self._keys = self._keys.union(['e_tot'])
-        def __call__(self, mol_or_geom, state=None, **kwargs):
-            if isinstance(mol_or_geom, neo.Mole):
-                mol = mol_or_geom
-            else:
-                mol = self.mol.set_geom_(mol_or_geom, inplace=False)
-            self.reset(mol)
+class CTDSCF_GradScanner(lib.GradScanner):
+    ''' Modified from grad.tdrhf.TDSCF_GradScanner
 
-            if state is None:
-                state = self.state
-            else:
-                self.state = state
+    The only change: assert mol_or_geom.__class__ == neo.Mole (was gto.Mole)
+    '''
+    _keys = {'e_tot'}
 
-            td_scanner = self.base
-            td_scanner(mol)
-            de = self.kernel(state=state, **kwargs)
-            e_tot = self.e_tot[state-1]
-            return e_tot, de
-        @property
-        def converged(self):
-            td_scanner = self.base
-            return all((td_scanner._scf.converged,
-                        td_scanner.converged[self.state]))
+    def __init__(self, g, state):
+        lib.GradScanner.__init__(self, g)
+        if state is not None:
+            self.state = state
 
-    return CTDSCF_GradScanner(td_grad, state)
-    
+    def __call__(self, mol_or_geom, state=None, **kwargs):
+        if isinstance(mol_or_geom, gto.MoleBase):
+            assert mol_or_geom.__class__ == neo.Mole
+            mol = mol_or_geom
+        else:
+            mol = self.mol.set_geom_(mol_or_geom, inplace=False)
+        self.reset(mol)
+
+        if state is None:
+            state = self.state
+        else:
+            self.state = state
+
+        td_scanner = self.base
+        td_scanner(mol)
+# TODO: Check root flip.  Maybe avoid the initial guess in TDHF otherwise
+# large error may be found in the excited states amplitudes
+        de = self.kernel(state=state, **kwargs)
+        e_tot = self.e_tot[state-1]
+        return e_tot, de
+
+    @property
+    def converged(self):
+        td_scanner = self.base
+        return all((td_scanner._scf.converged,
+                    td_scanner.converged[self.state]))
+
 
 class Gradients(tdrhf.Gradients):
     ''' Analytic gradients for frozen nuclear orbital CNEO-TDDFT
@@ -913,7 +833,7 @@ class Gradients(tdrhf.Gradients):
 
     >>> from pyscf import neo
     >>> from pyscf.neo import ctddft, tdgrad
-    >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g', 
+    >>> mol = neo.M(atom='H 0 0 0; C 0 0 1.067; N 0 0 2.213', basis='631g',
                     quantum_nuc = ['H'], nuc_basis = 'pb4d')
     >>> mf = neo.CDFT(mol, xc='hf')
     >>> mf.scf()
@@ -931,49 +851,8 @@ class Gradients(tdrhf.Gradients):
             return grad_elec_uhf(self, xy, atmlst, self.max_memory, self.verbose)
         else:
             return grad_elec_rhf(self, xy, singlet, atmlst, self.max_memory, self.verbose)
-    
-    def grad_nuc(self, mol=None, atmlst=None):
-        mf_grad = self.base._scf.components['e'].nuc_grad_method()
-        return mf_grad.grad_nuc(mol, atmlst)
-        
-    def kernel(self, xy=None, state=None, singlet=True, atmlst=None):
-        '''
-        Args:
-            state : int
-                Excited state ID.  state = 1 means the first excited state.
-        '''
-        if xy is None:
-            if state is None:
-                state = self.state
-            else:
-                self.state = state
 
-            if state == 0:
-                logger.warn(self, 'state=0 found in the input. '
-                            'Gradients of ground state is computed.')
-                return neo.Gradients(self.base._scf).kernel(atmlst=atmlst)
-
-            xy = self.base.xy[state-1]
-
-        if singlet is None: singlet = self.base.singlet
-        if atmlst is None:
-            atmlst = self.atmlst
-        else:
-            self.atmlst = atmlst
-
-        if self.verbose >= logger.WARN:
-            self.check_sanity()
-        if self.verbose >= logger.INFO:
-            self.dump_flags()
-
-        de = self.grad_elec(xy, singlet, atmlst)
-        self.de = de = de + self.grad_nuc(atmlst=atmlst)
-        if self.mol.symmetry:
-            raise NotImplementedError('Symmetry is not supported')
-        self._finalize()
-        return self.de
-    
     as_scanner = as_scanner
 
 Grad = Gradients
-neo.ctddft.CTDBase.Gradients = neo.ctddft.CTDDFT.Gradients = lib.class_as_method(Gradients)
+neo.ctddft.CTDDirect.Gradients = neo.ctddft.CTDDFT.Gradients = lib.class_as_method(Gradients)
