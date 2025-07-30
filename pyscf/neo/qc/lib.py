@@ -119,7 +119,7 @@ def UCC_energy(t, Hamiltonian, tau, tau_dag, nt_amp, psi_HF):
     E = numpy.real(UCC_psi.conj().T @ Hamiltonian @ UCC_psi).item()
     return E
 
-def UCC_energy_shift(t, Hamiltonian, tau, tau_dag, nt_amp, psi_HF,\
+def UCC_energy_shift(t, Hamiltonian, tau, tau_dag, nt_amp, psi_HF,
         num_nuc, r_op, r_coeff, bool_S2, S2_op, S2_coeff, S2_target):
 
     ham_dim = Hamiltonian.shape[0]
@@ -145,7 +145,6 @@ def UCC_energy_shift(t, Hamiltonian, tau, tau_dag, nt_amp, psi_HF,\
 def fci_wf_analysis(log, state, n_qubit_tot, str_lab, tol=1e-10):
     wf_dim = state.shape[0]
     basis_list = list(itertools.product([0,1], repeat=n_qubit_tot))
-    #hilbert_dim = len(basis_list)
     log.note("\n       ---" + str_lab + " Wave Function Data ---")
     log.note("  FCI coefficient            Basis State")
     for i in range(wf_dim):
@@ -182,7 +181,7 @@ def convert_coeff(coeff):
 def pc_projection(n_qubit_e, n_qubit_p, num_e):
     '''Particle-conserving projection
 
-       Args: 
+       Args:
            n_qubit_e: integer
                Number of electronic qubits.
            n_qubit_p: integer list
@@ -190,7 +189,7 @@ def pc_projection(n_qubit_e, n_qubit_p, num_e):
            num_e: integer
                Number of electrons in basis states, must be > 0.
 
-       Returns: 
+       Returns:
            Projection operator correspondong
            to total particle number:
                 particle number = e + n
@@ -200,7 +199,7 @@ def pc_projection(n_qubit_e, n_qubit_p, num_e):
     '''
 
     # Projector for particle-conserving blocks in Fock space
-    # --> Let P = \sum_i |i><i| where |i> is basis element of 
+    # --> Let P = \sum_i |i><i| where |i> is basis element of
     #     subspace corresponding to i particles
     # --> Hamiltonian containing only finite elements for subspace i:
     #               H' = P @ H @ P
@@ -226,7 +225,7 @@ def pc_projection(n_qubit_e, n_qubit_p, num_e):
         e_state = numpy.array([qubit_state(s) for s in state])
         e_tensor_prod = e_state[0]
         for qubit in e_state[1:]:
-            e_tensor_prod = numpy.kron(e_tensor_prod, qubit)         
+            e_tensor_prod = numpy.kron(e_tensor_prod, qubit)
         e_basis_states.append(e_tensor_prod)
 
     # if pure electronic
@@ -255,7 +254,7 @@ def pc_projection(n_qubit_e, n_qubit_p, num_e):
                 p_state = numpy.array([qubit_state(s) for s in state])
                 p_tensor_prod = p_state[0]
                 for qubit in p_state[1:]:
-                    p_tensor_prod = numpy.kron(p_tensor_prod, qubit)         
+                    p_tensor_prod = numpy.kron(p_tensor_prod, qubit)
                 p_basis_states.append(p_tensor_prod)
             p_basis_list.append(p_basis_states)
 
@@ -287,7 +286,7 @@ def basis_list(n_qubit_e, n_qubit_p, num_e, subsystem, complement=False):
     '''Calculates subset of Fock space basis states corresponding to
        particle-conservation
 
-       Args: 
+       Args:
            n_qubit_e: integer
                Number of electronic qubits.
            n_qubit_p: integer list
@@ -302,7 +301,6 @@ def basis_list(n_qubit_e, n_qubit_p, num_e, subsystem, complement=False):
                         and first two quantum nuclei
            complement: boolean
                If True, complement of basis specified by subsystem array
-           
 
        Returns:
            List of basis states according to input specifications
@@ -366,7 +364,7 @@ def basis_list(n_qubit_e, n_qubit_p, num_e, subsystem, complement=False):
         e_state = numpy.array([qubit_state(s) for s in state])
         e_tensor_prod = e_state[0]
         for qubit in e_state[1:]:
-            e_tensor_prod = numpy.kron(e_tensor_prod, qubit)         
+            e_tensor_prod = numpy.kron(e_tensor_prod, qubit)
         e_basis_states.append(e_tensor_prod)
 
     # electron identity over subspace
@@ -387,7 +385,7 @@ def basis_list(n_qubit_e, n_qubit_p, num_e, subsystem, complement=False):
             p_state = numpy.array([qubit_state(s) for s in state])
             p_tensor_prod = p_state[0]
             for qubit in p_state[1:]:
-                p_tensor_prod = numpy.kron(p_tensor_prod, qubit)         
+                p_tensor_prod = numpy.kron(p_tensor_prod, qubit)
             p_basis_states.append(p_tensor_prod)
         p_basis_list.append(p_basis_states)
 

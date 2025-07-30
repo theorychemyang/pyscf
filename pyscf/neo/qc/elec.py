@@ -92,14 +92,14 @@ def number_operator_e(n_qubit_tot, n_qubit_e, create, destroy):
 
 def make_rdm1_e(vector, create, destroy):
     '''Make 1-RDM for electrons
-       rho_ij = < a_j^+ a_i >
+       rho_ij = < a_i^+ a_j >
     '''
     e_dim = len(create[0])
     rho = numpy.zeros((e_dim, e_dim), dtype=complex)
     vector = qc_lib.column_vec(vector)
     for i in range(e_dim):
         for j in range(e_dim):
-            rho[i,j] = (vector.conj().T @ create[0][j] @ destroy[0][i] @ vector).item()
+            rho[i,j] = (vector.conj().T @ create[0][i] @ destroy[0][j] @ vector).item()
     return rho
 
 def vN_entropy_1rdm_e(log, vector, str_method, create, destroy, tol=1e-15):
@@ -530,7 +530,7 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
         log.note("\n--- 1-RDM von Neumann Entropy Data ---")
         vN_entropy_1rdm_e(log, self.c, 'UCC', self.create, self.destroy)
         return
-    
+
     def make_rdm1(self, state_vec=None):
         if state_vec is None:
             state_vec = self.c

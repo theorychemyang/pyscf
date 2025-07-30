@@ -38,7 +38,6 @@ def dump_neo_qc_info(self, log):
     log.note("Fock space dimension: %g", 2**self.n_qubit_tot)
 
     Hamiltonian = self.hamiltonian
-    #ham_dim = Hamiltonian.shape[0]
     psi_HF = self.psi_hf
     S2_op = self.s2_op
     pos_op = self.r_op
@@ -71,7 +70,7 @@ def dump_neo_qc_info(self, log):
 
 def cas_selection(mf_nuc, cas_orb_nuc):
     '''returns list nuc_coeff containing
-    MO matrices with orbitals according 
+    MO matrices with orbitals according
     to cas_orb_nuc specification
     '''
     nuc_coeff = []
@@ -110,17 +109,6 @@ def axis_finder(mol):
         print('Not a linear molecule. Symmetry will be OFF.', flush=True)
         return None
     return axis
-
-def get_qubit_qnuc(nuc_coeff):
-    '''returns (1) list of number of qubits associated with each quantum nucleus
-    (2) total number of quantum nuclear qubits
-    '''
-    n_qubit_p = []
-    n_qubit_p_tot = 0
-    for i in range(len(nuc_coeff)):
-        n_qubit_p.append(nuc_coeff[i].shape[1])
-        n_qubit_p_tot += n_qubit_p[i]
-    return n_qubit_p, n_qubit_p_tot
 
 def fci_index(C_FCI, nocc_e, mf_nuc, Num_op_e, Num_op_p, S2_op, bool_ge=False):
     '''Parses state or set of states based on particle conservation
@@ -261,7 +249,7 @@ def vN_entropy(vector, str_id, n_qubit_e, n_qubit_p, tol=1e-15):
 
 def make_rdm1_n(vector, create, destroy):
     '''Make 1-RDM for quantum nuclei
-       rho_ij = < a_j^+ a_i >
+       rho_ij = < a_i^+ a_j >
 
        Returns:
            List of 1-RDMs for quantum nuclei
@@ -274,7 +262,7 @@ def make_rdm1_n(vector, create, destroy):
         rho_tmp = numpy.zeros((p_dim, p_dim), dtype=complex)
         for i in range(p_dim):
             for j in range(p_dim):
-                rho_tmp[i,j] = (vector.conj().T @ create[k+1][j] @ destroy[k+1][i] @ vector).item()
+                rho_tmp[i,j] = (vector.conj().T @ create[k+1][i] @ destroy[k+1][j] @ vector).item()
         rho.append(rho_tmp)
     return rho
 
@@ -300,7 +288,6 @@ def compute_vN_entropy(log, state, n_qubit_e, n_qubit_p, mf_nuc,
 
     label = str_con + "SvN " + str_method + " "
     e_lab = "e"
-    tot_lab = e_lab
 
     if str_vn_level == 'electron': # calculate electron vN entropy only
         SvN = vN_entropy(state, '0', n_qubit_e, n_qubit_p)
@@ -370,7 +357,7 @@ def number_operator(n_qubit_tot, n_qubit_e, n_qubit_p, create, destroy, str_kind
     return Num_op_return
 
 def position_operator(mf_nuc, nuc_coeff, n_qubit_p, create, destroy, bool_c_shift):
-    ''' 
+    '''
     r_op[0,0]: second quantized r_x operator for quantum nucleus 0
     r_op[0,1]: second quantized r_y operator for quantum nucleus 0
     r_op[0,2]: second quantized r_z operator for quantum nucleus 0
@@ -654,7 +641,7 @@ def Ham_neo(mf, nuc_coeff, moa, mob, ea, eb, create, destroy, n_qubit_e, n_qubit
     # list of core hamiltonians for quantum nuclei
     hmo_p = []
     for i in range(len(mf_nuc)):
-        hao_p = mf_nuc[i].hcore_static # need static (true) hcore
+        hao_p = mf_nuc[i].get_hcore()
         hmo_tmp_p = nuc_coeff[i].transpose() @ hao_p @ nuc_coeff[i]
         hmo_p.append(hmo_tmp_p)
 
@@ -744,28 +731,6 @@ def fci_constrained(f, Ham0, mf_nuc, nocc_e, Num_op_e, Num_op_p, n_qubit_e, n_qu
             r_final[3*k+1] = numpy.real(C_FCI[:,ia].conj().T @ r_op[k,1] @ C_FCI[:,ia]).item()
             r_final[3*k+2] = numpy.real(C_FCI[:,ia].conj().T @ r_op[k,2] @ C_FCI[:,ia]).item()
     return r_final
-
-def constrained_ucc_energy(t, tau, tau_dag, nt_amp, psi_HF, num_nuc, r_op, r_coeff,
-        bool_S2, S2_op, S2_coeff, S2_target):
-
-    ham_dim = psi_HF.shape[0]
-    UCC_ansatz = sparse.csr_matrix((ham_dim, ham_dim), dtype=complex)
-
-    for i in range(nt_amp):
-        UCC_ansatz += t[i]*(tau[i]-tau_dag[i])
-    UCC_psi = sparse.linalg.expm_multiply(UCC_ansatz, psi_HF)
-    E_add = 0.0
-    for k in range(num_nuc):
-        r_x = numpy.real(UCC_psi.conj().T @ r_op[k,0] @ UCC_psi).item()
-        r_y = numpy.real(UCC_psi.conj().T @ r_op[k,1] @ UCC_psi).item()
-        r_z = numpy.real(UCC_psi.conj().T @ r_op[k,2] @ UCC_psi).item()
-        r_sq = r_x*r_x + r_y*r_y + r_z*r_z
-        E_add += r_coeff*r_sq
-    # here we add constraint contribution from electronic <S^2> if desired
-    if bool_S2:
-        S2 = numpy.real(UCC_psi.conj().T @ S2_op @ UCC_psi).item()
-        E_add += S2_coeff*(S2 - S2_target)**2
-    return E_add
 
 def JW_array_cneo(n_qubit_e, n_qubit_p, n_qubit_p_tot, op_id):
     '''
@@ -1001,13 +966,13 @@ class QC_FCI_NEO(QC_NEO_BASE):
     >>> from pyscf import neo
     >>> from pyscf.neo import qc
     >>> mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G',
-    >>>             quantum_nuc = [0,1], nuc_basis = '1s1p', cart=True, spin=0)
+    >>>             quantum_nuc = [0,1], nuc_basis = '1s1p', spin=0)
     >>> mf = neo.HF(mol)
     >>> mf.scf()
     >>> qc_mf = qc.QC_FCI_NEO(mf)
     >>> qc_mf.kernel()
     ------- Quantum Computing Protocol -------
-    FCI Energy: -1.057677072326754
+    FCI Energy: -1.057677072326751
     '''
 
     def __init__(self, mf, cas_orb_nuc=None, c_shift=False):
@@ -1030,7 +995,6 @@ class QC_FCI_NEO(QC_NEO_BASE):
         # FCI Hamiltonian
         ham_kern = self.hamiltonian
         ham_dim = ham_kern.shape[0]
-        E_FCI, C_FCI = numpy.linalg.eigh(ham_kern.todense()) #eigh should use dense matrix
 
         # Fock space target for number of electrons
         if num_e is None:
@@ -1137,7 +1101,7 @@ class QC_CFCI_NEO(QC_NEO_BASE):
     >>> from pyscf import neo
     >>> from pyscf.neo import qc
     >>> mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G',
-    >>>             quantum_nuc = [1], nuc_basis = '2s1p', cart=True, spin=0)
+    >>>             quantum_nuc = [1], nuc_basis = '2s1p', spin=0)
     >>> mf = neo.HF(mol)
     >>> mf.scf()
     >>> qc_mf = qc.QC_CFCI_NEO(mf)
@@ -1149,7 +1113,7 @@ class QC_CFCI_NEO(QC_NEO_BASE):
     H [0. 0. 0.]
     opt.success: True
     opt.message: The solution converged.
-    Constrained FCI Energy: -1.096593699077798
+    Constrained FCI Energy: -1.096593699077799
     '''
 
     def __init__(self, mf, cas_orb_nuc=None, c_shift=True):
@@ -1329,17 +1293,22 @@ class QC_UCC_NEO(QC_NEO_BASE):
     >>> from pyscf import neo
     >>> from pyscf.neo import qc
     >>> mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G',
-    >>>             quantum_nuc = [0,1], nuc_basis = '1s1p', cart=True, spin=0)
+    >>>             quantum_nuc = [0,1], nuc_basis = '1s1p', spin=0)
     >>> mf = neo.HF(mol)
     >>> mf.scf()
     >>> qc_mf = qc.QC_UCC_NEO(mf)
     >>> qc_mf.kernel()
     ------- Quantum Computing Protocol -------
+    Advanced cluster amplitude initialization
+    Number of cluster amplitudes used in initialization: 5
+    res_init.success: True
+    res_init.message: Optimization terminated successfully.
+    Initialized UCC Energy: -1.055148380066977
     --- UCCSD Calculation ---
     number of cluster amplitudes: 44
     res.success: True
     res.message: Optimization terminated successfully.
-    UCC Energy: -1.057617041568029
+    UCC Energy: -1.057617041570153
     '''
 
     def __init__(self, mf, cas_orb_nuc=None, c_shift=False):
@@ -1350,7 +1319,7 @@ class QC_UCC_NEO(QC_NEO_BASE):
         self.s2 = None
         self.t = None
 
-    def kernel(self, ucc_level=2, adv_init=False, conv_tol=None, method='BFGS'):
+    def kernel(self, ucc_level=2, adv_init=True, conv_tol=None, method='BFGS'):
         log = logger.new_logger(self.mf, self.verbose)
         time_kernel = logger.process_clock()
 
@@ -1479,20 +1448,24 @@ class QC_CUCC_NEO(QC_NEO_BASE):
     >>> from pyscf import neo
     >>> from pyscf.neo import qc
     >>> mol = neo.M(atom='H 0 0 0; H 0.74 0 0', basis='STO-3G',
-    >>>             quantum_nuc = [1], nuc_basis = '2s1p', cart=True, spin=0)
-    >>> mf = neo.CDFT(mol)
-    >>> mf.mf_elec.xc = 'HF'
+    >>>             quantum_nuc = [1], nuc_basis = '2s1p', spin=0)
+    >>> mf = neo.CDFT(mol, xc='HF')
     >>> mf.scf()
     >>> qc_mf = qc.QC_CUCC_NEO(mf)
     >>> qc_mf.kernel()
     ------- Quantum Computing Protocol -------
     Origin of each quantum nuclear position operator has been shifted
     to the corresponding nuclear basis function center
+    Advanced cluster amplitude initialization
+    Number of cluster amplitudes used in initialization: 5
+    res_init.success: True
+    res_init.message: Optimization terminated successfully.
+    Initialized UCC Energy: -1.095578197892310
     --- Constrained UCCSD Calculation ---
     number of cluster amplitudes: 25
     res.success: True
     res.message: Optimization terminated successfully
-    Constrained UCC Energy: -1.096541479568951
+    Constrained UCC Energy: -1.096541541344102
     '''
 
     def __init__(self, mf, cas_orb_nuc=None, c_shift=True):
@@ -1503,7 +1476,7 @@ class QC_CUCC_NEO(QC_NEO_BASE):
         self.s2 = None
         self.t = None
 
-    def kernel(self, ucc_level=2, adv_init=False, nuc_adv_init=False, neo_init=False, conv_tol=None,
+    def kernel(self, ucc_level=2, adv_init=True, nuc_adv_init=False, neo_init=False, conv_tol=None,
                r_coeff=None, S2_constraint=False, S2_coeff=None, S2_target=0.0, method='BFGS'):
         log = logger.new_logger(self.mf, self.verbose)
         time_kernel = logger.process_clock()
