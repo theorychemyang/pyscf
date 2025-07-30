@@ -111,7 +111,7 @@ def axis_finder(mol):
     return axis
 
 def fci_index(C_FCI, nocc_e, mf_nuc, Num_op_e, Num_op_p, S2_op, bool_ge=False):
-    '''Parses state or set of states based on particle conservation
+    r'''Parses state or set of states based on particle conservation
     in each Hilbert subspace.
     returns: 1) fci_idx: array of indices for states of interest
              2) fci_pnum: array containing total particle number
@@ -152,7 +152,7 @@ def fci_index(C_FCI, nocc_e, mf_nuc, Num_op_e, Num_op_p, S2_op, bool_ge=False):
     return fci_idx, fci_pnum, fci_s2
 
 def basis_vec_list(particle_id, n_qubit_e, n_qubit_p, tot_id):
-    '''returns ordered list of basis vectors associated
+    r'''returns ordered list of basis vectors associated
     with a given quantum particle.
     Basis vectors are constructed with identity matrices
     according to:
@@ -248,7 +248,7 @@ def vN_entropy(vector, str_id, n_qubit_e, n_qubit_p, tol=1e-15):
     return S_vN
 
 def make_rdm1_n(vector, create, destroy):
-    '''Make 1-RDM for quantum nuclei
+    r'''Make 1-RDM for quantum nuclei
        rho_ij = < a_i^+ a_j >
 
        Returns:
@@ -328,7 +328,7 @@ def compute_vN_entropy(log, state, n_qubit_e, n_qubit_p, mf_nuc,
     return
 
 def number_operator(n_qubit_tot, n_qubit_e, n_qubit_p, create, destroy, str_kind):
-    '''
+    r'''
     Can return single operator or list of operators
     if 'composite': single operator on full composite Hilbert space
     if 'electron' : single operator for electronic subspace
@@ -733,7 +733,7 @@ def fci_constrained(f, Ham0, mf_nuc, nocc_e, Num_op_e, Num_op_p, n_qubit_e, n_qu
     return r_final
 
 def JW_array_cneo(n_qubit_e, n_qubit_p, n_qubit_p_tot, op_id):
-    '''
+    r'''
     Returns: tot_list
         Nested list of operators according to tot_list[pid][k]
         pid = particle identification, electrons are first (0)
