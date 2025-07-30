@@ -91,19 +91,22 @@ def number_operator_e(n_qubit_tot, n_qubit_e, create, destroy):
         Num_op += create[0][p] @ destroy[0][p]
     return Num_op
 
-def calc_1rdm_e(vector, create, destroy):
+def make_rdm1_e(vector, create, destroy):
+    '''Make 1-RDM for electrons
+       rho_ij = < a_j^+ a_i >
+    '''
     e_dim = len(create[0])
     rho = numpy.zeros((e_dim, e_dim), dtype=complex)
     vector = qc_lib.column_vec(vector)
     for i in range(e_dim):
         for j in range(e_dim):
-            rho[i,j] = (vector.conj().T @ create[0][i] @ destroy[0][j] @ vector).item()
+            rho[i,j] = (vector.conj().T @ create[0][j] @ destroy[0][i] @ vector).item()
     return rho
 
 def vN_entropy_1rdm_e(log, vector, str_method, create, destroy, tol=1e-15):
     S_vN = 0.0
     preamble = "SvN 1RDM "
-    rho = calc_1rdm_e(vector, create, destroy)
+    rho = make_rdm1_e(vector, create, destroy)
     label = preamble + str_method + " e: %15.8e"
     e_rho = scipy.linalg.eigh(rho, eigvals_only=True)
     for i in range(len(e_rho)):
@@ -141,8 +144,6 @@ def t2_op_e(nocc_so, nvirt_so, create, destroy):
 def HF_state(n_occ, n_qubit):
     q0 = numpy.array([[1.0+0.0j],[0.0+0.0j]])
     q1 = numpy.array([[0.0+0.0j],[1.0+0.0j]])
-    #if n_occ < 1:
-    #    raise NotImplementedError('No occupied qubits')
     if n_occ == 0:
         a = numpy.kron(q0,q0)
         for i in range(2,n_qubit):
@@ -349,9 +350,10 @@ class QC_FCI_ELEC(QC_ELEC_BASE):
         self.e = None
         self.c = None
         self.num = None
+        self.num_e = None
         self.s2 = None
 
-    def kernel(self):
+    def kernel(self, full_diag=False, nstates=1, num_e=None):
         log = logger.new_logger(self.mf, self.verbose)
         time_kernel = logger.process_clock()
 
@@ -363,15 +365,38 @@ class QC_FCI_ELEC(QC_ELEC_BASE):
         # diagonalize FCI Hamiltonian
         ham_kern = self.hamiltonian
         ham_dim = ham_kern.shape[0]
-        E_FCI, C_FCI = numpy.linalg.eigh(ham_kern.todense()) #eigh should use dense matrix
 
-        fci_idx, fci_pnum, fci_s2 = fci_index_e(C_FCI, self.nocc_so, self.num_op, self.s2_op)
+        # Fock space target for number of electrons
+        if num_e is None:
+            num_e = self.nocc_so
+            self.num_e = num_e
+        else:
+            self.num_e = num_e
+
+        # Diagonalize
+        if full_diag:
+            E_FCI, C_FCI = numpy.linalg.eigh(ham_kern.todense()) #eigh should use dense matrix
+        else:
+            # Project out all non-particle-conserving blocks in Fock space
+            proj_op = qc_lib.pc_projection(self.n_qubit, None, num_e)
+            ham_kern = proj_op @ ham_kern @ proj_op
+            E_FCI, C_FCI = sparse.linalg.eigsh(ham_kern, k=nstates, which='SA')
+            # guarantee proper sorting
+            sorted_indices = numpy.argsort(E_FCI)
+            E_FCI = E_FCI[sorted_indices]
+            C_FCI = C_FCI[:, sorted_indices]
+
+        fci_idx, fci_pnum, fci_s2 = fci_index_e(C_FCI, num_e, self.num_op, self.s2_op)
+
         E_FCI_final = []
-        C_FCI_final = []
-
+        C_FCI_final = numpy.zeros((ham_dim, len(fci_idx)), dtype=complex)
         for i in range(len(fci_idx)):
             E_FCI_final.append(E_FCI[fci_idx[i]])
-            C_FCI_final.append(C_FCI[:,fci_idx[i]])
+            C_FCI_final[:,i] = C_FCI[:, fci_idx[i]].reshape(-1)
+
+        # eigsh may give complex coefficients, so convert to real and renormalize
+        # --> this is always a valid procedure if the Hamiltonian is real-valued
+        C_FCI_final = qc_lib.convert_coeff(C_FCI_final)
 
         self.e = E_FCI_final
         self.c = C_FCI_final
@@ -398,11 +423,17 @@ class QC_FCI_ELEC(QC_ELEC_BASE):
         if nstates > len(self.e): nstates = len(self.e)
         for i in range(nstates):
             log.note("\n------------------- STATE %g -------------------\n", i)
-            log.note("E FCI %g: %20.15f", i, self.e[i])
-            qc_lib.fci_wf_analysis(log, self.c[i], self.n_qubit, '')
+            log.note("E FCI %g: %-20.15f", i, self.e[i])
+            log.note("<S^2>  : %-20.15f", self.s2[i])
+            qc_lib.fci_wf_analysis(log, self.c[:,i], self.n_qubit, '')
             log.note("\n--- 1-RDM von Neumann Entropy Data ---")
-            vN_entropy_1rdm_e(log, self.c[i], 'FCI', self.create, self.destroy)
+            vN_entropy_1rdm_e(log, self.c[:,i], 'FCI', self.create, self.destroy)
         return
+
+    def make_rdm1(self, state_vec=None):
+        if state_vec is None:
+            state_vec = self.c[:,0]
+        return make_rdm1_e(state_vec, self.create, self.destroy)
 
 class QC_UCC_ELEC(QC_ELEC_BASE):
     ''' Unitary coupled-cluster calculation using minimization in qubit basis
@@ -433,7 +464,7 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
         self.s2 = None
         self.t = None
 
-    def kernel(self, ucc_level=2):
+    def kernel(self, conv_tol=None, method='BFGS'):
         log = logger.new_logger(self.mf, self.verbose)
         time_kernel = logger.process_clock()
 
@@ -459,10 +490,10 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
         nt_amp = len(tau)
         t_amp = numpy.zeros(nt_amp)
 
-        qc_lib.dump_ucc_level(log, ucc_level)
+        qc_lib.dump_ucc_level(log, 2)
         log.note("number of cluster amplitudes: %g", nt_amp)
         res = minimize(lambda z: qc_lib.UCC_energy(z, ham_kern, tau, tau_dag, nt_amp,
-                                            psi_HF), t_amp, tol=None, method='BFGS')
+                                            psi_HF), t_amp, tol=conv_tol, method=method)
         log.note("\nres.success: %s", res.success)
         log.note("res.message: %s \n", res.message)
         if res.success:
@@ -499,3 +530,8 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
         log.note("\n--- 1-RDM von Neumann Entropy Data ---")
         vN_entropy_1rdm_e(log, self.c, 'UCC', self.create, self.destroy)
         return
+    
+    def make_rdm1(self, state_vec=None):
+        if state_vec is None:
+            state_vec = self.c
+        return make_rdm1_e(state_vec, self.create, self.destroy)

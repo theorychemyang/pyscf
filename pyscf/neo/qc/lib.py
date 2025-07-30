@@ -120,7 +120,7 @@ def UCC_energy(t, Hamiltonian, tau, tau_dag, nt_amp, psi_HF):
     return E
 
 def UCC_energy_shift(t, Hamiltonian, tau, tau_dag, nt_amp, psi_HF,\
-        num_nuc, axis, r_op, r_coeff, bool_S2, S2_op, S2_coeff, S2_target):
+        num_nuc, r_op, r_coeff, bool_S2, S2_op, S2_coeff, S2_target):
 
     ham_dim = Hamiltonian.shape[0]
     UCC_ansatz = sparse.csr_matrix((ham_dim, ham_dim), dtype=complex)
@@ -130,14 +130,10 @@ def UCC_energy_shift(t, Hamiltonian, tau, tau_dag, nt_amp, psi_HF,\
     E = numpy.real(UCC_psi.conj().T @ Hamiltonian @ UCC_psi).item()
 
     for k in range(num_nuc):
-        if axis is not None:
-            r_axis = numpy.real(UCC_psi.conj().T @ r_op[k,axis] @ UCC_psi).item()
-            r_sq = r_axis*r_axis
-        else:
-            r_x = numpy.real(UCC_psi.conj().T @ r_op[k,0] @ UCC_psi).item()
-            r_y = numpy.real(UCC_psi.conj().T @ r_op[k,1] @ UCC_psi).item()
-            r_z = numpy.real(UCC_psi.conj().T @ r_op[k,2] @ UCC_psi).item()
-            r_sq = r_x*r_x + r_y*r_y + r_z*r_z
+        r_x = numpy.real(UCC_psi.conj().T @ r_op[k,0] @ UCC_psi).item()
+        r_y = numpy.real(UCC_psi.conj().T @ r_op[k,1] @ UCC_psi).item()
+        r_z = numpy.real(UCC_psi.conj().T @ r_op[k,2] @ UCC_psi).item()
+        r_sq = r_x*r_x + r_y*r_y + r_z*r_z
         E += r_coeff*r_sq
     # here we add constraint contribution from electronic <S^2> if desired
     if bool_S2:
@@ -173,22 +169,57 @@ def column_vec(vector):
         vector = vector.T
     return vector
 
-def pc_projection(n_qubit_e, n_qubit_p, nocc_e):
-    '''particle conserving projection'''
+def convert_coeff(coeff):
+    ''' converts coefficients to real-valued quantities'''
+    for i in range(coeff.shape[1]):
+        coeff[:,i] = coeff[:,i] + coeff[:,i].conj()
+        c2 = numpy.multiply(coeff[:,i], coeff[:,i])
+        normval = c2.sum()
+        coeff[:,i] *= 1.0/numpy.sqrt(normval)
+
+    return coeff
+
+def pc_projection(n_qubit_e, n_qubit_p, num_e):
+    '''Particle-conserving projection
+
+       Args: 
+           n_qubit_e: integer
+               Number of electronic qubits.
+           n_qubit_p: integer list
+               Number of quantum nuclear qubits for each nucleus.
+           num_e: integer
+               Number of electrons in basis states, must be > 0.
+
+       Returns: 
+           Projection operator correspondong
+           to total particle number:
+                particle number = e + n
+                where
+                      e = num_e
+                      n = len(n_qubit_p)
+    '''
+
+    # Projector for particle-conserving blocks in Fock space
+    # --> Let P = \sum_i |i><i| where |i> is basis element of 
+    #     subspace corresponding to i particles
+    # --> Hamiltonian containing only finite elements for subspace i:
+    #               H' = P @ H @ P
+    # --> H' is same dimension as H, but all elements corresponding
+    #     to particle number not equal to i will be zero
+    # --> This means that sparse matrix diagonalization can now be
+    #     used to find lowest eigenvalue, if state is bound (< 0)
+    # --> Without such a procedure, the Fock space contains solutions
+    #     for many values of i, and there is no way to target these
+    #     specifically, requiring non-sparse diagonalization and
+    #     filtering the results based on particle number
     def qubit_state(val):
         return numpy.array([1, 0]) if val == 0 else numpy.array([0, 1])
 
-    npqb = 0
-    for i in range(len(n_qubit_p)):
-        npqb += n_qubit_p[i]
-    n_qubit_tot = n_qubit_e + npqb
-    dim = 2**n_qubit_tot
-    tmp_state = []
     final_state = []
 
     # electrons
     e_basis_states = []
-    for config in itertools.combinations(range(n_qubit_e), nocc_e):
+    for config in itertools.combinations(range(n_qubit_e), num_e):
         state = numpy.zeros(n_qubit_e)
         for idx in config:
             state[idx] = 1
@@ -198,7 +229,154 @@ def pc_projection(n_qubit_e, n_qubit_p, nocc_e):
             e_tensor_prod = numpy.kron(e_tensor_prod, qubit)         
         e_basis_states.append(e_tensor_prod)
 
-    # protons
+    # if pure electronic
+    if n_qubit_p is None:
+        final_state = e_basis_states
+        dim = 2**n_qubit_e
+
+    # if quantum nuclei present
+    if n_qubit_p is not None:
+
+        # get updated dimension
+        npqb = 0
+        for i in range(len(n_qubit_p)):
+            npqb += n_qubit_p[i]
+        n_qubit_tot = n_qubit_e + npqb
+        dim = 2**n_qubit_tot
+
+        # quantum nuclei basis list
+        p_basis_list = []
+        for i in range(len(n_qubit_p)):
+            p_basis_states = []
+            for config in itertools.combinations(range(n_qubit_p[i]), 1):
+                state = numpy.zeros(n_qubit_p[i])
+                for idx in config:
+                    state[idx] = 1
+                p_state = numpy.array([qubit_state(s) for s in state])
+                p_tensor_prod = p_state[0]
+                for qubit in p_state[1:]:
+                    p_tensor_prod = numpy.kron(p_tensor_prod, qubit)         
+                p_basis_states.append(p_tensor_prod)
+            p_basis_list.append(p_basis_states)
+
+        # take first tensor product |e> \times |p1>
+        for i in range(len(e_basis_states)):
+            for j in range(len(p_basis_list[0])):
+                comp_state = numpy.kron(e_basis_states[i], p_basis_list[0][j])
+                final_state.append(comp_state)
+
+        # remaining tensor products
+        for k in range(1,len(n_qubit_p)):
+            new_tmp_state = []
+            for i in range(len(final_state)):
+                for j in range(len(p_basis_list[k])):
+                    comp_state = numpy.kron(final_state[i],p_basis_list[k][j])
+                    new_tmp_state.append(comp_state)
+            final_state = new_tmp_state
+
+    # final projection operator
+    proj_op = sparse.csr_matrix((dim, dim), dtype=complex)
+    for i in range(len(final_state)):
+        vector = sparse.csr_matrix(final_state[i])
+        vector = column_vec(vector)
+        proj_op += vector @ vector.conj().T
+
+    return proj_op
+
+def basis_list(n_qubit_e, n_qubit_p, num_e, subsystem, complement=False):
+    '''Calculates subset of Fock space basis states corresponding to
+       particle-conservation
+
+       Args: 
+           n_qubit_e: integer
+               Number of electronic qubits.
+           n_qubit_p: integer list
+               Number of quantum nuclear qubits for each nucleus.
+           num_e: integer
+               Number of electrons in basis states, must be > 0.
+           subsystem: integer array
+               Specifies what particle types to include.
+               Electron is always first index, each unique index is
+               particle type according to [e, n1, n2, n3, ...].
+               Example: [0,1,2] requests basis states for electrons
+                        and first two quantum nuclei
+           complement: boolean
+               If True, complement of basis specified by subsystem array
+           
+
+       Returns:
+           List of basis states according to input specifications
+    '''
+
+    def qubit_state(val):
+        return numpy.array([1, 0]) if val == 0 else numpy.array([0, 1])
+
+    def complement_set(subsystem, num_tot):
+        full_set = set(range(num_tot))
+        complement = sorted(full_set - set(subsystem))
+        return complement
+
+    def set_construction(subsystem, n_types, complement_bool):
+        tot_list = list(range(n_types))
+        tot_set = set(tot_list)
+        subsystem_set = set(subsystem)
+        X = []
+        X_complement = []
+        for a in tot_set:
+            if a in subsystem_set:
+                X.append(a)
+                X_complement.append(-1)
+            else:
+                X.append(-1)
+                X_complement.append(a)
+
+        if complement_bool:
+            result = X_complement
+        else:
+            result = X
+
+        return result
+
+    def basis_kron(state_1, state_2):
+        def mat_test(obj):
+            return hasattr(obj, 'shape') and len(obj.shape) >= 2
+        kron_list = []
+        for i in range(len(state_1)):
+            mat1_bool = mat_test(state_1[i])
+            if not mat1_bool: state_1[i] = state_1[i].reshape(-1,1)
+            for j in range(len(state_2)):
+                mat2_bool = mat_test(state_2[j])
+                if not mat2_bool:
+                    state_2[j] = state_2[j].reshape(-1,1)
+                kron_list.append(numpy.kron(state_1[i], state_2[j]))
+        return kron_list
+
+    # identity
+    II = numpy.array([[1.0, 0.0], [0.0, 1.0]])
+
+    # total number of particle types
+    num_types = 1 + len(n_qubit_p)
+
+    # electron basis states
+    e_basis_states = []
+    for config in itertools.combinations(range(n_qubit_e), num_e):
+        state = numpy.zeros(n_qubit_e)
+        for idx in config:
+            state[idx] = 1
+        e_state = numpy.array([qubit_state(s) for s in state])
+        e_tensor_prod = e_state[0]
+        for qubit in e_state[1:]:
+            e_tensor_prod = numpy.kron(e_tensor_prod, qubit)         
+        e_basis_states.append(e_tensor_prod)
+
+    # electron identity over subspace
+    e_identity_list = []
+    e_id = numpy.kron(II, II)
+    for i in range(n_qubit_e - 2):
+        e_id = numpy.kron(e_id, II)
+    e_identity_list.append(e_id)
+
+    # quantum nuclei basis list
     p_basis_list = []
     for i in range(len(n_qubit_p)):
         p_basis_states = []
@@ -213,25 +391,39 @@ def pc_projection(n_qubit_e, n_qubit_p, nocc_e):
             p_basis_states.append(p_tensor_prod)
         p_basis_list.append(p_basis_states)
 
-    # take first tensor product |e> \times |p1>
-    for i in range(len(e_basis_states)):
-        for j in range(len(p_basis_list[0])):
-            comp_state = numpy.kron(e_basis_states[i], p_basis_list[0][j])
-            final_state.append(comp_state)
+    # quantum nuclear identity over subspace
+    p_identity_list = []
+    for i in range(len(n_qubit_p)):
+        p_identity = numpy.kron(II, II)
+        for j in range(n_qubit_p[i] - 2):
+            p_identity = numpy.kron(p_identity, II)
+        p_identity_list.append(p_identity)
 
-    # remaining tensor products
-    for k in range(1,len(n_qubit_p)):
-        new_tmp_state = []
-        for i in range(len(final_state)):
-            for j in range(len(p_basis_list[k])):
-                comp_state = numpy.kron(final_state[i],p_basis_list[k][j])
-                new_tmp_state.append(comp_state)
-        final_state = new_tmp_state
+    # build list of basis states
+    full_set = set_construction(subsystem, num_types, complement)
+    vec_list = []
+    for i in range(len(full_set)-1):
+        ind_1 = full_set[i]
+        ind_2 = full_set[i+1]
 
-    proj_op = sparse.csr_matrix((dim, dim), dtype=complex)
-    for i in range(len(final_state)):
-        vector = sparse.csr_matrix(final_state[i])
-        vector = column_vec(vector)
-        proj_op += vector @ vector.conj().T
+        # state 1
+        if i == 0:
+            if ind_1 == 0:
+                state_1 = e_basis_states
+            else:
+                state_1 = e_identity_list
+        else:
+            state_1 = vec_list
 
-    return proj_op
+        # state 2
+        if ind_2 > 0:
+            state_2 = p_basis_list[i]
+        else:
+            state_2 = [p_identity_list[i]]
+
+        vec_list = basis_kron(state_1, state_2)
+
+    # convert all elements to sparse matrices
+    final_list = [sparse.csr_matrix(mat) for mat in vec_list]
+
+    return final_list
