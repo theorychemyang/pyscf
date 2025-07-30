@@ -21,6 +21,7 @@ import numpy
 from pyscf import lib
 import pyscf.pbc.gto as pbcgto
 import pyscf.pbc.scf as pscf
+from pyscf.df import make_auxbasis
 
 def setUpModule():
     global cell, kmf_ro, kmf_r, kmf_u, kmf_g, nao, kpts
@@ -93,7 +94,7 @@ class KnownValues(unittest.TestCase):
         cell.verbose = 3
         cell.build()
         nks = [2,1,1]
-        mf = pscf.KUHF(cell, cell.make_kpts(nks)).density_fit()
+        mf = pscf.KUHF(cell, cell.make_kpts(nks)).density_fit(auxbasis=make_auxbasis(cell))
         mf = pscf.addons.smearing_(mf, .1)
         mf.kernel()
         self.assertAlmostEqual(mf.e_tot, -5.56769351866668, 6)
@@ -311,6 +312,11 @@ class KnownValues(unittest.TestCase):
         self.assertTrue(isinstance(pscf.addons.convert_to_khf(mf1), pscf.kuhf.KUHF))
         mf1 = pscf.ROHF(cell)
         self.assertTrue(isinstance(pscf.addons.convert_to_khf(mf1), pscf.krohf.KROHF))
+
+        from pyscf.pbc import dft
+        mf1 = dft.RKS(cell)
+        self.assertTrue(isinstance(mf1._numint, dft.numint.NumInt))
+        self.assertTrue(isinstance(pscf.addons.convert_to_kscf(mf1)._numint, dft.numint.KNumInt))
 
     def test_canonical_occ(self):
         kpts = numpy.random.rand(2,3)

@@ -378,7 +378,7 @@ def dump_jmol(mol, results, filename='vib.xyz'):
     try:
         f = open(filename, 'w')
         dump = f.write
-    except (OSError, IOError) as e:
+    except (OSError, IOError):
         dump = mol.stdout.write
 
     freq_wn = results['freq_wavenumber']
@@ -409,7 +409,7 @@ def dump_molden(mol, results, filename='vib.molden'):
     try:
         f = open(filename, 'w')
         dump = f.write
-    except (OSError, IOError) as e:
+    except (OSError, IOError):
         dump = mol.stdout.write
 
     freq_wn = results['freq_wavenumber']

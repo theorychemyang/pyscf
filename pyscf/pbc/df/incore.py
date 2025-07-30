@@ -261,7 +261,7 @@ class Int3cBuilder(lib.StreamObject):
             # Add penalty 1e-2 to reduce the screening error
             log_cutoff = int(np.log(cutoff*1e-2) * LOG_ADJUST)
         else:
-            cintopt = _vhf.make_cintopt(supmol._atm, supmol._bas, supmol._env, intor)
+            cintopt = _vhf.make_cintopt(atm, bas, env, intor)
 
         sindex = self.get_q_cond(supmol)
         ovlp_mask = sindex > log_cutoff
@@ -275,7 +275,7 @@ class Int3cBuilder(lib.StreamObject):
         cache_size = max(_get_cache_size(cell, intor),
                          _get_cache_size(rs_auxcell, intor))
         cell0_dims = cell0_ao_loc[1:] - cell0_ao_loc[:-1]
-        dijk = cell0_dims[:nbasp].max()**2 * cell0_dims[nbasp:].max() * comp
+        dijk = int(cell0_dims[:nbasp].max())**2 * int(cell0_dims[nbasp:].max()) * comp
 
         aosym = aosym[:2]
         gamma_point_only = is_zero(kpts)
@@ -324,7 +324,7 @@ class Int3cBuilder(lib.StreamObject):
         drv = libpbc.PBCfill_nr3c_drv
 
         # is_pbcintor controls whether to use memory efficient functions
-        # Only suppots int3c2e_sph, int3c2e_cart in current C library
+        # Only supports int3c2e_sph, int3c2e_cart in current C library
         is_pbcintor = intor in ('int3c2e_sph', 'int3c2e_cart') or intor[:3] == 'ECP'
         if is_pbcintor and not intor.startswith('PBC'):
             intor = 'PBC' + intor

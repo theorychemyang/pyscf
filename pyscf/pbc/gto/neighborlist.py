@@ -24,6 +24,7 @@ from pyscf.lib import logger
 libpbc = lib.load_library('libpbc')
 
 class _CNeighborPair(ctypes.Structure):
+    __slots__ = []
     _fields_ = [("nimgs", ctypes.c_int),
                 ("Ls_list", ctypes.POINTER(ctypes.c_int)),
                 ("q_cond", ctypes.POINTER(ctypes.c_double)),
@@ -31,6 +32,7 @@ class _CNeighborPair(ctypes.Structure):
 
 
 class _CNeighborList(ctypes.Structure):
+    __slots__ = []
     _fields_ = [("nish", ctypes.c_int),
                 ("njsh", ctypes.c_int),
                 ("nimgs", ctypes.c_int),
@@ -38,6 +40,7 @@ class _CNeighborList(ctypes.Structure):
 
 
 class _CNeighborListOpt(ctypes.Structure):
+    __slots__ = []
     _fields_ = [("nl", ctypes.POINTER(_CNeighborList)),
                 ('fprescreen', ctypes.c_void_p)]
 
@@ -54,7 +57,7 @@ def build_neighbor_list_for_shlpairs(cell, cell1=None, Ls=None,
         cell1 : :class:`pbc.gto.cell.Cell`, optional
             The :class:`Cell` instance for the ket basis functions.
             If not given, both bra and ket basis functions come from cell.
-        Ls : (*,3) array, optional
+        Ls : ``(*,3)`` array, optional
             The cartesian coordinates of the periodic images.
             Default is calculated by :func:`cell.get_lattice_Ls`.
         ish_rcut : (nish,) array, optional
@@ -108,30 +111,26 @@ def build_neighbor_list_for_shlpairs(cell, cell1=None, Ls=None,
     assert njsh == len(jsh_rcut)
 
     nl = ctypes.POINTER(_CNeighborList)()
-    func = getattr(libpbc, "build_neighbor_list", None)
-    try:
-        func(ctypes.byref(nl),
-             ish_atm.ctypes.data_as(ctypes.c_void_p),
-             ish_bas.ctypes.data_as(ctypes.c_void_p),
-             ish_env.ctypes.data_as(ctypes.c_void_p),
-             ish_rcut.ctypes.data_as(ctypes.c_void_p),
-             jsh_atm.ctypes.data_as(ctypes.c_void_p),
-             jsh_bas.ctypes.data_as(ctypes.c_void_p),
-             jsh_env.ctypes.data_as(ctypes.c_void_p),
-             jsh_rcut.ctypes.data_as(ctypes.c_void_p),
-             ctypes.c_int(nish), ctypes.c_int(njsh),
-             Ls.ctypes.data_as(ctypes.c_void_p), ctypes.c_int(nimgs),
-             ctypes.c_int(hermi))
-    except Exception as e:
-        raise RuntimeError(f"Failed to build neighbor list for shell pairs.\n{e}")
+    libpbc.build_neighbor_list(
+        ctypes.byref(nl),
+        ish_atm.ctypes.data_as(ctypes.c_void_p),
+        ish_bas.ctypes.data_as(ctypes.c_void_p),
+        ish_env.ctypes.data_as(ctypes.c_void_p),
+        ish_rcut.ctypes.data_as(ctypes.c_void_p),
+        jsh_atm.ctypes.data_as(ctypes.c_void_p),
+        jsh_bas.ctypes.data_as(ctypes.c_void_p),
+        jsh_env.ctypes.data_as(ctypes.c_void_p),
+        jsh_rcut.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(nish),
+        ctypes.c_int(njsh),
+        Ls.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(nimgs),
+        ctypes.c_int(hermi),
+    )
     return nl
 
 def free_neighbor_list(nl):
-    func = getattr(libpbc, "del_neighbor_list", None)
-    try:
-        func(ctypes.byref(nl))
-    except Exception as e:
-        raise RuntimeError(f"Failed to free neighbor list.\n{e}")
+    libpbc.del_neighbor_list(ctypes.byref(nl))
 
 def neighbor_list_to_ndarray(cell, cell1, nl):
     '''

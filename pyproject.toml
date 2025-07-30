@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools >= 61.0", "wheel", "cmake"]
+requires = ["setuptools >= 61.0", "wheel", "cmake<4.0"]
 build-backend = "setuptools.build_meta"
 
 
@@ -36,7 +36,7 @@ license = { text = "Apache-2.0" }
 
 dependencies = [
   'numpy>=1.13,!=1.16,!=1.17',
-  'scipy!=1.5.0,!=1.5.1',
+  'scipy>=1.6.0',
   'h5py>=2.7',
   'setuptools',
 ]
@@ -48,16 +48,18 @@ Documentation = "http://www.pyscf.org"
 
 [project.optional-dependencies]
 
+forge = ["pyscf-forge"]
 geomopt = ["pyberny>=0.6.2", "geometric>=0.9.7.2", "pyscf-qsdopt"]
 doci = ["pyscf-doci"]
 properties = ["pyscf-properties"]
 semiempirical = ['pyscf-semiempirical']
 cppe = ["cppe"]
 pyqmc = ["pyqmc"]
-mcfun = ["mcfun>=0.2.1"]
 bse = ["basis-set-exchange"]
+dispersion = ["pyscf-dispersion"]
+ccpy = ["coupled-cluster-py"]
 
-all = ["pyscf[geomopt,doci,properties,semiempirical,cppe,pyqmc,mcfun,bse]"]
+all = ["pyscf[forge,geomopt,doci,properties,semiempirical,cppe,pyqmc,bse,dispersion,ccpy]"]
 
 # extras which should not be installed by "all" components
 cornell_shci = ["pyscf-cornell-shci"]

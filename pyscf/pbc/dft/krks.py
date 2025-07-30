@@ -52,7 +52,7 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
             A density matrix or a list of density matrices
 
     Returns:
-        Veff : (nkpts, nao, nao) or (*, nkpts, nao, nao) ndarray
+        Veff : ``(nkpts, nao, nao)`` or ``(*, nkpts, nao, nao)`` ndarray
         Veff = J + Vxc.
     '''
     if cell is None: cell = ks.cell
@@ -64,7 +64,7 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
     hybrid = ni.libxc.is_hybrid_xc(ks.xc)
 
     if not hybrid and isinstance(ks.with_df, multigrid.MultiGridFFTDF):
-        if ks.nlc or ni.libxc.is_nlc(ks.xc):
+        if ks.do_nlc():
             raise NotImplementedError(f'MultiGrid for NLC functional {ks.xc} + {ks.nlc}')
         n, exc, vxc = multigrid.nr_rks(ks.with_df, ks.xc, dm, hermi,
                                        kpts, kpts_band,
@@ -85,7 +85,7 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
         n, exc, vxc = ni.nr_rks(cell, ks.grids, ks.xc, dm, 0, hermi,
                                 kpts, kpts_band, max_memory=max_memory)
         logger.info(ks, 'nelec by numeric integration = %s', n)
-        if ks.nlc or ni.libxc.is_nlc(ks.xc):
+        if ks.do_nlc():
             if ni.libxc.is_nlc(ks.xc):
                 xc = ks.xc
             else:
@@ -105,9 +105,20 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
         vxc += vj
     else:
         omega, alpha, hyb = ni.rsh_and_hybrid_coeff(ks.xc, spin=cell.spin)
-        vj, vk = ks.get_jk(cell, dm, hermi, kpts, kpts_band)
-        vk *= hyb
-        if omega != 0:
+        if omega == 0:
+            vj, vk = ks.get_jk(cell, dm, hermi, kpts, kpts_band)
+            vk *= hyb
+        elif alpha == 0: # LR=0, only SR exchange
+            vk = ks.get_k(cell, dm, hermi, kpts, kpts_band, omega=-omega)
+            vk *= hyb
+            vj = ks.get_j(cell, dm, hermi, kpts, kpts_band)
+        elif hyb == 0: # SR=0, only LR exchange
+            vk = ks.get_k(cell, dm, hermi, kpts, kpts_band, omega=omega)
+            vk *= alpha
+            vj = ks.get_j(cell, dm, hermi, kpts, kpts_band)
+        else: # SR and LR exchange with different ratios
+            vj, vk = ks.get_jk(cell, dm, hermi, kpts, kpts_band)
+            vk *= hyb
             vklr = ks.get_k(cell, dm, hermi, kpts, kpts_band, omega=omega)
             vklr *= (alpha - hyb)
             vk += vklr
@@ -117,7 +128,7 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
             exc -= np.einsum('Kij,Kji', dm, vk).real * .5 * .5 * weight
 
     if ground_state:
-        ecoul = np.einsum('Kij,Kji', dm, vj).real * .5 * weight
+        ecoul = np.einsum('Kij,Kji', dm, vj) * .5 * weight
     else:
         ecoul = None
 
@@ -146,16 +157,17 @@ def energy_elec(mf, dm_kpts=None, h1e_kpts=None, vhf=None):
     weight = 1./len(h1e_kpts)
     e1 = weight * np.einsum('kij,kji', h1e_kpts, dm_kpts)
     ecoul = vhf.ecoul
-    tot_e = e1 + ecoul + vhf.exc
+    exc = vhf.exc
+    tot_e = e1 + ecoul + exc
     mf.scf_summary['e1'] = e1.real
     mf.scf_summary['coul'] = ecoul.real
-    mf.scf_summary['exc'] = vhf.exc.real
-    logger.debug(mf, 'E1 = %s  Ecoul = %s  Exc = %s', e1, ecoul, vhf.exc)
-    if khf.CHECK_COULOMB_IMAG and abs(ecoul.imag > mf.cell.precision*10):
+    mf.scf_summary['exc'] = exc.real
+    logger.debug(mf, 'E1 = %s  Ecoul = %s  Exc = %s', e1, ecoul, exc)
+    if khf.CHECK_COULOMB_IMAG and abs(ecoul.imag) > mf.cell.precision*10:
         logger.warn(mf, "Coulomb energy has imaginary part %s. "
                     "Coulomb integrals (e-e, e-N) may not converge !",
                     ecoul.imag)
-    return tot_e.real, vhf.ecoul + vhf.exc
+    return tot_e.real, ecoul.real + exc.real
 
 class KRKS(rks.KohnShamDFT, khf.KRHF):
     '''RKS class adapted for PBCs with k-point sampling.

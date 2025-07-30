@@ -113,7 +113,8 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
         veff0mom = numpy.zeros((nmo,nmo))
 
     # set singlet=None, generate function for CPHF type response kernel
-    vresp = mf.gen_response(singlet=None, hermi=1)
+    vresp = mf.gen_response(singlet=None, hermi=1,
+                            with_nlc=not td_grad.base.exclude_nlc)
     def fvind(x):
         dm = reduce(numpy.dot, (orbv, x.reshape(nvir,nocc)*2, orbo.T))
         v1ao = vresp(dm+dm.T)
@@ -268,6 +269,11 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
     else:
         raise NotImplementedError(f'td-rks for functional {xc_code}')
 
+    if mf.do_nlc():
+        raise NotImplementedError("TDDFT gradient with NLC contribution is not supported yet. "
+                                  "Please set exclude_nlc field of tdscf object to True, "
+                                  "which will turn off NLC contribution in the whole TDDFT calculation.")
+
     if singlet:
         for ao, mask, weight, coords \
                 in ni.block_loop(mol, grids, nao, ao_deriv, max_memory):
@@ -307,7 +313,7 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
             rho *= .5
             rho = numpy.repeat(rho[numpy.newaxis], 2, axis=0)
             vxc, fxc, kxc = ni.eval_xc_eff(xc_code, rho, deriv, xctype=xctype)[1:]
-            # fxc_t couples triplet excitation amplitues
+            # fxc_t couples triplet excitation amplitudes
             # 1/2 int (tia - tIA) fxc (tjb - tJB) = tia fxc_t tjb
             fxc_t = fxc[:,:,0] - fxc[:,:,1]
             fxc_t = fxc_t[0] - fxc_t[1]

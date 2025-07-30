@@ -41,6 +41,8 @@ def get_nuc(mydf, kpts=None):
     from pyscf.pbc.dft import gen_grid
     kpts, is_single_kpt = _check_kpts(mydf, kpts)
     cell = mydf.cell
+    assert cell.low_dim_ft_type != 'inf_vacuum'
+    assert cell.dimension > 1
     mesh = mydf.mesh
     charge = -cell.atom_charges()
     Gv = cell.get_Gv(mesh)
@@ -63,11 +65,13 @@ def get_nuc(mydf, kpts=None):
     return numpy.asarray(vne)
 
 def get_pp(mydf, kpts=None):
-    '''Get the periodic pseudotential nuc-el AO matrix, with G=0 removed.
+    '''Get the periodic pseudopotential nuc-el AO matrix, with G=0 removed.
     '''
     from pyscf.pbc.dft import gen_grid
     kpts, is_single_kpt = _check_kpts(mydf, kpts)
     cell = mydf.cell
+    assert cell.low_dim_ft_type != 'inf_vacuum'
+    assert cell.dimension > 1
     mesh = mydf.mesh
     Gv = cell.get_Gv(mesh)
     SI = cell.get_SI(mesh=mesh)
@@ -157,6 +161,9 @@ class FFTDF(lib.StreamObject):
     '''Density expansion on plane waves
     '''
 
+    # to mimic molecular DF object
+    blockdim = getattr(__config__, 'pbc_df_df_DF_blockdim', 240)
+
     _keys = {
         'cell', 'kpts', 'grids', 'mesh', 'blockdim', 'exxdiv',
     }
@@ -180,9 +187,6 @@ class FFTDF(lib.StreamObject):
         # This is a first order error, same to the error estimation for nuclear
         # attraction.
         self.mesh = cell.mesh
-
-        # to mimic molecular DF object
-        self.blockdim = getattr(__config__, 'pbc_df_df_DF_blockdim', 240)
 
         # The following attributes are not input options.
         # self.exxdiv has no effects. It was set in the get_k_kpts function to
@@ -334,7 +338,7 @@ class FFTDF(lib.StreamObject):
     def loop(self, blksize=None):
         if self.cell.dimension < 3:
             raise RuntimeError('ERIs of 1D and 2D systems are not positive '
-                               'definite. Current API only supports postive '
+                               'definite. Current API only supports positive '
                                'definite ERIs.')
 
         if blksize is None:

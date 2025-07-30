@@ -94,11 +94,14 @@ class MDF(df.GDF):
         self._cderi = None
         self._rsh_df = {}  # Range separated Coulomb DF objects
 
+    __getstate__, __setstate__ = lib.generate_pickle_methods(
+            excludes=('_cderi_to_save', '_cderi', '_rsh_df'), reset_state=True)
+
     def build(self, j_only=None, with_j3c=True, kpts_band=None):
         df.GDF.build(self, j_only, with_j3c, kpts_band)
         cell = self.cell
         if any(x % 2 == 0 for x in self.mesh[:cell.dimension]):
-            # Even number in mesh can produce planewaves without couterparts
+            # Even number in mesh can produce planewaves without counterparts
             # (see np.fft.fftfreq). MDF mesh is typically not enough to capture
             # all basis. The singular planewaves can break the symmetry in
             # potential (leads to non-real density) and thereby break the
@@ -150,14 +153,12 @@ class MDF(df.GDF):
             # * AFT is computationally more efficient than MDF if the Coulomb
             #   attenuation tends to the long-range role (i.e. small omega).
             # * Note: changing to AFT integrator may cause small difference to
-            #   the MDF integrator. If a very strict MDF result is desired,
-            #   we can disable this trick by setting
-            #   LONGRANGE_AFT_TURNOVER_THRESHOLD to 0.
+            #   the MDF integrator.
             # * The sparse mesh is not appropriate for low dimensional systems
             #   with infinity vacuum since the ERI may require large mesh to
             #   sample density in vacuum.
-            if (omega < df.LONGRANGE_AFT_TURNOVER_THRESHOLD and
-                cell.dimension >= 2 and cell.low_dim_ft_type != 'inf_vacuum'):
+            if (omega > 0 and
+                (cell.dimension >= 2 or cell.low_dim_ft_type != 'inf_vacuum')):
                 mydf = aft.AFTDF(cell, self.kpts)
                 ke_cutoff = aft.estimate_ke_cutoff_for_omega(cell, omega)
                 mydf.mesh = cell.cutoff_to_mesh(ke_cutoff)
@@ -214,7 +215,7 @@ class _RSMDFBuilder(_RSGDFBuilder):
 
         # For MDF, large difference may be found in results between the CD/ED
         # treatments. In some systems, small integral errors can lead to a
-        # differnece in the total energy/orbital energy around 4th decimal
+        # difference in the total energy/orbital energy around 4th decimal
         # place. Abandon CD treatment for better numerical stability
         self.j2c_eig_always = True
 
@@ -326,7 +327,7 @@ class _CCMDFBuilder(_CCGDFBuilder):
 
         # For MDF, large difference may be found in results between the CD/ED
         # treatments. In some systems, small integral errors can lead to a
-        # differnece in the total energy/orbital energy around 4th decimal
+        # difference in the total energy/orbital energy around 4th decimal
         # place. Abandon CD treatment for better numerical stability
         self.j2c_eig_always = True
 

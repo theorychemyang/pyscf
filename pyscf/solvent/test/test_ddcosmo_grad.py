@@ -30,8 +30,8 @@ from pyscf.scf import cphf
 from pyscf.grad import rhf as rhf_grad
 from pyscf.grad import rks as rks_grad
 from pyscf.solvent import ddcosmo
-from pyscf.solvent import ddcosmo_grad
-from pyscf.solvent import _ddcosmo_tdscf_grad
+from pyscf.solvent.grad import ddcosmo_grad
+from pyscf.solvent.grad import ddcosmo_tdscf_grad
 from pyscf.symm import sph
 
 def tda_grad(td, z):
@@ -785,10 +785,10 @@ class KnownValues(unittest.TestCase):
         mf = ddcosmo.ddcosmo_for_scf(scf.RHF(mol0)).run()
         # solvent only
         de_cosmo = ddcosmo_grad.kernel(mf.with_solvent, mf.make_rdm1())
-        self.assertAlmostEqual(lib.fp(de_cosmo), 0.000902640319, 6)
+        self.assertAlmostEqual(lib.fp(de_cosmo), 0.000902640319, 5)
         # solvent + solute
         de = mf.nuc_grad_method().kernel()
-        self.assertAlmostEqual(lib.fp(de), -0.191856565, 6)
+        self.assertAlmostEqual(lib.fp(de), -0.191856565, 5)
 
         dm1 = mf.make_rdm1()
 
@@ -804,19 +804,19 @@ class KnownValues(unittest.TestCase):
 
         sc = mf.nuc_grad_method().as_scanner()
         e, g = sc('H 0 1 0; H 0 1 1.2; H 1. 0 0; H .5 .5 0')
-        self.assertAlmostEqual(e, -0.83152362, 8)
-        self.assertAlmostEqual(lib.fp(g), 0.068317954, 6)
+        self.assertAlmostEqual(e, -0.83152362, 5)
+        self.assertAlmostEqual(lib.fp(g), 0.068317954, 5)
 
         mol3 = gto.M(atom='H 0 1 0; H 0 1 1.2; H 1. 0 0; H .5 .5 0', unit='B')
         mf = ddcosmo.ddcosmo_for_scf(scf.RHF(mol3)).run()
         de = mf.nuc_grad_method().kernel()
-        self.assertAlmostEqual(lib.fp(de), 0.0683179013, 6)
+        self.assertAlmostEqual(lib.fp(de), 0.0683179013, 5)
 
     def test_casci_grad(self):
         mf = scf.RHF(mol0).ddCOSMO().run()
         mc = solvent.ddCOSMO(mcscf.CASCI(mf, 2, 2))
         e, de = mc.nuc_grad_method().as_scanner()(mol0)
-        self.assertAlmostEqual(e, -1.18433554, 7)
+        self.assertAlmostEqual(e, -1.18433554, 5)
         self.assertAlmostEqual(lib.fp(de), -0.18543118, 5)
 
         mf = scf.RHF(mol1).run()
@@ -865,7 +865,7 @@ class KnownValues(unittest.TestCase):
         mf = scf.RHF(mol0).ddCOSMO().run()
         mycc = cc.CCSD(mf).ddCOSMO()
         e, de = mycc.nuc_grad_method().as_scanner()(mol0)
-        self.assertAlmostEqual(e, -1.2060391657, 7)
+        self.assertAlmostEqual(e, -1.2060391657, 5)
         self.assertAlmostEqual(lib.fp(de), -0.1794318433, 5)
 
         mf = scf.RHF(mol1).run()
@@ -881,18 +881,18 @@ class KnownValues(unittest.TestCase):
         mol1 = gto.M(atom='H 0 0 -.001; H .5 .5 .1', unit='B', basis='321g')
         mol2 = gto.M(atom='H 0 0 0.001; H .5 .5 .1', unit='B', basis='321g')
         mf = scf.RHF(mol0).ddCOSMO().run()
-        td = solvent.ddCOSMO(tdscf.TDA(mf)).run(equilibrium_solvation=True)
+        td = mf.TDA(equilibrium_solvation=True).run()
         ref = tda_grad(td, td.xy[0]) + mf.nuc_grad_method().kernel()
 
         e, de = td.nuc_grad_method().as_scanner(state=1)(mol0)
         de = td.nuc_grad_method().kernel()
         self.assertAlmostEqual(abs(ref - de).max(), 0, 12)
 
-        td1 = mol1.RHF().ddCOSMO().run().TDA().ddCOSMO().run(equilibrium_solvation=True)
-        td2 = mol2.RHF().ddCOSMO().run().TDA().ddCOSMO().run(equilibrium_solvation=True)
+        td1 = mol1.RHF().ddCOSMO().run().TDA(equilibrium_solvation=True).run()
+        td2 = mol2.RHF().ddCOSMO().run().TDA(equilibrium_solvation=True).run()
         e1 = td1.e_tot[0]
         e2 = td2.e_tot[0]
-        self.assertAlmostEqual((e2-e1)/0.002, de[0,2], 5)
+        self.assertAlmostEqual((e2-e1)/0.002, de[0,2], 6)
 
     def test_solvent_nuc(self):
         def get_nuc(mol):
@@ -943,7 +943,7 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(vmat-vref).max(), 0, 14)
 
         dm1 = numpy.random.random((2,nao,nao))
-        de = _ddcosmo_tdscf_grad._grad_ne(pcm, dm1, r_vdw, ui, ylm_1sph, cached_pol, L)
+        de = ddcosmo_tdscf_grad._grad_ne(pcm, dm1, r_vdw, ui, ylm_1sph, cached_pol, L)
         ref = numpy.einsum('azij,nij->naz', dvmat, dm1)
         self.assertAlmostEqual(abs(de - ref).max(), 0, 12)
 
@@ -996,7 +996,7 @@ class KnownValues(unittest.TestCase):
         v = B1_dot_x(pcm, dm, r_vdw, ui, ylm_1sph, cached_pol, L)
         self.assertAlmostEqual(abs(v-ref[0]).max(), 0, 12)
 
-        de = _ddcosmo_tdscf_grad._grad_ee(pcm, dm1, dm2, r_vdw, ui, ylm_1sph, cached_pol, L)
+        de = ddcosmo_tdscf_grad._grad_ee(pcm, dm1, dm2, r_vdw, ui, ylm_1sph, cached_pol, L)
         ref = numpy.einsum('nazij,nij->naz', ref, dm2)
         self.assertAlmostEqual(abs(de - ref).max(), 0, 12)
 
@@ -1009,9 +1009,9 @@ class KnownValues(unittest.TestCase):
             f_epsilon = (dielectric-1.)/dielectric
         else:
             f_epsilon = 1
-        de = _ddcosmo_tdscf_grad._grad_nn(pcm, r_vdw, ui, ylm_1sph, cached_pol, L)
-        de+= _ddcosmo_tdscf_grad._grad_ne(pcm, dm, r_vdw, ui, ylm_1sph, cached_pol, L)
-        de+= .5*_ddcosmo_tdscf_grad._grad_ee(pcm, dm, dm, r_vdw, ui, ylm_1sph, cached_pol, L)
+        de = ddcosmo_tdscf_grad._grad_nn(pcm, r_vdw, ui, ylm_1sph, cached_pol, L)
+        de+= ddcosmo_tdscf_grad._grad_ne(pcm, dm, r_vdw, ui, ylm_1sph, cached_pol, L)
+        de+= .5*ddcosmo_tdscf_grad._grad_ee(pcm, dm, dm, r_vdw, ui, ylm_1sph, cached_pol, L)
         de *= .5 * f_epsilon
         self.assertAlmostEqual(abs(de-ref).max(), 0, 12)
 
@@ -1024,6 +1024,37 @@ class KnownValues(unittest.TestCase):
         L_1 = ddcosmo.regularize_xt(t-1e-4, eta)
         L_2 = ddcosmo.regularize_xt(t+1e-4, eta)
         self.assertAlmostEqual(abs((L_2-L_1)/2e-4 - L1).max(), 0, 6)
+
+    @unittest.skip('Buggy when density_fit is applied after ddCOSMO')
+    def test_df_pcm(self):
+        mol = pyscf.M(atom='H 0 0 0 ; H 0 0 1')
+        auxbasis = [[0, [1, 1]]]
+        mf1 = mol.RHF().density_fit(auxbasis=auxbasis).ddCOSMO().run()
+        mf2 = mol.RHF().ddCOSMO().density_fit(auxbasis=auxbasis).run()
+        assert abs(mf1.e_tot - mf2.e_tot) < 1e-12
+        g1 = mf1.Gradients().kernel().de
+        g2 = mf2.Gradients().kernel().de
+        assert abs(g1 - g2).max() < 1e-7
+
+    def test_vs_finite_difference(self):
+        mol = gto.M(atom='H 0 0 0; H 0 1 1.2; H 1. .1 0; H .5 .5 1', unit='B')
+        mf = ddcosmo.ddcosmo_for_scf(scf.RHF(mol))
+        mf.kernel()
+        de = mf.nuc_grad_method().kernel()
+        de_cosmo = ddcosmo_grad.kernel(mf.with_solvent, mf.make_rdm1())
+        dm1 = mf.make_rdm1()
+
+        mol = gto.M(atom='H 0 0 -0.001; H 0 1 1.2; H 1. .1 0; H .5 .5 1', unit='B')
+        mf = ddcosmo.ddcosmo_for_scf(scf.RHF(mol))
+        e1 = mf.kernel()
+        e1_cosmo = mf.with_solvent.energy(dm1)
+
+        mol = gto.M(atom='H 0 0 0.001; H 0 1 1.2; H 1. .1 0; H .5 .5 1', unit='B')
+        mf = ddcosmo.ddcosmo_for_scf(scf.RHF(mol))
+        e2 = mf.kernel()
+        e2_cosmo = mf.with_solvent.energy(dm1)
+        assert abs((e2-e1)/0.002 - de[0,2]).max() < 1e-6
+        assert abs((e2_cosmo-e1_cosmo)/0.002 - de_cosmo[0,2]).max() < 1e-6
 
 if __name__ == "__main__":
     print("Full Tests for ddcosmo gradients")

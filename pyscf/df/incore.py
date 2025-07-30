@@ -28,7 +28,9 @@ from pyscf import __config__
 
 
 MAX_MEMORY = getattr(__config__, 'df_outcore_max_memory', 2000)  # 2GB
-LINEAR_DEP_THR = getattr(__config__, 'df_df_DF_lindep', 1e-12)
+# LINEAR_DEP_THR cannot be below 1e-7,
+# see qchem default setting in https://manual.q-chem.com/5.4/sec_Basis_Customization.html
+LINEAR_DEP_THR = getattr(__config__, 'df_df_DF_lindep', 1e-7)
 
 
 # This function is aliased for backward compatibility.
@@ -36,22 +38,39 @@ format_aux_basis = addons.make_auxmol
 
 
 def aux_e2(mol, auxmol_or_auxbasis, intor='int3c2e', aosym='s1', comp=None, out=None,
-           cintopt=None):
+           cintopt=None, shls_slice=None):
     '''3-center AO integrals (ij|L), where L is the auxiliary basis.
 
     Kwargs:
-        cintopt : Libcint-3.14 and newer version support to compute int3c2e
-            without the opt for the 3rd index.  It can be precomputed to
-            reduce the overhead of cintopt initialization repeatedly.
+        cintopt :
+            Precomputing certain pair-shell data. It can be created by
 
             cintopt = gto.moleintor.make_cintopt(mol._atm, mol._bas, mol._env, 'int3c2e')
+
+        shls_slice : 6-element tuple
+            Label the start-stop shells for each index in the integral tensor.
+            For the (ij|aux) = intor('int3c2e'), the tuple should be given as
+            (ish_start, ish_end, jsh_start, jsh_end, aux_start, aux_end)
     '''
     if isinstance(auxmol_or_auxbasis, gto.MoleBase):
         auxmol = auxmol_or_auxbasis
     else:
         auxbasis = auxmol_or_auxbasis
         auxmol = addons.make_auxmol(mol, auxbasis)
-    shls_slice = (0, mol.nbas, 0, mol.nbas, mol.nbas, mol.nbas+auxmol.nbas)
+    if shls_slice is None:
+        shls_slice = (0, mol.nbas, 0, mol.nbas,
+                      mol.nbas, mol.nbas+auxmol.nbas)
+    else:
+        assert len(shls_slice) == 6
+        assert shls_slice[5] <= auxmol.nbas
+        shls_slice = list(shls_slice)
+        shls_slice[4] += mol.nbas
+        shls_slice[5] += mol.nbas
+
+    if not mol.cart and auxmol.cart:
+        raise NotImplementedError('Interface for int3c2e_ssc')
+    elif mol.cart and not auxmol.cart:
+        raise RuntimeError('Cartesian orbitals for mol and spherical orbitals for auxmol not supported')
 
     # Extract the call of the two lines below
     #  pmol = gto.mole.conc_mol(mol, auxmol)
@@ -122,6 +141,11 @@ def cholesky_eri(mol, auxbasis='weigend+etb', auxmol=None,
     if auxmol is None:
         auxmol = addons.make_auxmol(mol, auxbasis)
 
+    if not mol.cart and auxmol.cart:
+        raise NotImplementedError('Interface for int3c2e_ssc')
+    elif mol.cart and not auxmol.cart:
+        raise RuntimeError('Cartesian orbitals for mol and spherical orbitals for auxmol not supported')
+
     j2c = auxmol.intor(int2c, hermi=1)
     if decompose_j2c == 'eig':
         low = _eig_decompose(mol, j2c, lindep)
@@ -141,7 +165,7 @@ def cholesky_eri(mol, auxbasis='weigend+etb', auxmol=None,
     atm, bas, env = gto.mole.conc_env(mol._atm, mol._bas, mol._env,
                                       auxmol._atm, auxmol._bas, auxmol._env)
     ao_loc = gto.moleintor.make_loc(bas, int3c)
-    nao = ao_loc[mol.nbas]
+    nao = int(ao_loc[mol.nbas])
 
     if aosym == 's1':
         nao_pair = nao * nao
@@ -179,10 +203,11 @@ def cholesky_eri(mol, auxbasis='weigend+etb', auxmol=None,
         p0, p1 = p1, p1 + nrow
         if decompose_j2c == 'cd':
             if ints.flags.c_contiguous:
-                ints = lib.transpose(ints, out=bufs2).T
-                bufs1, bufs2 = bufs2, bufs1
-            dat = scipy.linalg.solve_triangular(low, ints, lower=True,
-                                                overwrite_b=True, check_finite=False)
+                trsm, = scipy.linalg.get_blas_funcs(('trsm',), (low, ints))
+                dat = trsm(1.0, low, ints.T, lower=True, trans_a = 1, side = 1, overwrite_b=True).T
+            else:
+                dat = scipy.linalg.solve_triangular(low, ints, lower=True,
+                                                   overwrite_b=True, check_finite=False)
             if dat.flags.f_contiguous:
                 dat = lib.transpose(dat.T, out=bufs2)
             cderi[:,p0:p1] = dat

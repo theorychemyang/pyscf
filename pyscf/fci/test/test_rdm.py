@@ -20,6 +20,7 @@ from pyscf import gto
 from pyscf import scf
 from pyscf import ao2mo
 from pyscf import fci
+from pyscf import mcscf
 
 def setUpModule():
     global ci0, rdm1, rdm2, norb, nelec
@@ -62,6 +63,52 @@ class KnownValues(unittest.TestCase):
         dm3 = fci.rdm.make_dm123('FCI3pdm_kern_sf', ci1, ci1, norb, (5,3))[2]
         self.assertTrue(numpy.allclose(dm3ref, dm3))
 
+    def test_rdm3s(self):
+        dm1, dm2, dm3 = fci.direct_spin1.make_rdm123(ci0, norb, (nelec//2,nelec//2))
+
+        (dm1a, dm1b), (dm2aa, dm2ab, dm2bb), (dm3aaa, dm3aab, dm3abb, dm3bbb) = \
+        fci.direct_spin1.make_rdm123s(ci0, norb, (nelec//2,nelec//2))
+
+        self.assertTrue(numpy.allclose(dm1a+dm1b, dm1))
+        self.assertTrue(numpy.allclose(dm2aa+dm2bb+dm2ab+dm2ab.transpose(2,3,0,1), dm2))
+        self.assertTrue(numpy.allclose(dm3aaa+dm3bbb+dm3aab+dm3aab.transpose(0,1,4,5,2,3)+\
+        dm3aab.transpose(4,5,0,1,2,3)+dm3abb+dm3abb.transpose(2,3,0,1,4,5)+dm3abb.transpose(2,3,4,5,0,1), dm3))
+
+        (rdm1a, rdm1b), (rdm2aa, rdm2ab, rdm2bb) = \
+        fci.direct_spin1.make_rdm12s(ci0, norb, (nelec//2,nelec//2))
+
+        self.assertTrue(numpy.allclose(rdm1a, dm1a))
+        self.assertTrue(numpy.allclose(rdm1b, dm1b))
+
+        fac = 1. / (nelec//2-1)
+        self.assertTrue(numpy.allclose(rdm1a, numpy.einsum('ijmm->ij',dm2aa)*fac))
+        self.assertTrue(numpy.allclose(rdm1a, numpy.einsum('mmij->ij',dm2aa)*fac))
+        self.assertTrue(numpy.allclose(rdm1b, numpy.einsum('ijmm->ij',dm2bb)*fac))
+        self.assertTrue(numpy.allclose(rdm1b, numpy.einsum('mmij->ij',dm2bb)*fac))
+
+        fac = 1. / (nelec//2) # dm2ab has a prefactor N * N instead of N(N-1)
+        self.assertTrue(numpy.allclose(rdm1a, numpy.einsum('ijmm->ij',dm2ab)*fac))
+        self.assertTrue(numpy.allclose(rdm1b, numpy.einsum('mmij->ij',dm2ab)*fac))
+
+        fac = 1. / (nelec//2-2)
+        self.assertTrue(numpy.allclose(rdm2aa, numpy.einsum('ijklmm->ijkl',dm3aaa)*fac))
+        self.assertTrue(numpy.allclose(rdm2aa, numpy.einsum('ijmmkl->ijkl',dm3aaa)*fac))
+        self.assertTrue(numpy.allclose(rdm2aa, numpy.einsum('mmijkl->ijkl',dm3aaa)*fac))
+
+        self.assertTrue(numpy.allclose(rdm2bb, numpy.einsum('ijklmm->ijkl',dm3bbb)*fac))
+        self.assertTrue(numpy.allclose(rdm2bb, numpy.einsum('ijmmkl->ijkl',dm3bbb)*fac))
+        self.assertTrue(numpy.allclose(rdm2bb, numpy.einsum('mmijkl->ijkl',dm3bbb)*fac))
+
+        fac = 1. / (nelec//2) # dm3aab/abb has a prefactor N * N * (N-1) instead of N(N-1)(N-2)
+        self.assertTrue(numpy.allclose(rdm2aa, numpy.einsum('ijklmm->ijkl',dm3aab)*fac))
+        self.assertTrue(numpy.allclose(rdm2bb, numpy.einsum('mmijkl->ijkl',dm3abb)*fac))
+
+        fac = 1. / (nelec//2-1)
+        self.assertTrue(numpy.allclose(rdm2ab, numpy.einsum('ijmmkl->ijkl',dm3aab)*fac))
+        self.assertTrue(numpy.allclose(rdm2ab, numpy.einsum('mmijkl->ijkl',dm3aab)*fac))
+        self.assertTrue(numpy.allclose(rdm2ab, numpy.einsum('ijklmm->ijkl',dm3abb)*fac))
+        self.assertTrue(numpy.allclose(rdm2ab, numpy.einsum('ijmmkl->ijkl',dm3abb)*fac))
+
     def test_dm4(self):
         dm4ref = make_dm4_o0(ci0, norb, nelec)
         dm4 = fci.rdm.make_dm1234('FCI4pdm_kern_sf', ci0, ci0, norb, nelec)[3]
@@ -86,6 +133,103 @@ class KnownValues(unittest.TestCase):
         self.assertTrue(numpy.allclose(dm3a, numpy.einsum('mnppijkl->mnijkl',dm4b)/5))
         self.assertTrue(numpy.allclose(dm3a, numpy.einsum('mnijppkl->mnijkl',dm4b)/5))
         self.assertTrue(numpy.allclose(dm3a, numpy.einsum('mnijklpp->mnijkl',dm4b)/5))
+
+    def test_rdm4s(self):
+        dm1, dm2, dm3, dm4 = fci.direct_spin1.make_rdm1234(ci0, norb, (nelec//2,nelec//2))
+
+        (dm1a, dm1b), (dm2aa, dm2ab, dm2bb), (dm3aaa, dm3aab, dm3abb, dm3bbb), (dm4aaaa, dm4aaab, dm4aabb, dm4abbb, dm4bbbb) = \
+        fci.direct_spin1.make_rdm1234s(ci0, norb, (nelec//2,nelec//2))
+
+        self.assertTrue(numpy.allclose(dm1a+dm1b, dm1))
+        self.assertTrue(numpy.allclose(dm2aa+dm2bb+dm2ab+dm2ab.transpose(2,3,0,1), dm2))
+        self.assertTrue(numpy.allclose(dm3aaa+dm3bbb+dm3aab+dm3aab.transpose(0,1,4,5,2,3)+\
+        dm3aab.transpose(4,5,0,1,2,3)+dm3abb+dm3abb.transpose(2,3,0,1,4,5)+dm3abb.transpose(2,3,4,5,0,1), dm3))
+        self.assertTrue(numpy.allclose(
+            dm4aaaa
+            + dm4bbbb
+            + dm4aaab
+            + dm4aaab.transpose(0, 1, 2, 3, 6, 7, 4, 5)
+            + dm4aaab.transpose(0, 1, 6, 7, 2, 3, 4, 5)
+            + dm4aaab.transpose(6, 7, 0, 1, 2, 3, 4, 5)
+            + dm4aabb
+            + dm4aabb.transpose(0, 1, 4, 5, 2, 3, 6, 7)
+            + dm4aabb.transpose(4, 5, 0, 1, 2, 3, 6, 7)
+            + dm4aabb.transpose(0, 1, 4, 5, 6, 7, 2, 3)
+            + dm4aabb.transpose(4, 5, 0, 1, 6, 7, 2, 3)
+            + dm4aabb.transpose(4, 5, 6, 7, 0, 1, 2, 3)
+            + dm4abbb
+            + dm4abbb.transpose(2, 3, 0, 1, 4, 5, 6, 7)
+            + dm4abbb.transpose(2, 3, 4, 5, 0, 1, 6, 7)
+            + dm4abbb.transpose(2, 3, 4, 5, 6, 7, 0, 1),
+            dm4,
+        ))
+
+        (rdm1a, rdm1b), (rdm2aa, rdm2ab, rdm2bb), (rdm3aaa, rdm3aab, rdm3abb, rdm3bbb) = \
+        fci.direct_spin1.make_rdm123s(ci0, norb, (nelec//2,nelec//2))
+
+        self.assertTrue(numpy.allclose(rdm1a, dm1a))
+        self.assertTrue(numpy.allclose(rdm1b, dm1b))
+
+        fac = 1. / (nelec//2-1)
+        self.assertTrue(numpy.allclose(rdm1a, numpy.einsum('ijmm->ij',dm2aa)*fac))
+        self.assertTrue(numpy.allclose(rdm1a, numpy.einsum('mmij->ij',dm2aa)*fac))
+        self.assertTrue(numpy.allclose(rdm1b, numpy.einsum('ijmm->ij',dm2bb)*fac))
+        self.assertTrue(numpy.allclose(rdm1b, numpy.einsum('mmij->ij',dm2bb)*fac))
+
+        fac = 1. / (nelec//2) # dm2ab has a prefactor N * N instead of N(N-1)
+        self.assertTrue(numpy.allclose(rdm1a, numpy.einsum('ijmm->ij',dm2ab)*fac))
+        self.assertTrue(numpy.allclose(rdm1b, numpy.einsum('mmij->ij',dm2ab)*fac))
+
+        fac = 1. / (nelec//2-2)
+        self.assertTrue(numpy.allclose(rdm2aa, numpy.einsum('ijklmm->ijkl',dm3aaa)*fac))
+        self.assertTrue(numpy.allclose(rdm2aa, numpy.einsum('ijmmkl->ijkl',dm3aaa)*fac))
+        self.assertTrue(numpy.allclose(rdm2aa, numpy.einsum('mmijkl->ijkl',dm3aaa)*fac))
+
+        self.assertTrue(numpy.allclose(rdm2bb, numpy.einsum('ijklmm->ijkl',dm3bbb)*fac))
+        self.assertTrue(numpy.allclose(rdm2bb, numpy.einsum('ijmmkl->ijkl',dm3bbb)*fac))
+        self.assertTrue(numpy.allclose(rdm2bb, numpy.einsum('mmijkl->ijkl',dm3bbb)*fac))
+
+        fac = 1. / (nelec//2) # dm3aab/abb has a prefactor N * N * (N-1) instead of N(N-1)(N-2)
+        self.assertTrue(numpy.allclose(rdm2aa, numpy.einsum('ijklmm->ijkl',dm3aab)*fac))
+        self.assertTrue(numpy.allclose(rdm2bb, numpy.einsum('mmijkl->ijkl',dm3abb)*fac))
+
+        fac = 1. / (nelec//2-1)
+        self.assertTrue(numpy.allclose(rdm2ab, numpy.einsum('ijmmkl->ijkl',dm3aab)*fac))
+        self.assertTrue(numpy.allclose(rdm2ab, numpy.einsum('mmijkl->ijkl',dm3aab)*fac))
+        self.assertTrue(numpy.allclose(rdm2ab, numpy.einsum('ijklmm->ijkl',dm3abb)*fac))
+        self.assertTrue(numpy.allclose(rdm2ab, numpy.einsum('ijmmkl->ijkl',dm3abb)*fac))
+
+        # NOTE: Tests skipeed because system only contains 3 alpha and beta electrons
+        # fac = 1. / (nelec//2-3)
+        # self.assertTrue(numpy.allclose(rdm3aaa, numpy.einsum('ijklmnoo->ijklmn',dm4aaaa)*fac))
+        # self.assertTrue(numpy.allclose(rdm3aaa, numpy.einsum('ijkloomn->ijklmn',dm4aaaa)*fac))
+        # self.assertTrue(numpy.allclose(rdm3aaa, numpy.einsum('ijooklmn->ijklmn',dm4aaaa)*fac))
+        # self.assertTrue(numpy.allclose(rdm3aaa, numpy.einsum('ooijklmn->ijklmn',dm4aaaa)*fac))
+        #
+        # self.assertTrue(numpy.allclose(rdm3bbb, numpy.einsum('ijklmnoo->ijklmn',dm4bbbb)*fac))
+        # self.assertTrue(numpy.allclose(rdm3bbb, numpy.einsum('ijkloomn->ijklmn',dm4bbbb)*fac))
+        # self.assertTrue(numpy.allclose(rdm3bbb, numpy.einsum('ijooklmn->ijklmn',dm4bbbb)*fac))
+        # self.assertTrue(numpy.allclose(rdm3bbb, numpy.einsum('ooijklmn->ijklmn',dm4bbbb)*fac))
+
+        fac = 1. / (nelec//2-2)
+        self.assertTrue(numpy.allclose(rdm3aab, numpy.einsum('ooijklmn->ijklmn',dm4aaab)*fac))
+        self.assertTrue(numpy.allclose(rdm3aab, numpy.einsum('ijooklmn->ijklmn',dm4aaab)*fac))
+        self.assertTrue(numpy.allclose(rdm3aab, numpy.einsum('ijkloomn->ijklmn',dm4aaab)*fac))
+
+        self.assertTrue(numpy.allclose(rdm3abb, numpy.einsum('ijklmnoo->ijklmn',dm4abbb)*fac))
+        self.assertTrue(numpy.allclose(rdm3abb, numpy.einsum('ijkloomn->ijklmn',dm4abbb)*fac))
+        self.assertTrue(numpy.allclose(rdm3abb, numpy.einsum('ijooklmn->ijklmn',dm4abbb)*fac))
+
+        fac = 1. / (nelec//2-1)
+        self.assertTrue(numpy.allclose(rdm3aab, numpy.einsum('ijklmnoo->ijklmn',dm4aabb)*fac))
+        self.assertTrue(numpy.allclose(rdm3aab, numpy.einsum('ijkloomn->ijklmn',dm4aabb)*fac))
+
+        self.assertTrue(numpy.allclose(rdm3abb, numpy.einsum('ijooklmn->ijklmn',dm4aabb)*fac))
+        self.assertTrue(numpy.allclose(rdm3abb, numpy.einsum('ooijklmn->ijklmn',dm4aabb)*fac))
+
+        fac = 1. / (nelec//2)
+        self.assertTrue(numpy.allclose(rdm3bbb, numpy.einsum('ooijklmn->ijklmn',dm4abbb)*fac))
+        self.assertTrue(numpy.allclose(rdm3aaa, numpy.einsum('ijklmnoo->ijklmn',dm4aaab)*fac))
 
     def test_tdm2(self):
         dm1 = numpy.einsum('ij,ijkl->lk', ci0, _trans1(ci0, norb, nelec))

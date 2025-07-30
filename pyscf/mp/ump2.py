@@ -14,7 +14,7 @@
 # limitations under the License.
 
 '''
-UMP2 with spatial integals
+UMP2 with spatial integrals
 '''
 
 
@@ -63,7 +63,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
     emp2_ss = emp2_os = 0.0
     for i in range(nocca):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
-            # When mf._eri is a custom integrals wiht the shape (n,n,n,n), the
+            # When mf._eri is a custom integrals with the shape (n,n,n,n), the
             # ovov integrals might be in a 4-index tensor.
             eris_ovov = eris.ovov[i]
         else:
@@ -77,7 +77,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
             t2aa[i] = t2i - t2i.transpose(0,2,1)
 
         if isinstance(eris.ovOV, numpy.ndarray) and eris.ovOV.ndim == 4:
-            # When mf._eri is a custom integrals wiht the shape (n,n,n,n), the
+            # When mf._eri is a custom integrals with the shape (n,n,n,n), the
             # ovov integrals might be in a 4-index tensor.
             eris_ovov = eris.ovOV[i]
         else:
@@ -90,7 +90,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
 
     for i in range(noccb):
         if isinstance(eris.OVOV, numpy.ndarray) and eris.OVOV.ndim == 4:
-            # When mf._eri is a custom integrals wiht the shape (n,n,n,n), the
+            # When mf._eri is a custom integrals with the shape (n,n,n,n), the
             # ovov integrals might be in a 4-index tensor.
             eris_ovov = eris.OVOV[i]
         else:
@@ -179,14 +179,15 @@ def get_nocc(mp):
         nocca = numpy.count_nonzero(mp.mo_occ[0] > 0) - frozen
         noccb = numpy.count_nonzero(mp.mo_occ[1] > 0) - frozen
         #assert (nocca > 0 and noccb > 0)
-    elif isinstance(frozen[0], (int, numpy.integer, list, numpy.ndarray)):
-        if len(frozen) > 0 and isinstance(frozen[0], (int, numpy.integer)):
-            # The same frozen orbital indices for alpha and beta orbitals
-            frozen = [frozen, frozen]
+    elif hasattr(mp.frozen, '__len__'):
         occidxa = mp.mo_occ[0] > 0
-        occidxa[list(frozen[0])] = False
         occidxb = mp.mo_occ[1] > 0
-        occidxb[list(frozen[1])] = False
+        if len(frozen) > 0:
+            if isinstance(frozen[0], (int, numpy.integer)):
+                # The same frozen orbital indices for alpha and beta orbitals
+                frozen = [frozen, frozen]
+            occidxa[list(frozen[0])] = False
+            occidxb[list(frozen[1])] = False
         nocca = numpy.count_nonzero(occidxa)
         noccb = numpy.count_nonzero(occidxb)
     else:
@@ -203,11 +204,14 @@ def get_nmo(mp):
     elif isinstance(frozen, (int, numpy.integer)):
         nmoa = mp.mo_occ[0].size - frozen
         nmob = mp.mo_occ[1].size - frozen
-    elif isinstance(frozen[0], (int, numpy.integer, list, numpy.ndarray)):
-        if isinstance(frozen[0], (int, numpy.integer)):
-            frozen = (frozen, frozen)
-        nmoa = len(mp.mo_occ[0]) - len(set(frozen[0]))
-        nmob = len(mp.mo_occ[1]) - len(set(frozen[1]))
+    elif hasattr(mp.frozen, '__len__'):
+        nmoa = mp.mo_occ[0].size
+        nmob = mp.mo_occ[1].size
+        if len(frozen) > 0:
+            if isinstance(frozen[0], (int, numpy.integer)):
+                frozen = (frozen, frozen)
+            nmoa -= len(set(frozen[0]))
+            nmob -= len(set(frozen[1]))
     else:
         raise NotImplementedError
     return nmoa, nmob
@@ -217,7 +221,7 @@ def get_frozen_mask(mp):
     '''Get boolean mask for the unrestricted reference orbitals.
 
     In the returned boolean (mask) array of frozen orbital indices, the
-    element is False if it corresonds to the frozen orbital.
+    element is False if it corresponds to the frozen orbital.
     '''
     moidxa = numpy.ones(mp.mo_occ[0].size, dtype=bool)
     moidxb = numpy.ones(mp.mo_occ[1].size, dtype=bool)
@@ -231,16 +235,17 @@ def get_frozen_mask(mp):
     elif isinstance(frozen, (int, numpy.integer)):
         moidxa[:frozen] = False
         moidxb[:frozen] = False
-    elif isinstance(frozen[0], (int, numpy.integer, list, numpy.ndarray)):
-        if isinstance(frozen[0], (int, numpy.integer)):
-            frozen = (frozen, frozen)
-        moidxa[list(frozen[0])] = False
-        moidxb[list(frozen[1])] = False
+    elif hasattr(mp.frozen, '__len__'):
+        if len(frozen) > 0:
+            if isinstance(frozen[0], (int, numpy.integer)):
+                frozen = (frozen, frozen)
+            moidxa[list(frozen[0])] = False
+            moidxb[list(frozen[1])] = False
     else:
         raise NotImplementedError
     return moidxa,moidxb
 
-def make_rdm1(mp, t2=None, ao_repr=False):
+def make_rdm1(mp, t2=None, ao_repr=False, with_frozen=True):
     r'''
     One-particle spin density matrices dm1a, dm1b in MO basis (the
     occupied-virtual blocks due to the orbital response contribution are not
@@ -253,12 +258,13 @@ def make_rdm1(mp, t2=None, ao_repr=False):
     '''
     from pyscf.cc import uccsd_rdm
     if t2 is None: t2 = mp.t2
+    assert t2 is not None
     doo, dvv = _gamma1_intermediates(mp, t2)
     nocca, noccb, nvira, nvirb = t2[1].shape
     dov = numpy.zeros((nocca,nvira))
     dOV = numpy.zeros((noccb,nvirb))
     d1 = (doo, (dov, dOV), (dov.T, dOV.T), dvv)
-    return uccsd_rdm._make_rdm1(mp, d1, with_frozen=True, ao_repr=ao_repr)
+    return uccsd_rdm._make_rdm1(mp, d1, with_frozen=with_frozen, ao_repr=ao_repr)
 
 def _gamma1_intermediates(mp, t2):
     t2aa, t2ab, t2bb = t2
@@ -274,7 +280,20 @@ def _gamma1_intermediates(mp, t2):
     return ((dooa, doob), (dvva, dvvb))
 
 
-def make_fno(mp, thresh=1e-6, pct_occ=None, t2=None, eris=None):
+def _mo_splitter(mp):
+    maskact = mp.get_frozen_mask()
+    maskocc = [mp.mo_occ[s]>1e-6 for s in [0,1]]
+    masks = []
+    for s in [0,1]:
+        masks.append([
+            maskocc[s]  & ~maskact[s],  # frz occ
+            maskocc[s]  &  maskact[s],  # act occ
+            ~maskocc[s] &  maskact[s],  # act vir
+            ~maskocc[s] & ~maskact[s],  # frz vir
+        ])
+    return masks
+
+def make_fno(mp, thresh=1e-6, pct_occ=None, nvir_act=None, t2=None, eris=None):
     r'''
     Frozen natural orbitals
 
@@ -285,35 +304,52 @@ def make_fno(mp, thresh=1e-6, pct_occ=None, t2=None, eris=None):
             Length-2 list of semicanonical NO coefficients in the AO basis
     '''
     mf = mp._scf
-    dmab = mp.make_rdm1(t2=t2)
+    dmab = mp.make_rdm1(t2=t2, with_frozen=False)
 
-    frozen = []
+    masks = _mo_splitter(mp)
+
+    if nvir_act is not None:
+        if isinstance(nvir_act, (int, numpy.integer)):
+            nvir_act = [nvir_act]*2
+
+    no_frozen = []
     no_coeff = []
     for s,dm in enumerate(dmab):
         nocc = mp.nocc[s]
         nmo = mp.nmo[s]
+        nvir = nmo - nocc
         n,v = numpy.linalg.eigh(dm[nocc:,nocc:])
         idx = numpy.argsort(n)[::-1]
         n,v = n[idx], v[:,idx]
+        n *= 2  # to match RHF when using same thresh
 
-        if pct_occ is None:
-            nvir_act = numpy.count_nonzero(n>thresh)
+        if nvir_act is None:
+            if pct_occ is None:
+                nvir_keep = numpy.count_nonzero(n>thresh)
+            else:
+                cumsum = numpy.cumsum(n/numpy.sum(n))
+                logger.debug(mp, 'Sum(pct_occ): %s', cumsum)
+                nvir_keep = numpy.count_nonzero(
+                    [c <= pct_occ or numpy.isclose(c, pct_occ) for c in cumsum])
         else:
-            print(numpy.cumsum(n/numpy.sum(n)))
-            nvir_act = numpy.count_nonzero(numpy.cumsum(n/numpy.sum(n))<pct_occ)
+            nvir_keep = min(nvir, nvir_act[s])
 
-        fvv = numpy.diag(mf.mo_energy[s][nocc:])
+        moeoccfrz0, moeocc, moevir, moevirfrz0 = [mf.mo_energy[s][m] for m in masks[s]]
+        orboccfrz0, orbocc, orbvir, orbvirfrz0 = [mf.mo_coeff[s][:,m] for m in masks[s]]
+
+        fvv = numpy.diag(moevir)
         fvv_no = numpy.dot(v.T, numpy.dot(fvv, v))
-        _, v_canon = numpy.linalg.eigh(fvv_no[:nvir_act,:nvir_act])
+        _, v_canon = numpy.linalg.eigh(fvv_no[:nvir_keep,:nvir_keep])
 
-        no_coeff_1 = numpy.dot(mf.mo_coeff[s][:,nocc:], numpy.dot(v[:,:nvir_act], v_canon))
-        no_coeff_2 = numpy.dot(mf.mo_coeff[s][:,nocc:], v[:,nvir_act:])
-        no_coeff_s = numpy.concatenate((mf.mo_coeff[s][:,:nocc], no_coeff_1, no_coeff_2), axis=1)
+        orbviract = numpy.dot(orbvir, numpy.dot(v[:,:nvir_keep], v_canon))
+        orbvirfrz = numpy.dot(orbvir, v[:,nvir_keep:])
+        no_comp = (orboccfrz0, orbocc, orbviract, orbvirfrz, orbvirfrz0)
+        no_coeff.append(numpy.hstack(no_comp))
+        nocc_loc = numpy.cumsum([0]+[x.shape[1] for x in no_comp]).astype(int)
+        no_frozen.append(numpy.hstack((numpy.arange(nocc_loc[0], nocc_loc[1]),
+                                       numpy.arange(nocc_loc[3], nocc_loc[5]))).astype(int))
 
-        frozen.append(numpy.arange(nocc+nvir_act,nmo))
-        no_coeff.append(no_coeff_s)
-
-    return frozen, no_coeff
+    return no_frozen, no_coeff
 
 
 # spin-orbital rdm2 in Chemist's notation
@@ -340,6 +376,7 @@ def make_rdm2(mp, t2=None, ao_repr=False):
     eri_bb[p,q,r,s] = ( p_beta q_beta | r_beta s_beta )
     '''
     if t2 is None: t2 = mp.t2
+    assert t2 is not None
     nmoa, nmob = nmoa0, nmob0 = mp.nmo
     nocca, noccb = nocca0, noccb0 = mp.nocc
     t2aa, t2ab, t2bb = t2
@@ -426,7 +463,7 @@ def make_rdm2(mp, t2=None, ao_repr=False):
     return dm2aa, dm2ab, dm2bb
 
 
-class UMP2(mp2.MP2):
+class UMP2(mp2.MP2Base):
 
     get_nocc = get_nocc
     get_nmo = get_nmo
@@ -447,10 +484,19 @@ class UMP2(mp2.MP2):
     # For non-canonical MP2
     energy = energy
     update_amps = update_amps
+
     def init_amps(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
         return kernel(self, mo_energy, mo_coeff, eris, with_t2)
 
-    to_gpu = lib.to_gpu
+    def density_fit(self, auxbasis=None, with_df=None):
+        from pyscf.mp import dfump2
+        mymp = dfump2.DFUMP2(self._scf, self.frozen, self.mo_coeff, self.mo_occ)
+        if with_df is not None:
+            mymp.with_df = with_df
+        if mymp.with_df.auxbasis != auxbasis:
+            mymp.with_df = mymp.with_df.copy()
+            mymp.with_df.auxbasis = auxbasis
+        return mymp
 
 MP2 = UMP2
 
@@ -602,8 +648,8 @@ def _ao2mo_ovov(mp, orbs, feri, max_memory=2000, verbose=None):
     with lib.call_in_background(ftmp.__setitem__) as save:
         for ish0, ish1, ni in sh_ranges:
             for jsh0, jsh1, nj in sh_ranges:
-                i0, i1 = ao_loc[ish0], ao_loc[ish1]
-                j0, j1 = ao_loc[jsh0], ao_loc[jsh1]
+                i0, i1 = int(ao_loc[ish0]), int(ao_loc[ish1])
+                j0, j1 = int(ao_loc[jsh0]), int(ao_loc[jsh1])
 
                 eri = fint(int2e, mol._atm, mol._bas, mol._env,
                            shls_slice=(0,nbas,ish0,ish1, jsh0,jsh1,0,nbas),

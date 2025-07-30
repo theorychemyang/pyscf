@@ -38,6 +38,7 @@ def dump_neo_qc_info(self, log):
     log.note("Fock space dimension: %g", 2**self.n_qubit_tot)
 
     Hamiltonian = self.hamiltonian
+    #ham_dim = Hamiltonian.shape[0]
     psi_HF = self.psi_hf
     S2_op = self.s2_op
     pos_op = self.r_op
@@ -637,10 +638,7 @@ def Ham_neo(mf, nuc_coeff, moa, mob, ea, eb, create, destroy, n_qubit_e, n_qubit
     mf_elec = mf.mf_elec
     mf_nuc = mf.mf_nuc
 
-    if len(mf_nuc)>0:
-        hao = mf_elec.hcore_static # need static (true) hcore
-    else:
-        hao = mf_elec.get_hcore()
+    hao = mf_elec.get_hcore()
     eri_ao = mf_elec._eri
     Ham_ee = Ham_elec(mf, moa, mob, ea, eb, eri_ao, hao, create, destroy, n_qubit_e)
     E_nuc = mf_elec.energy_nuc()
@@ -925,7 +923,7 @@ class QC_NEO_BASE(lib.StreamObject):
         moa, mob, ea, eb, na, nb, noa, nob = parse_mf_elec(mf_elec)
 
         # mixed alpha/beta overlap
-        s1e = mf.get_ovlp()
+        s1e = mf_elec.get_ovlp()
         s_ab = moa.conj().T @ s1e @ mob
         s_ba = mob.conj().T @ s1e @ moa
 
@@ -1032,6 +1030,7 @@ class QC_FCI_NEO(QC_NEO_BASE):
         # FCI Hamiltonian
         ham_kern = self.hamiltonian
         ham_dim = ham_kern.shape[0]
+        E_FCI, C_FCI = numpy.linalg.eigh(ham_kern.todense()) #eigh should use dense matrix
 
         # Fock space target for number of electrons
         if num_e is None:

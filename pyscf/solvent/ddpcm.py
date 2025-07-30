@@ -71,14 +71,7 @@ def ddpcm_for_post_scf(method, solvent_obj=None, dm=None):
             solvent_obj = DDPCM(method.mol)
     return _attach_solvent._for_post_scf(method, solvent_obj, dm)
 
-@lib.with_doc(_attach_solvent._for_tdscf.__doc__)
-def ddpcm_for_tdscf(method, solvent_obj=None, dm=None):
-    scf_solvent = getattr(method._scf, 'with_solvent', None)
-    assert scf_solvent is None or isinstance(scf_solvent, DDPCM)
-
-    if solvent_obj is None:
-        solvent_obj = DDPCM(method.mol)
-    return _attach_solvent._for_tdscf(method, solvent_obj, dm)
+ddpcm_for_tdscf = _attach_solvent._for_tdscf
 
 
 # Inject ddPCM to other methods
@@ -199,6 +192,7 @@ def make_A(pcmobj, r_vdw, ylm_1sph, ui):
 class ddPCM(ddcosmo.DDCOSMO):
     def __init__(self, mol):
         ddcosmo.DDCOSMO.__init__(self, mol)
+        self.method = 'ddPCM'
 
     def dump_flags(self, verbose=None):
         logger.info(self, '******** %s (In testing) ********', self.__class__)

@@ -66,7 +66,7 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(t2 - t2ref0).max(), 0, 8)
 
         pt.max_memory = 1
-        pt.frozen = None
+        pt.frozen = []
         emp2, t2 = pt.kernel()
         self.assertAlmostEqual(emp2, -0.204019967288338, 8)
         self.assertAlmostEqual(pt.e_corr_ss, -0.05153088565639835, 8)
@@ -127,9 +127,9 @@ class KnownValues(unittest.TestCase):
     def test_mp2_contract_eri_dm(self):
         nocc = mol.nelectron//2
         nmo = mf.mo_energy.size
-        nvir = nmo - nocc
 
         pt = mp.mp2.MP2(mf)
+        pt.frozen = 0
         emp2, t2 = pt.kernel()
         eri = ao2mo.restore(1, ao2mo.kernel(mf._eri, mf.mo_coeff), nmo)
         hcore = mf.get_hcore()
@@ -283,13 +283,21 @@ class KnownValues(unittest.TestCase):
 
     def test_init_mp2(self):
         mf0 = mf
-        mf1 = scf.RHF(gto.M(atom='H', spin=1))
+        mf1 = scf.RHF(gto.M(atom='H', spin=1)).run()
+        dfmf0 = mf0.density_fit()
+        dfmf1 = mf1.density_fit()
         self.assertTrue(isinstance(mp.MP2(mf0), mp.mp2.RMP2))
         self.assertTrue(isinstance(mp.MP2(mf1), mp.ump2.UMP2))
-        self.assertTrue(isinstance(mp.MP2(mf0.density_fit()), mp.dfmp2.DFMP2))
-        #self.assertTrue(isinstance(mp.MP2(mf1.density_fit()), mp.dfmp2.DFUMP2))
+        self.assertTrue(isinstance(mp.MP2(dfmf0), mp.dfmp2.DFMP2))
+        self.assertTrue(isinstance(mp.MP2(dfmf1), mp.dfump2.DFUMP2))
         self.assertTrue(isinstance(mp.MP2(mf0.newton()), mp.mp2.RMP2))
         self.assertTrue(isinstance(mp.MP2(mf1.newton()), mp.ump2.UMP2))
+
+        dfumf = dfmf0.to_uhf()
+        dfgmf = dfmf0.to_ghf()
+        self.assertTrue(isinstance(dfmf0.MP2(), mp.dfmp2.DFMP2))
+        self.assertTrue(isinstance(dfumf.MP2(), mp.dfump2.DFUMP2))
+        self.assertTrue(isinstance(dfgmf.MP2(), mp.dfgmp2.DFGMP2))
 
     def test_mp2_scanner(self):
         pt_scanner = mp.MP2(mf).as_scanner()
@@ -298,7 +306,7 @@ class KnownValues(unittest.TestCase):
 
     def test_reset(self):
         mol1 = gto.M(atom='C')
-        pt = scf.RHF(mol).DFMP2()
+        pt = scf.RHF(mol).run().DFMP2()
         pt.reset(mol1)
         self.assertTrue(pt.mol is mol1)
         self.assertTrue(pt.with_df.mol is mol1)

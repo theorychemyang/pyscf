@@ -238,11 +238,11 @@ def general(mol, mo_coeffs, erifile, dataname='eri_mo',
 
     if isinstance(erifile, str):
         if h5py.is_hdf5(erifile):
-            feri = h5py.File(erifile, 'a')
+            feri = lib.H5FileWrap(erifile, 'a')
             if dataname in feri:
                 del (feri[dataname])
         else:
-            feri = h5py.File(erifile, 'w')
+            feri = lib.H5FileWrap(erifile, 'w')
     else:
         assert (isinstance(erifile, h5py.Group))
         feri = erifile
@@ -431,7 +431,7 @@ def half_e1(mol, mo_coeffs, swapfile,
     if isinstance(swapfile, h5py.Group):
         fswap = swapfile
     else:
-        fswap = lib.H5TmpFile(swapfile)
+        fswap = lib.H5FileWrap(swapfile, 'a')
     for icomp in range(comp):
         fswap.create_group(str(icomp)) # for h5py old version
 
@@ -486,16 +486,18 @@ def _load_from_h5g(h5group, row0, row1, out=None):
         out = numpy.ndarray((row1-row0, ncol), dat.dtype, buffer=out)
         col1 = 0
         for key in range(nkeys):
-            dat = h5group[str(key)][row0:row1]
-            col0, col1 = col1, col1 + dat.shape[1]
-            out[:,col0:col1] = dat
+            col0, col1 = col1, col1 + h5group[str(key)].shape[1]
+            if col1 > col0:
+                h5group[str(key)].read_direct(out, dest_sel=numpy.s_[:,col0:col1],
+                                            source_sel=numpy.s_[row0:row1])
     else:  # multiple components
         out = numpy.ndarray((dat.shape[0], row1-row0, ncol), dat.dtype, buffer=out)
         col1 = 0
         for key in range(nkeys):
-            dat = h5group[str(key)][:,row0:row1]
-            col0, col1 = col1, col1 + dat.shape[2]
-            out[:,:,col0:col1] = dat
+            col0, col1 = col1, col1 + h5group[str(key)].shape[2]
+            if col1 > col0:
+                h5group[str(key)].read_direct(out, dest_sel=numpy.s_[:,:,col0:col1],
+                                            source_sel=numpy.s_[:,row0:row1])
     return out
 
 def _transpose_to_h5g(h5group, key, dat, blksize, chunks=None):
@@ -708,8 +710,8 @@ def guess_shell_ranges(mol, aosym, max_iobuf, max_aobuf=None, ao_loc=None,
                        compress_diag=True):
     if ao_loc is None: ao_loc = mol.ao_loc_nr()
     max_iobuf = max(1, max_iobuf)
-
-    dims = ao_loc[1:] - ao_loc[:-1]
+    ao_loc_long = ao_loc.astype(numpy.int64)
+    dims = ao_loc_long[1:] - ao_loc_long[:-1]
     dijs = (dims.reshape(-1,1) * dims)
     nbas = dijs.shape[0]
 
@@ -771,7 +773,7 @@ def balance_partition(ao_loc, blksize, start_id=0, stop_id=None):
     displs = [i+start_id for i in displs]
     tasks = []
     for i0, i1 in zip(displs[:-1],displs[1:]):
-        tasks.append((i0, i1, ao_loc[i1]-ao_loc[i0]))
+        tasks.append((i0, i1, int(ao_loc[i1]-ao_loc[i0])))
     return tasks
 
 del (MAX_MEMORY)

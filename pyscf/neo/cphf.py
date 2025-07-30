@@ -10,245 +10,329 @@ from pyscf import lib
 from pyscf.lib import logger
 
 
-def solve(fvind, mf_e, mf_n, h1e, h1n, s1e=None, with_f1n=False,
-          max_cycle=30, tol=1e-9, hermi=False, verbose=logger.WARN):
+def solve(fvind, mo_energy, mo_occ, h1, s1=None, with_f1=False,
+          max_cycle=100, tol=1e-9, hermi=False, verbose=logger.WARN,
+          level_shift=0):
     '''
     Args:
         fvind : function
             Given density matrix, compute response function density matrix
             products. If requested, also the position constraint part.
-        mf_e : SCF class
-            Electronic wave function.
-        mf_n : list
-            A list of nuclear wave functions.
-        h1e : ndarray
-            MO space electronic H1.
-        h1n : list
-            A list of MO space nuclear H1.
-        s1e : ndaray
-            MO space electronic S1.
-        with_f1n : boolean
+        with_f1 : boolean
             If True, triggers CNEO.
-
-    Kwargs:
-        hermi : boolean
-            Whether the matrix defined by fvind is Hermitian or not.
     '''
-    if s1e is None:
-        return solve_nos1(fvind, mf_e, mf_n, h1e, h1n, with_f1n=with_f1n,
-                          max_cycle=max_cycle, tol=tol, hermi=hermi,
-                          verbose=verbose)
+    if s1 is None:
+        return solve_nos1(fvind, mo_energy, mo_occ, h1, with_f1,
+                          max_cycle, tol, hermi, verbose, level_shift)
     else:
-        return solve_withs1(fvind, mf_e, mf_n, h1e, h1n, s1e, with_f1n=with_f1n,
-                            max_cycle=max_cycle, tol=tol, hermi=hermi,
-                            verbose=verbose)
+        return solve_withs1(fvind, mo_energy, mo_occ, h1, s1, with_f1,
+                            max_cycle, tol, hermi, verbose, level_shift)
 kernel = solve
 
 # h1 shape is (:,nvir,nocc)
-def solve_nos1(fvind, mf_e, mf_n, h1e, h1n, with_f1n=False,
-               max_cycle=30, tol=1e-9, hermi=False, verbose=logger.WARN):
+def solve_nos1(fvind, mo_energy, mo_occ, h1, with_f1=False,
+               max_cycle=100, tol=1e-9, hermi=False, verbose=logger.WARN,
+               level_shift=0):
     '''For field independent basis. First order overlap matrix is zero'''
-    raise NotImplementedError('CP equation without s1 is not implemented yet.')
+    raise NotImplementedError('(C)NEO-CP equation without s1 is not implemented yet.')
 
 # h1 shape is (:,nocc+nvir,nocc)
-def solve_withs1(fvind, mf_e, mf_n, h1e, h1n, s1e, with_f1n=False,
-                 max_cycle=30, tol=1e-9, hermi=False, verbose=logger.WARN):
+def solve_withs1(fvind, mo_energy, mo_occ, h1, s1, with_f1=False,
+                 max_cycle=100, tol=1e-9, hermi=False, verbose=logger.WARN,
+                 level_shift=0):
     '''For field dependent basis. First order overlap matrix is non-zero.
-
-    Kwargs:
-        hermi : boolean
-            Whether the matrix defined by fvind is Hermitian or not.
+    The first order orbitals are set to
+    C^1_{ij} = -1/2 S1
+    e1 = h1 - s1*e0 + (e0_j-e0_i)*c1 + vhf[c1]
 
     Returns:
-        First order electronic orbital coefficients (in MO basis), first order
-        elecronic orbital energy matrix and first order nuclear orbital
-        coefficients. If requested, also first order nuclear position Lagrange
+        First order orbital coefficients (in MO basis) and first order orbital
+        energy matrix. If requested, also first order nuclear position Lagrange
         multipliers for CNEO.
     '''
+    assert not hermi
     log = logger.new_logger(verbose=verbose)
     t0 = (logger.process_clock(), logger.perf_counter())
 
-    mol = mf_e.mol.super_mol
-    total_size = 0 # size of mo1
+    occidx = {}
+    viridx = {}
+    e_i = {}
+    e_a = {}
+    e_ai = {}
+    nocc = {}
+    nmo = {}
+    hs = {}
+    scale = {}
+    mo1base = []
+    is_component_unrestricted = {}
+    nov = {}
+    total_mo1 = 0
+    total_f1 = 0
+    sorted_keys = sorted(mo_occ.keys())
+    for t in sorted_keys:
+        mo_occ[t] = numpy.asarray(mo_occ[t])
+        if mo_occ[t].ndim > 1: # unrestricted
+            assert not t.startswith('n')
+            assert mo_occ[t].shape[0] == 2
+            is_component_unrestricted[t] = True
+            occidxa = mo_occ[t][0] > 0
+            occidxb = mo_occ[t][1] > 0
+            occidx[t] = (occidxa, occidxb)
+            viridxa = ~occidxa
+            viridxb = ~occidxb
+            viridx[t] = (viridxa, viridxb)
+            nocca = numpy.count_nonzero(occidxa)
+            noccb = numpy.count_nonzero(occidxb)
+            nocc[t] = (nocca, noccb)
+            nmoa = mo_occ[t][0].size
+            nmob = mo_occ[t][1].size
+            nmo[t] = (nmoa, nmob)
+            mo_energy[t] = numpy.asarray(mo_energy[t])
+            assert mo_energy[t].ndim > 1 and mo_energy[t].shape[0] == 2
+            ei_a = mo_energy[t][0][occidxa]
+            ei_b = mo_energy[t][1][occidxb]
+            e_i[t] = (ei_a, ei_b)
+            ea_a = mo_energy[t][0][viridxa]
+            ea_b = mo_energy[t][1][viridxb]
+            e_a[t] = (ea_a, ea_b)
+            eai_a = 1 / (ea_a[:,None] + level_shift - ei_a)
+            eai_b = 1 / (ea_b[:,None] + level_shift - ei_b)
+            e_ai[t] = (eai_a, eai_b)
+            s1_a = s1[t][0].reshape(-1,nmoa,nocca)
+            nset = s1_a.shape[0]
+            s1_b = s1[t][1].reshape(nset,nmob,noccb)
+            hs_a = h1[t][0].reshape(nset,nmoa,nocca) - s1_a * ei_a
+            hs_b = h1[t][1].reshape(nset,nmob,noccb) - s1_b * ei_b
+            hs[t] = [hs_a, hs_b]
+            mo1base_a = hs_a.copy()
+            mo1base_b = hs_b.copy()
+            mo1base_a[:,viridxa] *= -eai_a
+            mo1base_b[:,viridxb] *= -eai_b
+            mo1base_a[:,occidxa] = -s1_a[:,occidxa] * .5
+            mo1base_b[:,occidxb] = -s1_b[:,occidxb] * .5
+            mo1base.append(mo1base_a.reshape(nset,-1))
+            mo1base.append(mo1base_b.reshape(nset,-1))
+            nov[t] = nocca * nmoa + noccb * nmob
+        else: # restricted
+            is_component_unrestricted[t] = False
+            occidx[t] = mo_occ[t] > 0
+            viridx[t] = mo_occ[t] == 0
+            e_a[t] = mo_energy[t][viridx[t]]
+            e_i[t] = mo_energy[t][occidx[t]]
+            e_ai[t] = 1 / (e_a[t][:,None] + level_shift - e_i[t])
+            nvir, nocc[t] = e_ai[t].shape
+            nmo[t] = nocc[t] + nvir
+            if with_f1 and t.startswith('n'):
+                # In theory, this scale factor should be 1/(LUMO-HOMO) to be
+                # consistent with NEO-CPHF blocks, but in practical tests it
+                # can lead to nonconvergence. In the test for a molecule with
+                # 24 atoms (9 of which are hydrogen), I get the following results:
+                #  | scale | #cycles | NEO-CPHF error | position error |
+                #  |  1.0  |    44   |     2.9e-10    |    1.4e-10     |
+                #  |  1.6  |    49   |     1.7e-12    |    5.8e-13     |
+                #  |  1.8  |    51   |     1.9e-13    |    1.2e-13     |
+                #  |  2.0  |    54   |     6.9e-14    |    6.2e-14     |
+                #  |  2.2  |    55   |     4.5e-14    |    8.9e-15     |
+                #  |  2.4  |    57   |     5.5e-14    |    8.9e-16     |
+                #  |  2.6  |    60   |     5.0e-14    |    4.4e-16     |
+                #  |  2.8  |    63   |     5.0e-14    |    5.8e-16     |
+                #  |  5.0  |    85   |     7.7e-14    |    1.2e-15     |
+                #  | 10.0  |   138   |     4.2e-14    |    1.2e-15     |
+                # Roughly 2.0 can be chosen to balance the accuracy and efficiency
+                # However, this does not work well for heavier quantum nuclei, e.g.,
+                # full quantum H-F molecule in the test.
+                # Previously the empirical scale factor was chosen as 2 * charge,
+                # but now this function does not have access to the charge, so using
+                # a slightly weird empirical formula:
+                # Instead of
+                #scale[t] = 1. / (e_a[t][0] + level_shift - e_i[t][-1])
+                # use
+                scale[t] = (e_a[t][0] + level_shift - e_i[t][-1]) * 100.
+                # This will give roughly 2.0 for hydrogen. For heavier nuclei, this
+                # will give a large number. I guess it is likely to fail the krylov
+                # solver again if someone calculates with multiple heavy quantum nuclei,
+                # but this is the best compromise I can find now (works for multiple
+                # hydrogen and doesn't fail the one heavy nucleus full quantum test).
+                # Here I collect the data for full quantum H-F, H2O and CH3:
+                # | molecule | scale for H | scale for heavy | NEO-CPHF error | position error |
+                # |    HF    |     45.9    |      1.53       |     3.7e-7     |    3.5e-8      |
+                # |    HF    |     2.18    |      65.2       |     4.5e-6     |    1.7e-6      |
+                # |    H2O   |     44.3    |      1.80       |     8.8e-14    |    1.7e-15     |
+                # |    H2O   |     2.26    |      55.6       |     1.3e-5     |    4.0e-6      |
+                # |    CH3   |     41.5    |      2.84       |     6.3e-14    |    9.6e-15     |
+                # |    CH3   |     2.41    |      35.2       |     2.0e-5     |    1.4e-5      |
+                # The error is much larger, but at least the frequency test does not fail.
+                total_f1 += 3
 
-    mo_energy_e = mf_e.mo_energy
-    mo_occ_e = mf_e.mo_occ
-    occidx_e = mo_occ_e > 0
-    viridx_e = mo_occ_e == 0
-    e_a_e = mo_energy_e[viridx_e]
-    e_i_e = mo_energy_e[occidx_e]
-    e_ai_e = 1. / lib.direct_sum('a-i->ai', e_a_e, e_i_e)
-    nvir_e, nocc_e = e_ai_e.shape
-    nmo_e = nocc_e + nvir_e
+            s1[t] = s1[t].reshape(-1,nmo[t],nocc[t])
+            hs[t] = h1[t].reshape(-1,nmo[t],nocc[t]) - s1[t]*e_i[t]
 
-    e_size = nmo_e * nocc_e # size of mo1e
-    total_size += e_size
+            mo1base_a = hs[t].copy()
+            mo1base_a[:,viridx[t]] *= -e_ai[t]
+            mo1base_a[:,occidx[t]] = -s1[t][:,occidx[t]] * .5
+            mo1base.append(mo1base_a.reshape(-1,nmo[t]*nocc[t]))
+            nov[t] = nmo[t] * nocc[t]
+        total_mo1 += nov[t]
+    if with_f1:
+        nset = mo1base[0].shape[0]
+        for t in sorted_keys:
+            if t.startswith('n'):
+                mo1base.append(numpy.zeros((nset,3)))
+    mo1base = numpy.hstack(mo1base)
 
-    s1e = s1e.reshape(-1,nmo_e,nocc_e)
-    hs = mo1base_e = h1e.reshape(-1,nmo_e,nocc_e) - s1e*e_i_e
-    mo_e1_e = hs[:,occidx_e,:].copy()
+    def vind_vo(mo1_and_f1):
+        mo1_and_f1 = mo1_and_f1.reshape(-1,total_mo1+total_f1)
+        mo1_array = mo1_and_f1[:,:total_mo1]
+        mo1 = {}
+        offset = 0
+        for t in sorted_keys:
+            mo1[t] = mo1_array[:,offset:offset+nov[t]]
+            if not is_component_unrestricted[t]:
+                mo1[t] = mo1[t].reshape(-1, nmo[t], nocc[t])
+            offset += nov[t]
+        f1 = None
+        if with_f1:
+            f1_array = mo1_and_f1[:,total_mo1:]
+            f1 = {}
+            offset = 0
+            for t in sorted_keys:
+                if t.startswith('n'):
+                    f1[t] = f1_array[:,offset:offset+3]
+                    offset += 3
+        v, r = fvind(mo1, f1=f1)
+        for t in v:
+            if level_shift != 0:
+                v[t] -= mo1[t] * level_shift
+            if is_component_unrestricted[t]:
+                nmoa, nmob = nmo[t]
+                nocca, noccb = nocc[t]
+                eai_a, eai_b = e_ai[t]
+                occidxa, occidxb = occidx[t]
+                viridxa, viridxb = viridx[t]
+                v1a = v[t][:,:nmoa*nocca].reshape(-1,nmoa,nocca)
+                v1b = v[t][:,nmoa*nocca:].reshape(-1,nmob,noccb)
+                v1a[:,viridxa] *= eai_a
+                v1b[:,viridxb] *= eai_b
+                v1a[:,occidxa] = 0
+                v1b[:,occidxb] = 0
+            else:
+                v[t] = v[t].reshape(-1, nmo[t], nocc[t])
+                v[t][:,viridx[t],:] *= e_ai[t]
+                v[t][:,occidx[t],:] = 0
+            v[t] = v[t].reshape(-1, nov[t])
+        if with_f1 and r is not None:
+            for t in r:
+                # NOTE: this scale factor is somewhat empirical. The goal is
+                # to try to bring the position constraint equation r * mo1 = 0
+                # to be of a similar magnitude as compared to the conventional
+                # CPHF equations.
+                r[t] = r[t] * scale[t] - f1[t]
+                # NOTE: f1 got subtracted because krylov solver solves (1+a)x=b
+            return numpy.hstack([v[k] for k in sorted_keys]
+                                + [r[k] for k in sorted_keys if k in r]).ravel()
+        return numpy.hstack([v[k] for k in sorted_keys]).ravel()
+    # TODO: remove ravel. See https://github.com/pyscf/pyscf/issues/2702
 
-    mo1base_e[:,viridx_e] *= -e_ai_e
-    mo1base_e[:,occidx_e] = -s1e[:,occidx_e] * .5
-
-    occidx_n = []
-    viridx_n = []
-    e_a_n = []
-    e_i_n = []
-    e_ai_n = []
-    nvir_n = []
-    nocc_n = []
-    nmo_n = []
-    mo1base_n = []
-    n_size = []
-    for i in range(len(mf_n)):
-        occidx_n.append(mf_n[i].mo_occ > 0)
-        viridx_n.append(mf_n[i].mo_occ == 0)
-        e_a_n.append(mf_n[i].mo_energy[viridx_n[-1]])
-        e_i_n.append(mf_n[i].mo_energy[occidx_n[-1]])
-        e_ai_n.append(1. / lib.direct_sum('a-i->ai', e_a_n[-1], e_i_n[-1]))
-        tmp1, tmp2 = e_ai_n[-1].shape
-        nvir_n.append(tmp1)
-        nocc_n.append(tmp2)
-        nmo_n.append(tmp1 + tmp2)
-        n_size.append(nmo_n[-1] * nocc_n[-1])
-        total_size += n_size[-1]
-        mo1base_n.append(h1n[i].reshape(-1,nmo_n[-1],nocc_n[-1]))
-        mo1base_n[-1][:,viridx_n[-1]] *= -e_ai_n[-1]
-        mo1base_n[-1][:,occidx_n[-1]] = 0
-
-    def vind_vo(mo1s):
-        mo1e, mo1n, f1n = mo1s_disassembly(mo1s, total_size, e_size, n_size,
-                                           with_f1n=with_f1n)
-        for i in range(len(mo1n)):
-            mo1n[i] = mo1n[i].reshape(h1n[i].shape)
-        if f1n is not None:
-            for i in range(len(f1n)):
-                f1n[i] = f1n[i].reshape(-1,3)
-        ve, vn, rfn = fvind(mo1e.reshape(h1e.shape), mo1n, f1n=f1n)
-        ve = ve.reshape(-1,nmo_e,nocc_e)
-        ve[:,viridx_e,:] *= e_ai_e
-        ve[:,occidx_e,:] = 0
-        for i in range(len(vn)):
-            vn[i] = vn[i].reshape(-1,nmo_n[i],nocc_n[i])
-            vn[i][:,viridx_n[i],:] *= e_ai_n[i]
-            vn[i][:,occidx_n[i],:] = 0
-        if rfn is not None:
-            for i in range(len(f1n)):
-                ia = mf_n[i].mol.atom_index
-                charge = mol.atom_charge(ia)
-                # NOTE: this 2*charge factor is purely empirical, because equation
-                # r * mo1 = 0 is insensitive to the factor mathematically, but
-                # the factor will change the numerical solution
-                # TODO: find the best factor
-                rfn[i] = rfn[i] * 2.0 * charge - f1n[i]
-                # note that f got subtracted because krylov solver solves (1+a)x=b
-        if with_f1n:
-            return numpy.concatenate((ve,
-                                      numpy.concatenate(vn, axis=None),
-                                      numpy.concatenate(rfn, axis=None)),
-                                     axis=None)
+    mo1_and_f1 = lib.krylov(vind_vo, mo1base.ravel(),
+                            tol=tol, max_cycle=max_cycle, hermi=hermi, verbose=log)
+    mo1_and_f1 = mo1_and_f1.reshape(-1,total_mo1+total_f1)
+    mo1_array = mo1_and_f1[:,:total_mo1]
+    mo1 = {}
+    offset = 0
+    for t in sorted_keys:
+        mo1[t] = mo1_array[:,offset:offset+nov[t]]
+        offset += nov[t]
+        if is_component_unrestricted[t]:
+            mo1[t] = mo1[t].reshape(-1, nov[t])
+            nset = mo1[t].shape[0]
+            nmoa, nmob = nmo[t]
+            nocca, noccb = nocc[t]
+            occidxa, occidxb = occidx[t]
+            mo1_a = mo1[t][:,:nmoa*nocca].reshape(nset,nmoa,nocca)
+            mo1_b = mo1[t][:,nmoa*nocca:].reshape(nset,nmob,noccb)
+            mo1_a[:,occidxa] = -s1[t][0][:,occidxa] * .5
+            mo1_b[:,occidxb] = -s1[t][1][:,occidxb] * .5
         else:
-            return numpy.concatenate((ve,
-                                      numpy.concatenate(vn, axis=None)),
-                                     axis=None)
-    if with_f1n:
-        mo1base = numpy.concatenate((mo1base_e,
-                                     numpy.concatenate(mo1base_n, axis=None),
-                                     numpy.zeros(3*len(mf_n)*len(mo1base_e))),
-                                    axis=None)
-    else:
-        mo1base = numpy.concatenate((mo1base_e,
-                                     numpy.concatenate(mo1base_n, axis=None)),
-                                    axis=None)
-    mo1s = lib.krylov(vind_vo, mo1base,
-                      tol=tol, max_cycle=max_cycle, hermi=hermi, verbose=log)
-    mo1e, mo1n, f1n = mo1s_disassembly(mo1s, total_size, e_size, n_size,
-                                       with_f1n=with_f1n)
-    mo1e = mo1e.reshape(mo1base_e.shape)
-    if f1n is not None:
-        for i in range(len(f1n)):
-            f1n[i] = f1n[i].reshape(-1,3)
+            mo1[t] = mo1[t].reshape(-1, nmo[t], nocc[t])
+            mo1[t][:,occidx[t]] = -s1[t][:,occidx[t]] * .5
+    f1 = None
+    if with_f1:
+        f1_array = mo1_and_f1[:,total_mo1:]
+        f1 = {}
+        offset = 0
+        for t in sorted_keys:
+            if t.startswith('n'):
+                f1[t] = f1_array[:,offset:offset+3]
+                offset += 3
     log.timer('krylov solver in CNEO CPHF', *t0)
+
+    mo_e1 = {}
+    v1mo, r1mo = fvind(mo1, f1=f1)
+    for t in sorted_keys:
+        if is_component_unrestricted[t]:
+            nmoa, nmob = nmo[t]
+            nocca, noccb = nocc[t]
+            occidxa, occidxb = occidx[t]
+            hs_a, hs_b = hs[t]
+            hs_a += v1mo[t][:,:nmoa*nocca].reshape(-1,nmoa,nocca)
+            hs_b += v1mo[t][:,nmoa*nocca:].reshape(-1,nmob,noccb)
+            mo1_a = mo1[t][:,:nmoa*nocca].reshape(-1,nmoa,nocca)
+            mo1_b = mo1[t][:,nmoa*nocca:].reshape(-1,nmob,noccb)
+            ei_a, ei_b = e_i[t]
+            # NOTE: the refinement step x=b-Ax does not seem to work well for (C)NEO-CPHF
+            #ea_a, ea_b = e_a[t]
+            #viridxa, viridxb = viridx[t]
+            #mo1_a[:,viridxa] = hs_a[:,viridxa] / (ei_a - ea_a[:,None])
+            #mo1_b[:,viridxb] = hs_b[:,viridxb] / (ei_b - ea_b[:,None])
+            mo_e1_a = hs_a[:,occidxa]
+            mo_e1_b = hs_b[:,occidxb]
+            mo_e1_a += mo1_a[:,occidxa] * (ei_a[:,None] - ei_a)
+            mo_e1_b += mo1_b[:,occidxb] * (ei_b[:,None] - ei_b)
+            if isinstance(h1[t][0], numpy.ndarray) and h1[t][0].ndim == 2:
+                mo1_a, mo1_b = mo1_a[0], mo1_b[0]
+                mo_e1_a, mo_e1_b = mo_e1_a[0], mo_e1_b[0]
+            else:
+                assert h1[t][0].ndim == 3
+            mo1[t] = (mo1_a, mo1_b)
+            mo_e1[t] = (mo_e1_a, mo_e1_b)
+        else:
+            hs[t] += v1mo[t].reshape(-1, nmo[t], nocc[t])
+            # NOTE: the refinement step x=b-Ax does not seem to work well for (C)NEO-CPHF
+            #mo1[t][:,viridx[t]] = hs[t][:,viridx[t]] / (e_i[t] - e_a[t][:,None])
+            #if f1 is not None and t in f1:
+            #    f1[t] -= r1mo[t] * scale[t]
+            #     DEBUG: Verify nuclear r * mo1
+            #    print(f'[DEBUG] norm(r * mo1) for {t}: {numpy.linalg.norm(r1mo[t])}')
+
+            mo_e1[t] = hs[t][:,occidx[t],:]
+            mo_e1[t] += mo1[t][:,occidx[t]] * (e_i[t][:,None] - e_i[t])
+
+            if isinstance(h1[t], numpy.ndarray) and h1[t].ndim == 2:
+                mo1[t] = mo1[t][0]
+                mo_e1[t] = mo_e1[t][0]
+                if f1 is not None and t in f1:
+                    f1[t] = f1[t][0]
+            else:
+                assert h1[t].ndim == 3
+
+    # DEBUG: verify the solution
     if log.verbose >= logger.DEBUG1:
-        # analyze the error
-        ax = vind_vo(mo1s) + mo1s
-        log.debug1(f'{numpy.linalg.norm(ax-mo1base)=}')
-        ax_e, ax_n, ax_f = mo1s_disassembly(ax, total_size, e_size, n_size, with_f1n=with_f1n)
-        ax_e = ax_e.reshape(-1,nmo_e,nocc_e)
-        ax_e[:,viridx_e] /= -e_ai_e
-        b_e = mo1base_e.copy()
-        b_e = b_e.reshape(-1,nmo_e,nocc_e)
-        b_e[:,viridx_e] /= -e_ai_e
-        log.debug1(f'{numpy.linalg.norm(ax_e-b_e)=}')
-        for i in range(len(mf_n)):
-            ax_n[i] = ax_n[i].reshape(-1,nmo_n[i],nocc_n[i])
-            ax_n[i][:,viridx_n[i]] /= -e_ai_n[i]
-            b_n = mo1base_n[i].copy()
-            b_n = b_n.reshape(-1,nmo_n[i],nocc_n[i])
-            b_n[:,viridx_n[i]] /= -e_ai_n[i]
-            log.debug1(f'{i=} {numpy.linalg.norm(ax_n[i]-b_n)=}')
-            if ax_f is not None:
-                log.debug1(f'{i=} {numpy.linalg.norm(ax_f[i])=}')
+        x = []
+        for t in sorted_keys:
+            if is_component_unrestricted[t]:
+                x.append(mo1[t][0].reshape(-1,nmo[t][0]*nocc[t][0]))
+                x.append(mo1[t][1].reshape(-1,nmo[t][1]*nocc[t][1]))
+            else:
+                x.append(mo1[t].reshape(-1,nov[t]))
+        if with_f1:
+            for t in sorted_keys:
+                if t.startswith('n'):
+                    x.append(f1[t])
+        x = numpy.hstack(x)
+        ax = vind_vo(x).reshape(x.shape) + x
+        log.debug1(f'[DEBUG] CPHF error: {numpy.abs(ax - mo1base).max()}')
+        if mo1base.shape[1] > total_mo1:
+            log.debug1(f'[DEBUG] error for NEO part:   {numpy.abs(ax - mo1base)[:,:total_mo1].max()}')
+            log.debug1(f'[DEBUG] error for constraint: {numpy.abs(ax - mo1base)[:,total_mo1:].max()}')
 
-    # mo1n should be of h1n shape if fvind does not reshape it
-    for i in range(len(mo1n)):
-        mo1n[i] = mo1n[i].reshape(h1n[i].shape)
-    #v1mo_e, v1mo_n, rf1mo_n = fvind(mo1e.reshape(h1e.shape), mo1n, f1n=f1n)
-    v1mo_e, _, _ = fvind(mo1e.reshape(h1e.shape), mo1n, f1n=f1n)
-    v1mo_e = v1mo_e.reshape(-1,nmo_e,nocc_e)
-    # TODO: for electronic only CPHF, they have (1+A)x=b -> x=b-Ax to
-    # increase accuracy. This is a bit more complicated for CNEO CPHF.
-    # mo1e[:,viridx_e] = ?
-    # mo1n[i][:,viridx_n[i]] = ?
-    # f1n[i] = ?
-    # get back to the correct shape for following operations
-    for i in range(len(mo1n)):
-        mo1n[i] = mo1n[i].reshape(mo1base_n[i].shape)
-
-    # mo_e1 has the same symmetry as the first order Fock matrix (hermitian or
-    # anti-hermitian). mo_e1 = v1mo - s1*lib.direct_sum('i+j->ij',e_i,e_i)
-    mo_e1_e += mo1e[:,occidx_e] * lib.direct_sum('i-j->ij', e_i_e, e_i_e)
-    mo_e1_e += v1mo_e[:,occidx_e,:]
-
-    if h1e.ndim == 2:
-        # get rid of the redundant shape[0]=1 if h1e.ndim == 2:
-        for i in range(len(mo1n)):
-            mo1n[i] = mo1n[i].reshape(h1n[i].shape)
-        if f1n is not None:
-            for i in range(len(f1n)):
-                f1n[i] = f1n[i].reshape(3)
-        return mo1e.reshape(h1e.shape), mo_e1_e.reshape(nocc_e,nocc_e), \
-               mo1n, f1n
-    else:
-        return mo1e, mo_e1_e, mo1n, f1n
-
-def mo1s_disassembly(mo1s, total_size, e_size, n_size, with_f1n=False):
-    '''Transfer mo1 from a 1-d array to 1-d arrays containing data of
-    mo1e and mo1n. Also f1n, if requested'''
-    if with_f1n:
-        total_size += 3 * len(n_size)
-    assert mo1s.size % total_size == 0
-    nset = mo1s.size // total_size
-
-    mo1s = mo1s.ravel()
-    n_e = nset * e_size
-    index = n_e
-    mo1e = mo1s[:index]
-
-    mo1n = []
-    for n in n_size:
-        add = nset * n
-        mo1n.append(mo1s[index:index+add])
-        index += add
-
-    f1n = None
-    if with_f1n:
-        f1n = []
-        for n in n_size:
-            add = nset * 3
-            f1n.append(mo1s[index:index+add])
-            index += add
-
-    assert index == mo1s.size
-    return mo1e, mo1n, f1n
+    return mo1, mo_e1, f1

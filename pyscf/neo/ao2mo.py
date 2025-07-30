@@ -7,7 +7,7 @@ from timeit import default_timer as timer
 
 def ep_setup(mf, i=0, j=0, ep=False):
 
-    if(ep==False):
+    if not ep:
         mol_tot = mf.mol.elec + mf.mol.nuc[i]
         tot1  = mf.mf_elec.mo_coeff[0,:].shape[0]
         tot2  = mf.mf_nuc[i].mo_coeff[0,:].shape[0]
@@ -20,7 +20,7 @@ def ep_setup(mf, i=0, j=0, ep=False):
 
     mo_coeff_tot = numpy.zeros((tot1+tot2,tot1+tot2))
 
-    if(ep==False):
+    if not ep:
         mo_coeff_tot[:tot1,:tot1] = mf.mf_elec.mo_coeff
         mo_coeff_tot[tot1:,tot1:] = mf.mf_nuc[i].mo_coeff
     else:
@@ -34,7 +34,7 @@ def ep_full(mf, i=0):
     eri, mo_coeff_tot = ep_setup(mf,i)
 
     e_tot  = mf.mf_elec.mo_coeff[0,:].shape[0]
-    p_tot  = mf.mf_nuc[0].mo_coeff[0,:].shape[0]
+    #p_tot  = mf.mf_nuc[0].mo_coeff[0,:].shape[0]
 
     c_e= mo_coeff_tot[:,:e_tot]
     c_n= mo_coeff_tot[:,e_tot:]
@@ -49,11 +49,11 @@ def ep_ovov(mf, i=0):
 
     e_nocc = mf.mf_elec.mo_coeff[:,mf.mf_elec.mo_occ>0].shape[1]
     e_tot  = mf.mf_elec.mo_coeff[0,:].shape[0]
-    e_nvir = e_tot - e_nocc
+    #e_nvir = e_tot - e_nocc
 
     p_nocc = mf.mf_nuc[0].mo_coeff[:,mf.mf_nuc[0].mo_occ>0].shape[1]
-    p_tot  = mf.mf_nuc[0].mo_coeff[0,:].shape[0]
-    p_nvir = p_tot - p_nocc
+    #p_tot  = mf.mf_nuc[0].mo_coeff[0,:].shape[0]
+    #p_nvir = p_tot - p_nocc
 
     co_e= mo_coeff_tot[:,:e_nocc]
     cv_e= mo_coeff_tot[:,e_nocc:e_tot]

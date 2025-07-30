@@ -68,7 +68,7 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
     hybrid = ni.libxc.is_hybrid_xc(ks.xc)
 
     if not hybrid and isinstance(ks.with_df, multigrid.MultiGridFFTDF):
-        if ks.nlc or ni.libxc.is_nlc(ks.xc):
+        if ks.do_nlc():
             raise NotImplementedError(f'MultiGrid for NLC functional {ks.xc} + {ks.nlc}')
         n, exc, vxc = multigrid.nr_rks(ks.with_df, ks.xc, dm, hermi,
                                        kpt.reshape(1,3), kpts_band,
@@ -88,7 +88,7 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
         n, exc, vxc = ni.nr_rks(cell, ks.grids, ks.xc, dm, 0, hermi,
                                 kpt, kpts_band, max_memory=max_memory)
         logger.info(ks, 'nelec by numeric integration = %s', n)
-        if ks.nlc or ni.libxc.is_nlc(ks.xc):
+        if ks.do_nlc():
             if ni.libxc.is_nlc(ks.xc):
                 xc = ks.xc
             else:
@@ -106,9 +106,20 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
         vxc += vj
     else:
         omega, alpha, hyb = ni.rsh_and_hybrid_coeff(ks.xc, spin=cell.spin)
-        vj, vk = ks.get_jk(cell, dm, hermi, kpt, kpts_band)
-        vk *= hyb
-        if omega != 0:
+        if omega == 0:
+            vj, vk = ks.get_jk(cell, dm, hermi, kpt, kpts_band)
+            vk *= hyb
+        elif alpha == 0: # LR=0, only SR exchange
+            vk = ks.get_k(cell, dm, hermi, kpt, kpts_band, omega=-omega)
+            vk *= hyb
+            vj = ks.get_j(cell, dm, hermi, kpt, kpts_band)
+        elif hyb == 0: # SR=0, only LR exchange
+            vk = ks.get_k(cell, dm, hermi, kpt, kpts_band, omega=omega)
+            vk *= alpha
+            vj = ks.get_j(cell, dm, hermi, kpt, kpts_band)
+        else: # SR and LR exchange with different ratios
+            vj, vk = ks.get_jk(cell, dm, hermi, kpt, kpts_band)
+            vk *= hyb
             vklr = ks.get_k(cell, dm, hermi, kpt, kpts_band, omega=omega)
             vklr *= (alpha - hyb)
             vk += vklr
@@ -134,7 +145,7 @@ def _patch_df_beckegrids(density_fit):
                                  mf.grids.level)
         mf.nlcgrids = gen_grid.BeckeGrids(self.cell)
         mf.nlcgrids.level = getattr(__config__, 'dft_rks_RKS_nlcgrids_level',
-                                    mf.grids.level)
+                                    mf.nlcgrids.level)
         return mf
     return new_df
 
@@ -170,6 +181,8 @@ class KohnShamDFT(mol_ks.KohnShamDFT):
     '''PBC-KS'''
 
     _keys = {'xc', 'nlc', 'grids', 'nlcgrids', 'small_rho_cutoff'}
+    # Use rho to filter grids
+    small_rho_cutoff = getattr(__config__, 'dft_rks_RKS_small_rho_cutoff', 1e-7)
 
     get_rho = get_rho
 
@@ -182,9 +195,6 @@ class KohnShamDFT(mol_ks.KohnShamDFT):
         self.grids = gen_grid.UniformGrids(self.cell)
         self.nlc = ''
         self.nlcgrids = gen_grid.UniformGrids(self.cell)
-        # Use rho to filter grids
-        self.small_rho_cutoff = getattr(
-            __config__, 'dft_rks_RKS_small_rho_cutoff', 1e-7)
 ##################################################
 # don't modify the following attributes, they are not input options
         # Note Do not refer to .with_df._numint because mesh/coords may be different
@@ -219,14 +229,6 @@ class KohnShamDFT(mol_ks.KohnShamDFT):
         if self.rsjk:
             if not numpy.all(self.rsjk.kpts == self.kpt):
                 self.rsjk = self.rsjk.__class__(cell, kpts)
-
-        # for GDF and MDF
-        with_df = self.with_df
-        if (self._numint.libxc.is_hybrid_xc(self.xc) and
-            len(kpts) > 1 and getattr(with_df, '_j_only', False)):
-            logger.warn(self, 'df.j_only cannot be used with hybrid functional')
-            self.with_df._j_only = False
-            self.with_df.reset()
 
         if self.verbose >= logger.WARN:
             self.check_sanity()
@@ -300,8 +302,7 @@ class KohnShamDFT(mol_ks.KohnShamDFT):
                 self.grids = prune_small_rho_grids_(
                     self, self.cell, dm, self.grids, kpts)
             t0 = logger.timer(self, 'setting up grids', *t0)
-
-        is_nlc = self.nlc or self._numint.libxc.is_nlc(self.xc)
+        is_nlc = self.do_nlc()
         if is_nlc and self.nlcgrids.coords is None:
             t0 = (logger.process_clock(), logger.perf_counter())
             self.nlcgrids.build(with_non0tab=True)
@@ -347,21 +348,3 @@ class RKS(KohnShamDFT, pbchf.RHF):
         return self._transfer_attrs_(scf.RHF(self.cell, self.kpt))
 
     to_gpu = lib.to_gpu
-
-
-if __name__ == '__main__':
-    from pyscf.pbc import gto
-    cell = gto.Cell()
-    cell.unit = 'A'
-    cell.atom = 'C 0.,  0.,  0.; C 0.8917,  0.8917,  0.8917'
-    cell.a = '''0.      1.7834  1.7834
-                1.7834  0.      1.7834
-                1.7834  1.7834  0.    '''
-
-    cell.basis = 'gth-szv'
-    cell.pseudo = 'gth-pade'
-    cell.verbose = 7
-    cell.output = '/dev/null'
-    cell.build()
-    mf = RKS(cell)
-    print(mf.kernel())

@@ -102,3 +102,26 @@ def spectrum(acf, time_step=0.5, corr_depth=4096):
     temperature = scipy.integrate.cumtrapz(intensity, wavenumber)
     print('Integrated temperature (K)', temperature[-1])
     return wavenumber, intensity, temperature
+
+def gen_init_vel(modes, masses, temperature=300):
+    '''
+    Generate initial velocites for MD simulations.
+
+    modes: normalized eigenvectors from mass-weighted Hessian matrix
+
+    Ref:  J. Chem. Theory Comput. 2023, 19, 9358-9368
+    '''
+    n, m = modes.shape
+    natoms = int(n/3)
+    indices = numpy.asarray(range(natoms))
+
+    im = numpy.repeat(masses[indices]**-0.5, 3)
+
+    modes = numpy.einsum('in,n->in', modes, im)
+
+    scalar = numpy.sqrt(2*units.kB/units.J*temperature/units._amu*units.m**2) #amu**0.5 ang s**-1
+    phi = (2*numpy.random.randint(0, 2, size=(3*natoms-6))-1) # randomize velocity direction +1 or -1
+
+    v = numpy.einsum('i,in->n', phi, modes[6:,:])*scalar/units.second
+
+    return v.reshape((natoms,3))

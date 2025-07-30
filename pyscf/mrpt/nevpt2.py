@@ -711,9 +711,20 @@ example examples/dmrg/32-dmrg_casscf_nevpt2_for_FeS.py''')
         self.for_dmrg()
         return self
 
+    def dump_flags(self, verbose=None):
+        log = logger.new_logger(self, verbose)
+        log.info('')
+        log.info('******** %s ********', self.__class__)
+        ncore = self.ncore
+        ncas = self.ncas
+        nvir = self.mo_coeff.shape[1] - ncore - ncas
+        log.info('NEVPT2 (%de+%de, %do), ncore = %d, nvir = %d',
+                 self.nelecas[0], self.nelecas[1], ncas, ncore, nvir)
+        log.info('root = %d', self.root)
 
 
     def kernel(self):
+        self.dump_flags()
         from pyscf.mcscf.addons import StateAverageFCISolver
         if isinstance(self.fcisolver, StateAverageFCISolver):
             raise RuntimeError('State-average FCI solver object cannot be used '
@@ -990,7 +1001,7 @@ def trans_e1_outcore(mc, mo, max_memory=None, ioblk_size=256, tmpdir=None,
     time1 = [logger.process_clock(), logger.perf_counter()]
     ao_loc = numpy.array(mol.ao_loc_nr(), dtype=numpy.int32)
     cvcvfile = tempfile.NamedTemporaryFile(dir=tmpdir)
-    with h5py.File(cvcvfile.name, 'w') as f5:
+    with lib.H5TmpFile(cvcvfile.name, 'w') as f5:
         cvcv = f5.create_dataset('eri_mo', (ncore*nvir,ncore*nvir), 'f8')
         ppaa, papa, pacv = _trans(mo, ncore, ncas, load_buf, cvcv, ao_loc)[:3]
     time0 = logger.timer(mol, 'trans_cvcv', *time0)

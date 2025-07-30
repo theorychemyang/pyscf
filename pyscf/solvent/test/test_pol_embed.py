@@ -18,7 +18,7 @@ import os
 import tempfile
 import numpy
 from numpy.testing import assert_allclose
-from pyscf import lib, gto, scf
+from pyscf import lib, gto, scf, dft
 
 have_pe = False
 try:
@@ -225,6 +225,15 @@ def _exec_cppe(pe, dm, elec_only=False):
 
 @unittest.skipIf(not have_pe, "CPPE library not found.")
 class TestPolEmbed(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.original_grids = dft.radi.ATOM_SPECIFIC_TREUTLER_GRIDS
+        dft.radi.ATOM_SPECIFIC_TREUTLER_GRIDS = False
+
+    @classmethod
+    def tearDownClass(cls):
+        dft.radi.ATOM_SPECIFIC_TREUTLER_GRIDS = cls.original_grids
+
     def test_exec_cppe(self):
         pe = solvent.PE(mol, os.path.join(dname, "pna_6w.potential"))
         numpy.random.seed(2)
@@ -306,13 +315,13 @@ class TestPolEmbed(unittest.TestCase):
     def test_rhf_tda(self):
         # TDA with equilibrium_solvation
         mf = solvent.PE(mol.RHF(), potfile).run(conv_tol=1e-10)
-        td = solvent.PE(mf.TDA(), potfile).run(equilibrium_solvation=True)
+        td = mf.TDA(equilibrium_solvation=True).run()
         ref = numpy.array([0.1506426609354755, 0.338251407831332, 0.4471267328974609])
         self.assertAlmostEqual(abs(ref - td.e).max(), 0, 7)
 
         # TDA without equilibrium_solvation
         mf = solvent.PE(mol.RHF(), potfile).run(conv_tol=1e-10)
-        td = solvent.PE(mf.TDA(), potfile).run()
+        td = mf.TDA().run()
         ref = numpy.array([0.1506431269137912, 0.338254809044639, 0.4471487090255076])
         self.assertAlmostEqual(abs(ref - td.e).max(), 0, 7)
 

@@ -6,13 +6,13 @@ Analytical nuclear gradients for NEO-ddCOSMO
 
 import numpy
 from pyscf import lib
-from pyscf import gto 
+from pyscf import gto
 from pyscf import df
 from pyscf.solvent import ddcosmo
 from pyscf.symm import sph
 from pyscf.lib import logger
 from pyscf.dft import gen_grid, numint
-from pyscf.solvent.ddcosmo_grad import make_L1, make_e_psi1, make_fi1, make_phi1
+from pyscf.solvent.grad.ddcosmo_grad import make_L1, make_e_psi1, make_fi1, make_phi1
 from pyscf.neo.solvent import make_psi
 from pyscf.grad.rhf import _write
 from pyscf.solvent._attach_solvent import _Solvation
@@ -59,7 +59,7 @@ def make_phi1_nuc(pcmobj, dm, r_vdw, ui, ylm_1sph):
 
         ja = mol.atom_index
         phi1[ja,:,ia] -= numpy.einsum('n,ln,n,xn->xl', weights_1sph, ylm_1sph, ui[ia], phi1_e2_nj)
-        
+
     return phi1
 
 
@@ -144,8 +144,8 @@ def kernel(pcmobj, dm, verbose=None):
         psi0 -= charge * make_psi(pcmobj.pcm_nuc[i], dm_nuc[i], r_vdw, cached_pol, with_nuc=False)
 
     L0_X = numpy.linalg.solve(L0, phi0.ravel()).reshape(natm, nlm)
-    L0_S = numpy.linalg.solve(L0.T, psi0.ravel()).reshape(natm, nlm) 
-    
+    L0_S = numpy.linalg.solve(L0.T, psi0.ravel()).reshape(natm, nlm)
+
     e_psi1 = make_e_psi1(pcmobj.pcm_elec, dm_elec, r_vdw, ui, ylm_1sph,
                          cached_pol, L0_X, L0)
     for i in range(mol.nuc_num):

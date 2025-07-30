@@ -48,16 +48,13 @@ class CDIIS(lib.diis.DIIS):
     def update(self, s, d, f, *args, **kwargs):
         errvec = get_err_vec(s, d, f, self.Corth)
         logger.debug1(self, 'diis-norm(errvec)=%g', numpy.linalg.norm(errvec))
-        # for (C)NEO, need to ravel f and then reshape
-        sizes = [0]
-        shapes = []
-        need_reshape = False
-        if isinstance(f, (tuple, list)):
-            need_reshape = True
-            for a in f:
-                sizes.append(sizes[-1] + a.size)
-                shapes.append(a.shape)
-            f = numpy.concatenate(f, axis=None)
+        # For multi-component SCF, need to flatten f for DIIS, then recover from it
+        was_dict = False
+        if isinstance(f, dict):
+            shapes = {k: v.shape for k, v in f.items()}
+            keys = sorted(f.keys())
+            f = numpy.concatenate([f[k].ravel() for k in keys])
+            was_dict = True
         f_prev = kwargs.get('f_prev', None)
         if abs(self.damp) < 1e-6 or f_prev is None:
             xnew = lib.diis.DIIS.update(self, f, xerr=errvec)
@@ -65,11 +62,14 @@ class CDIIS(lib.diis.DIIS):
             xnew = lib.diis.DIIS.update(self, f*(1-self.damp) + f_prev*self.damp, xerr=errvec)
         if self.rollback > 0 and len(self._bookkeep) == self.space:
             self._bookkeep = self._bookkeep[-self.rollback:]
-        if need_reshape:
-            xnew_reshape = []
-            for i in range(len(shapes)):
-                xnew_reshape.append(xnew[sizes[i] : sizes[i+1]].reshape(shapes[i]))
-            return xnew_reshape
+        if was_dict:
+            offset = 0
+            xnew_dict = {}
+            for k in keys:
+                size = numpy.prod(shapes[k])
+                xnew_dict[k] = xnew[offset:offset + size].reshape(shapes[k])
+                offset += size
+            return xnew_dict
         else:
             return xnew
 
@@ -95,17 +95,16 @@ def get_err_vec_orig(s, d, f):
         errvec = numpy.hstack(errvec)
 
     elif isinstance(f, numpy.ndarray) and f.ndim == s.ndim+1 and \
-        f.shape[0] == 2:  # for UHF
+            f.shape[0] == 2:  # for UHF
         errvec = numpy.hstack([
             get_err_vec_orig(s, d[0], f[0]).ravel(),
             get_err_vec_orig(s, d[1], f[1]).ravel()])
 
-    elif isinstance(f, (tuple, list)):  # for (C)NEO
+    elif isinstance(f, dict):  # for multi-component
         errvec = []
-        for i in range(len(f)):
-            sdf = reduce(numpy.dot, (s[i], d[i], f[i]))
-            errvec.append((sdf.T.conj() - sdf))
-        errvec = numpy.concatenate(errvec, axis=None)
+        for t in sorted(s.keys()):
+            errvec.append(get_err_vec_orig(s[t], d[t], f[t]).ravel())
+        errvec = numpy.concatenate(errvec)
 
     else:
         raise RuntimeError('Unknown SCF DIIS type')
@@ -133,10 +132,18 @@ def get_err_vec_orth(s, d, f, Corth):
             errvec.append((sdf.conj().T - sdf).ravel())
         errvec = numpy.hstack(errvec)
 
-    elif f.ndim == s.ndim+1 and f.shape[0] == 2:  # for UHF
+    elif isinstance(f, numpy.ndarray) and f.ndim == s.ndim+1 and \
+            f.shape[0] == 2:  # for UHF
         errvec = numpy.hstack([
             get_err_vec_orth(s, d[0], f[0], Corth[0]).ravel(),
             get_err_vec_orth(s, d[1], f[1], Corth[1]).ravel()])
+
+    elif isinstance(f, dict):  # for multi-component
+        errvec = []
+        for t in sorted(s.keys()):
+            errvec.append(get_err_vec_orth(s[t], d[t], f[t], Corth[t]).ravel())
+        errvec = numpy.concatenate(errvec)
+
     else:
         raise RuntimeError('Unknown SCF DIIS type')
     return errvec

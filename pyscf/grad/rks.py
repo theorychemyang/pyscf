@@ -52,7 +52,7 @@ def get_veff(ks_grad, mol=None, dm=None):
         exc, vxc = get_vxc_full_response(ni, mol, grids, mf.xc, dm,
                                          max_memory=max_memory,
                                          verbose=ks_grad.verbose)
-        if mf.nlc or ni.libxc.is_nlc(mf.xc):
+        if mf.do_nlc():
             if ni.libxc.is_nlc(mf.xc):
                 xc = mf.xc
             else:
@@ -66,7 +66,7 @@ def get_veff(ks_grad, mol=None, dm=None):
     else:
         exc, vxc = get_vxc(ni, mol, grids, mf.xc, dm,
                            max_memory=max_memory, verbose=ks_grad.verbose)
-        if mf.nlc or ni.libxc.is_nlc(mf.xc):
+        if mf.do_nlc():
             if ni.libxc.is_nlc(mf.xc):
                 xc = mf.xc
             else:
@@ -92,7 +92,6 @@ def get_veff(ks_grad, mol=None, dm=None):
 
 def _initialize_grids(ks_grad):
     mf = ks_grad.base
-    ni = mf._numint
     if ks_grad.grids is not None:
         grids = ks_grad.grids
     else:
@@ -101,7 +100,7 @@ def _initialize_grids(ks_grad):
         grids.build(with_non0tab=True)
 
     nlcgrids = None
-    if mf.nlc or ni.libxc.is_nlc(mf.xc):
+    if mf.do_nlc():
         if ks_grad.nlcgrids is not None:
             nlcgrids = ks_grad.nlcgrids
         else:
@@ -459,14 +458,10 @@ def grids_response_cc(grids):
     atm_dist = gto.inter_distance(mol, atm_coords)
 
     def _radii_adjust(mol, atomic_radii):
-        # FIXME: TODO: fix it in NEO and do not touch the code here.
-        # a dirty fix for CNEO, as CNEO's electronic part `mole' object
-        # have zero charge hydrogen atoms. atomic_radii[0] will trigger
-        # the "unknown" radii, which is very different from that of hydrogen
-        charges = mol.atom_charges().copy()
-        for i in range(charges.size):
-            if charges[i] == 0:
-                charges[i] = 1
+        # Be consistent with functions in dft.gen_grid, use symbols to
+        # re-evaluate the charges, in case the charges got modified
+        charges = numpy.array([gto.charge(mol.atom_symbol(ia))
+                               for ia in range(mol.natm)], dtype=int)
         if grids.radii_adjust == radi.treutler_atomic_radii_adjust:
             rad = numpy.sqrt(atomic_radii[charges]) + 1e-200
         elif grids.radii_adjust == radi.becke_atomic_radii_adjust:
@@ -598,9 +593,6 @@ class Gradients(rhf_grad.Gradients):
         rhf_grad.Gradients.__init__(self, mf)
         self.grids = None
         self.nlcgrids = None
-        # This parameter has no effects for HF gradients. Add this attribute so that
-        # the kernel function can be reused in the DFT gradients code.
-        self.grid_response = False
 
     def dump_flags(self, verbose=None):
         rhf_grad.Gradients.dump_flags(self, verbose)
@@ -633,3 +625,4 @@ Grad = Gradients
 
 from pyscf import dft
 dft.rks.RKS.Gradients = dft.rks_symm.RKS.Gradients = lib.class_as_method(Gradients)
+dft.roks.ROKS.Gradients = lib.invalid_method('Gradients')

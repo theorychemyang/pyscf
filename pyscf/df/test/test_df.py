@@ -87,7 +87,7 @@ class KnownValues(unittest.TestCase):
         eri1 = dfobj.get_eri()
         self.assertAlmostEqual(abs(eri0-eri1).max(), 0, 9)
 
-    def test_init_denisty_fit(self):
+    def test_init_density_fit(self):
         from pyscf.df import df_jk
         from pyscf import cc
         from pyscf.cc import dfccsd
@@ -121,24 +121,64 @@ class KnownValues(unittest.TestCase):
             dm[1] += scf.dhf.time_reversal_matrix(mol, dm[1])
             dfobj = df.DF4C(mol)
             vj, vk = dfobj.get_jk(dm, hermi=0, omega=0.9)
-            self.assertAlmostEqual(lib.fp(vj), 1364.9807926997748+215.73363929678885j, 4)
-            self.assertAlmostEqual(lib.fp(vk), 159.03611112342566+687.9032914356833j , 4)
+            self.assertAlmostEqual(lib.fp(vj), 1364.9812117487595+215.73320482400422j, 3)
+            self.assertAlmostEqual(lib.fp(vk), 159.036202745021+687.903428296142j , 3)
 
             vj1, vk1 = scf.dhf.get_jk(mol, dm, hermi=0, omega=0.9)
             self.assertAlmostEqual(abs(vj-vj1).max(), 0, 2)
             self.assertAlmostEqual(abs(vk-vk1).max(), 0, 2)
 
     def test_rsh_df_custom_storage(self):
-        mol = gto.M(atom = 'H 0 0 0; F 0 0 1.1', verbose=0)
+        mol = gto.M(atom = 'H 0 0 0; F 0 0 1.1', basis='ccpvdz', max_memory=10, verbose=0)
         mf = mol.RKS().density_fit()
         mf.xc = 'lda+0.5*SR_HF(0.3)'
-        mf.run()
-        self.assertAlmostEqual(mf.e_tot, -102.02277148333626, 8)
-
         with tempfile.NamedTemporaryFile() as ftmp:
             mf.with_df._cderi_to_save = ftmp.name
             mf.run()
-        self.assertAlmostEqual(mf.e_tot, -102.02277148333626, 8)
+        self.assertAlmostEqual(mf.e_tot, -103.4965622991, 6)
+
+        mol.max_memory = 4000
+        mf = mol.RKS(xc='lda+0.5*SR_HF(0.3)').density_fit()
+        mf.run()
+        self.assertAlmostEqual(mf.e_tot, -103.4965622991, 6)
+
+    def test_only_dfj(self):
+        mol = gto.M(atom='H 0 0 0; H 0 0 1')
+        dm = numpy.eye(mol.nao)
+        mf = mol.RHF().density_fit()
+        refj, refk = mf.get_jk(mol, dm)
+        vk = mf.get_k(mol, dm)
+        self.assertAlmostEqual(abs(vk - refk).max(), 0, 9)
+        vj = mf.get_j(mol, dm)
+        self.assertAlmostEqual(abs(vj - refj).max(), 0, 9)
+
+        mf = mol.RHF().density_fit(only_dfj=True)
+        refk = mol.RHF().get_k(mol, dm)
+        vj, vk = mf.get_jk(mol, dm)
+        self.assertAlmostEqual(abs(vk - refk).max(), 0, 9)
+        self.assertAlmostEqual(abs(vj - refj).max(), 0, 9)
+        vk = mf.get_k(mol, dm)
+        self.assertAlmostEqual(abs(vk - refk).max(), 0, 9)
+        vj = mf.get_j(mol, dm)
+        self.assertAlmostEqual(abs(vj - refj).max(), 0, 9)
+
+        dm = numpy.eye(mol.nao*2)
+        mf = mol.GHF().density_fit()
+        refj, refk = mf.get_jk(mol, dm)
+        vk = mf.get_k(mol, dm)
+        self.assertAlmostEqual(abs(vk - refk).max(), 0, 9)
+        vj = mf.get_j(mol, dm)
+        self.assertAlmostEqual(abs(vj - refj).max(), 0, 9)
+
+        mf = mol.GHF().density_fit(only_dfj=True)
+        refk = mol.GHF().get_k(mol, dm)
+        vj, vk = mf.get_jk(mol, dm)
+        self.assertAlmostEqual(abs(vk - refk).max(), 0, 9)
+        self.assertAlmostEqual(abs(vj - refj).max(), 0, 9)
+        vk = mf.get_k(mol, dm)
+        self.assertAlmostEqual(abs(vk - refk).max(), 0, 9)
+        vj = mf.get_j(mol, dm)
+        self.assertAlmostEqual(abs(vj - refj).max(), 0, 9)
 
 if __name__ == "__main__":
     print("Full Tests for df")

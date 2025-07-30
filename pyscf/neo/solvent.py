@@ -4,6 +4,7 @@
 attach ddCOSMO for NEO
 '''
 
+import copy
 import numpy
 from pyscf import lib
 from pyscf import gto
@@ -16,7 +17,7 @@ from pyscf.solvent._attach_solvent import _Solvation
 
 
 def make_psi(pcmobj, dm, r_vdw, cached_pol, with_nuc=True):
-    '''
+    r'''
     get the \Psi vector through numerical integration
 
     Kwargs:
@@ -36,7 +37,7 @@ def make_psi(pcmobj, dm, r_vdw, cached_pol, with_nuc=True):
     max_memory = pcmobj.max_memory - lib.current_memory()[0]
     make_rho, n_dm, nao = ni._gen_rho_evaluator(mol, dms)
     dms = dms.reshape(n_dm,nao,nao)
-   
+
     den = numpy.empty((n_dm, grids.weights.size))
     p1 = 0
 
@@ -45,7 +46,7 @@ def make_psi(pcmobj, dm, r_vdw, cached_pol, with_nuc=True):
         p0, p1 = p1, p1 + weight.size
         for i in range(n_dm):
             den[i,p0:p1] = make_rho(i, ao, mask, 'LDA')
-            
+
     den *= grids.weights
     ao = None
 
@@ -74,8 +75,8 @@ def make_psi(pcmobj, dm, r_vdw, cached_pol, with_nuc=True):
 def make_vmat(pcmobj, dm, r_vdw, ui, ylm_1sph, cached_pol, Xvec, L, psi):
     '''
     The first order derivative of E_ddCOSMO wrt density matrix
-    
-    psi: the total electrostatic potential 
+
+    psi: the total electrostatic potential
     '''
     mol = pcmobj.mol
     natm = mol.natm
@@ -179,9 +180,10 @@ def _for_scf_neo(mf, solvent_obj, dm=None):
         # get_hcore is overloaded by many post-HF methods. Modifying
         # SCF.get_hcore may lead error.
 
-        def get_fock(self, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
-                     diis=None, diis_start_cycle=None,
-                     level_shift_factor=None, damp_factor=None):
+        # Same signature as in neo.hf
+        def get_fock(self, h1e=None, s1e=None, vhf=None, vint=None, dm=None, cycle=-1,
+                     diis=None, diis_start_cycle=None, level_shift_factor=None,
+                     damp_factor=None, fock_last=None, diis_pos='both', diis_type=3):
             # DIIS was called inside oldMF.get_fock. v_solvent, as a function of
             # dm, should be extrapolated as well. To enable it, v_solvent has to be
             # added to the fock matrix before DIIS was called.
@@ -190,17 +192,21 @@ def _for_scf_neo(mf, solvent_obj, dm=None):
             self.e_solvent = epcm
             logger.debug(self, 'Solvent Energy = %.15g', self.e_solvent)
 
-            vhf = [vhf[0] + vpcm[0]] + [vhf[i+1] - vpcm[i+1] for i in range(self.mol.nuc_num)]
+            vhf_copy = copy.deepcopy(vhf)
+            vhf_copy['e'] += vpcm[0]
+            for i in range(self.mol.nuc_num):
+                ia = self.mol.nuc[i].atom_index
+                vhf_copy[f'n{ia}'] -= vpcm[i+1]
 
-            return oldMF.get_fock(self, h1e, s1e, vhf, dm, cycle, diis,
-                                  diis_start_cycle, level_shift_factor, damp_factor)
+            return oldMF.get_fock(self, h1e, s1e, vhf_copy, vint, dm, cycle, diis,
+                                  diis_start_cycle, level_shift_factor, damp_factor,
+                                  fock_last, diis_pos, diis_type)
 
 
-        def energy_tot(self, dm_elec=None, dm_nuc=None, h1e=None, vhf_e=None,
-               h1n=None, veff_n=None):
+        def energy_tot(self, dm=None, h1e=None, vhf=None, vint=None):
             'add solvation energy to total energy'
-            return self.e_solvent + oldMF.energy_tot(self, dm_elec, dm_nuc, h1e, vhf_e, h1n, veff_n)
-        
+            return self.e_solvent + oldMF.energy_tot(self, dm, h1e, vhf, vint)
+
         def nuc_grad_method(self):
             grad_method = oldMF.nuc_grad_method(self)
             return self.with_solvent.nuc_grad_method(grad_method)
@@ -236,7 +242,7 @@ class DDCOSMO(ddcosmo.DDCOSMO):
     'Attach ddCOSMO model for NEO'
     def __init__(self, mol):
         super().__init__(mol)
-        
+
     def build(self):
         'build solvent model for electrons and quantum nuclei'
         super().build()
@@ -265,8 +271,8 @@ class DDCOSMO(ddcosmo.DDCOSMO):
         Lmat       = self._intermediates['Lmat'      ]
         cached_pol = self._intermediates['cached_pol']
 
-        dm_elec = dm[0]
-        dm_nuc = dm[1:]
+        dm_elec = dm['e']
+        dm_nuc = [None] * self.mol.nuc_num
 
         if not (isinstance(dm_elec, numpy.ndarray) and dm_elec.ndim == 2):
             # spin-traced DM for UHF or ROHF
@@ -276,8 +282,10 @@ class DDCOSMO(ddcosmo.DDCOSMO):
         for i in range(self.mol.nuc_num):
             ia = self.mol.nuc[i].atom_index
             charge = self.mol.atom_charge(ia)
+            dm_nuc[i] = dm[f'n{ia}']
             phi -= charge * ddcosmo.make_phi(self.pcm_nuc[i], dm_nuc[i], r_vdw, ui, ylm_1sph, with_nuc=False)
-        # minus sign for induced potential by quantum nuclei and the contributions from class nuclei are muted to avoid double counting
+        # minus sign for induced potential by quantum nuclei and the
+        # contributions from class nuclei are muted to avoid double counting
 
         Xvec = numpy.linalg.solve(Lmat, phi.ravel()).reshape(self.mol.natm,-1)
 
@@ -286,11 +294,11 @@ class DDCOSMO(ddcosmo.DDCOSMO):
 
         psi_e = make_psi(self.pcm_elec, dm_elec, r_vdw, cached_pol, with_nuc=True)
         psi += psi_e
-        
+
         for i in range(self.mol.nuc_num):
             ia = self.mol.nuc[i].atom_index
             charge = self.mol.atom_charge(ia)
-            psi_n = charge * make_psi(self.pcm_nuc[i], dm_nuc[i], r_vdw, cached_pol, with_nuc=False)                                 
+            psi_n = charge * make_psi(self.pcm_nuc[i], dm_nuc[i], r_vdw, cached_pol, with_nuc=False)
             psi -= psi_n
 
         vmat_e = make_vmat(self.pcm_elec, dm_elec, r_vdw, ui, ylm_1sph, cached_pol, Xvec, Lmat, psi)
@@ -311,7 +319,7 @@ class DDCOSMO(ddcosmo.DDCOSMO):
         vpcm = .5 * f_epsilon * numpy.array(vmat, dtype=object)
 
         return epcm, vpcm
-        
+
     def nuc_grad_method(self, grad_method):
         'For grad_method in vacuum, add nuclear gradients of solvent'
         from pyscf.neo.solvent_grad import make_grad_object

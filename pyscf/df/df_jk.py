@@ -64,26 +64,34 @@ def density_fit(mf, auxbasis=None, with_df=None, only_dfj=False):
     '''
     from pyscf import df
     from pyscf.scf import dhf
+    from pyscf.df.addons import predefined_auxbasis
     assert (isinstance(mf, scf.hf.SCF))
 
     if with_df is None:
+        mol = mf.mol
+        if auxbasis is None and isinstance(mol.basis, str):
+            if isinstance(mf, scf.hf.KohnShamDFT):
+                xc = mf.xc
+            else:
+                xc = 'HF'
+            if xc == 'LDA,VWN':
+                # This is likely the default xc setting of a KS instance.
+                # Postpone the auxbasis assignment to with_df.build().
+                auxbasis = None
+            else:
+                auxbasis = predefined_auxbasis(mol, mol.basis, xc)
         if isinstance(mf, dhf.UHF):
-            with_df = df.DF4C(mf.mol)
+            with_df = df.DF4C(mol, auxbasis)
         else:
-            with_df = df.DF(mf.mol)
+            with_df = df.DF(mol, auxbasis)
         with_df.max_memory = mf.max_memory
         with_df.stdout = mf.stdout
         with_df.verbose = mf.verbose
-        with_df.auxbasis = auxbasis
 
     if isinstance(mf, _DFHF):
-        if mf.with_df is None:
-            mf.with_df = with_df
-        elif getattr(mf.with_df, 'auxbasis', None) != auxbasis:
-            #logger.warn(mf, 'DF might have been initialized twice.')
-            mf = mf.copy()
-            mf.with_df = with_df
-            mf.only_dfj = only_dfj
+        mf = mf.copy()
+        mf.with_df = with_df
+        mf.only_dfj = only_dfj
         return mf
 
     dfmf = _DFHF(mf, with_df, only_dfj)
@@ -132,28 +140,31 @@ class _DFHF:
 
     def get_jk(self, mol=None, dm=None, hermi=1, with_j=True, with_k=True,
                omega=None):
+        assert (with_j or with_k)
         if dm is None: dm = self.make_rdm1()
         if not self.with_df:
             return super().get_jk(mol, dm, hermi, with_j, with_k, omega)
 
+        vj = vk = None
         with_dfk = with_k and not self.only_dfj
-        if isinstance(self, scf.ghf.GHF):
-            def jkbuild(mol, dm, hermi, with_j, with_k, omega=None):
-                vj, vk = self.with_df.get_jk(dm.real, hermi, with_j, with_k,
-                                             self.direct_scf_tol, omega)
-                if dm.dtype == numpy.complex128:
-                    vjI, vkI = self.with_df.get_jk(dm.imag, hermi, with_j, with_k,
-                                                   self.direct_scf_tol, omega)
-                    if with_j:
-                        vj = vj + vjI * 1j
-                    if with_k:
-                        vk = vk + vkI * 1j
-                return vj, vk
-            vj, vk = scf.ghf.get_jk(mol, dm, hermi, with_j, with_dfk,
-                                    jkbuild, omega)
-        else:
-            vj, vk = self.with_df.get_jk(dm, hermi, with_j, with_dfk,
-                                         self.direct_scf_tol, omega)
+        if with_j or with_dfk:
+            if isinstance(self, scf.ghf.GHF):
+                def jkbuild(mol, dm, hermi, with_j, with_k, omega=None):
+                    vj, vk = self.with_df.get_jk(dm.real, hermi, with_j, with_k,
+                                                self.direct_scf_tol, omega)
+                    if dm.dtype == numpy.complex128:
+                        vjI, vkI = self.with_df.get_jk(dm.imag, hermi, with_j, with_k,
+                                                    self.direct_scf_tol, omega)
+                        if with_j:
+                            vj = vj + vjI * 1j
+                        if with_k:
+                            vk = vk + vkI * 1j
+                    return vj, vk
+                vj, vk = scf.ghf.get_jk(mol, dm, hermi, with_j, with_dfk,
+                                        jkbuild, omega)
+            else:
+                vj, vk = self.with_df.get_jk(dm, hermi, with_j, with_dfk,
+                                            self.direct_scf_tol, omega)
         if with_k and not with_dfk:
             vk = super().get_jk(mol, dm, hermi, False, True, omega)[1]
         return vj, vk
@@ -173,6 +184,12 @@ class _DFHF:
 
     def nuc_grad_method(self):
         from pyscf.df.grad import rhf, rohf, uhf, rks, roks, uks
+        if self.istype('_Solvation'):
+            raise NotImplementedError(
+                'Gradients of solvent are not computed. '
+                'Solvent must be applied after density fitting method, e.g.\n'
+                'mf = mol.RKS().density_fit().PCM()'
+            )
         if isinstance(self, scf.uhf.UHF):
             if isinstance(self, scf.hf.KohnShamDFT):
                 return uks.Gradients(self)
@@ -195,11 +212,19 @@ class _DFHF:
 
     def Hessian(self):
         from pyscf.df.hessian import rhf, uhf, rks, uks
+        if self.istype('_Solvation'):
+            raise NotImplementedError(
+                'Hessian of solvent are not computed. '
+                'Solvent must be applied after density fitting method, e.g.\n'
+                'mf = mol.RKS().density_fit().PCM()'
+            )
         if isinstance(self, (scf.uhf.UHF, scf.rohf.ROHF)):
             if isinstance(self, scf.hf.KohnShamDFT):
                 return uks.Hessian(self)
             else:
                 return uhf.Hessian(self)
+        elif isinstance(self, scf.rohf.ROHF):
+            raise NotImplementedError
         elif isinstance(self, scf.rhf.RHF):
             if isinstance(self, scf.hf.KohnShamDFT):
                 return rks.Hessian(self)
@@ -214,9 +239,21 @@ class _DFHF:
     NSR = method_not_implemented
     Polarizability = method_not_implemented
     RotationalGTensor = method_not_implemented
-    MP2 = method_not_implemented
+
+    def MP2(self, frozen=None, auxbasis=None):
+        mp_obj = self.DFMP2()
+        if auxbasis is not None:
+            mp_obj.with_df.auxbasis = auxbasis
+        return mp_obj
+
     CISD = method_not_implemented
-    CCSD = method_not_implemented
+
+    def CCSD(self, frozen=None, auxbasis=None):
+        from pyscf.cc import dfccsd, dfuccsd
+        cc_obj = self.DFCCSD(frozen)
+        if auxbasis is not None:
+            cc_obj.with_df.auxbasis = auxbasis
+        return cc_obj
 
     def CASCI(self, ncas, nelecas, auxbasis=None, ncore=None):
         from pyscf import mcscf
@@ -231,7 +268,7 @@ class _DFHF:
         return lib.to_gpu(self, obj)
 
 
-def get_jk(dfobj, dm, hermi=1, with_j=True, with_k=True, direct_scf_tol=1e-13):
+def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
     assert (with_j or with_k)
     if (not with_k and not dfobj.mol.incore_anyway and
         # 3-center integral tensor is not initialized
@@ -253,6 +290,33 @@ def get_jk(dfobj, dm, hermi=1, with_j=True, with_k=True, direct_scf_tol=1e-13):
     vj = 0
     vk = numpy.zeros_like(dms)
 
+    if numpy.iscomplexobj(dms):
+        if with_j:
+            vj = numpy.zeros_like(dms)
+        max_memory = dfobj.max_memory - lib.current_memory()[0]
+        blksize = max(4, int(min(dfobj.blockdim, max_memory*.22e6/8/nao**2)))
+        buf = numpy.empty((blksize,nao,nao))
+        buf1 = numpy.empty((nao,blksize,nao))
+        for eri1 in dfobj.loop(blksize):
+            naux, nao_pair = eri1.shape
+            eri1 = lib.unpack_tril(eri1, out=buf)
+            if with_j:
+                tmp = numpy.einsum('pij,nji->pn', eri1, dms.real)
+                vj.real += numpy.einsum('pn,pij->nij', tmp, eri1)
+                tmp = numpy.einsum('pij,nji->pn', eri1, dms.imag)
+                vj.imag += numpy.einsum('pn,pij->nij', tmp, eri1)
+            buf2 = numpy.ndarray((nao,naux,nao), buffer=buf1)
+            for k in range(nset):
+                buf2[:] = lib.einsum('pij,jk->ipk', eri1, dms[k].real)
+                vk[k].real += lib.einsum('ipk,pkj->ij', buf2, eri1)
+                buf2[:] = lib.einsum('pij,jk->ipk', eri1, dms[k].imag)
+                vk[k].imag += lib.einsum('ipk,pkj->ij', buf2, eri1)
+            t1 = log.timer_debug1('jk', *t1)
+        if with_j: vj = vj.reshape(dm_shape)
+        if with_k: vk = vk.reshape(dm_shape)
+        logger.timer(dfobj, 'df vj and vk', *t0)
+        return vj, vk
+
     if with_j:
         idx = numpy.arange(nao)
         dmtril = lib.pack_tril(dms + dms.conj().transpose(0,2,1))
@@ -260,8 +324,8 @@ def get_jk(dfobj, dm, hermi=1, with_j=True, with_k=True, direct_scf_tol=1e-13):
 
     if not with_k:
         for eri1 in dfobj.loop():
-            rho = numpy.einsum('ix,px->ip', dmtril, eri1)
-            vj += numpy.einsum('ip,px->ix', rho, eri1)
+            # uses numpy.matmul
+            vj += dmtril.dot(eri1.T).dot(eri1)
 
     elif getattr(dm, 'mo_coeff', None) is not None:
         #TODO: test whether dm.mo_coeff matching dm
@@ -290,8 +354,8 @@ def get_jk(dfobj, dm, hermi=1, with_j=True, with_k=True, direct_scf_tol=1e-13):
             naux, nao_pair = eri1.shape
             assert (nao_pair == nao*(nao+1)//2)
             if with_j:
-                rho = numpy.einsum('ix,px->ip', dmtril, eri1)
-                vj += numpy.einsum('ip,px->ix', rho, eri1)
+                # uses numpy.matmul
+                vj += dmtril.dot(eri1.T).dot(eri1)
 
             for k in range(nset):
                 nocc = orbo[k].shape[1]
@@ -317,9 +381,10 @@ def get_jk(dfobj, dm, hermi=1, with_j=True, with_k=True, direct_scf_tol=1e-13):
         buf = numpy.empty((2,blksize,nao,nao))
         for eri1 in dfobj.loop(blksize):
             naux, nao_pair = eri1.shape
+            assert (nao_pair == nao*(nao+1)//2)
             if with_j:
-                rho = numpy.einsum('ix,px->ip', dmtril, eri1)
-                vj += numpy.einsum('ip,px->ix', rho, eri1)
+                # uses numpy.matmul
+                vj += dmtril.dot(eri1.T).dot(eri1)
 
             for k in range(nset):
                 buf1 = buf[0,:naux]
@@ -338,7 +403,7 @@ def get_jk(dfobj, dm, hermi=1, with_j=True, with_k=True, direct_scf_tol=1e-13):
     logger.timer(dfobj, 'df vj and vk', *t0)
     return vj, vk
 
-def get_j(dfobj, dm, hermi=1, direct_scf_tol=1e-13):
+def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
     from pyscf.scf import _vhf
     from pyscf.scf import jk
     from pyscf.df import addons
@@ -383,6 +448,7 @@ def get_j(dfobj, dm, hermi=1, direct_scf_tol=1e-13):
     opt = dfobj._vjopt
     fakemol = opt.fakemol
     dm = numpy.asarray(dm, order='C')
+    assert dm.dtype == numpy.float64
     dm_shape = dm.shape
     nao = dm_shape[-1]
     dm = dm.reshape(-1,nao,nao)
@@ -431,7 +497,7 @@ def get_j(dfobj, dm, hermi=1, direct_scf_tol=1e-13):
     return numpy.asarray(vj).reshape(dm_shape)
 
 
-def r_get_jk(dfobj, dms, hermi=1, with_j=True, with_k=True):
+def r_get_jk(dfobj, dms, hermi=0, with_j=True, with_k=True):
     '''Relativistic density fitting JK'''
     t0 = (logger.process_clock(), logger.perf_counter())
     mol = dfobj.mol

@@ -42,13 +42,11 @@ def grad_elec(mp_grad, t2, atmlst=None, verbose=logger.INFO):
     doo, dvv = d1
     time1 = log.timer_debug1('rdm1 intermediates', *time0)
 
-# Set nocc, nvir for half-transformation of 2pdm.  Frozen orbitals are exculded.
+# Set nocc, nvir for half-transformation of 2pdm.  Frozen orbitals are excluded.
 # nocc, nvir should be updated to include the frozen orbitals when proceeding
 # the 1-particle quantities later.
     mol = mp_grad.mol
-    with_frozen = not ((mp.frozen is None)
-                       or (isinstance(mp.frozen, (int, numpy.integer)) and mp.frozen == 0)
-                       or (len(mp.frozen) == 0))
+    with_frozen = has_frozen_orbitals(mp)
     OA, VA, OF, VF = _index_frozen_active(mp.get_frozen_mask(), mp.mo_occ)
     orbo = mp.mo_coeff[:,OA]
     orbv = mp.mo_coeff[:,VA]
@@ -188,6 +186,17 @@ def grad_elec(mp_grad, t2, atmlst=None, verbose=logger.INFO):
     log.timer('%s gradients' % mp.__class__.__name__, *time0)
     return de
 
+def has_frozen_orbitals(post_hf):
+    '''Test if frozen orbitlas are enabled in a post-HF object.'''
+    with_frozen = False
+    if getattr(post_hf, 'frozen', None) is not None:
+        if isinstance(post_hf.frozen, (int, numpy.integer)):
+            with_frozen = post_hf.frozen != 0
+        elif hasattr(post_hf.frozen, '__len__'):
+            with_frozen = len(post_hf.frozen) != 0
+        else:
+            raise TypeError(f'Unsupported .frozen attribute {post_hf.frozen}')
+    return with_frozen
 
 def as_scanner(grad_mp):
     '''Generating a nuclear gradients scanner/solver (for geometry optimizer).
@@ -287,8 +296,11 @@ class Gradients(rhf_grad.GradientsBase):
 
     def kernel(self, t2=None, atmlst=None, verbose=None):
         log = logger.new_logger(self, verbose)
-        if t2 is None: t2 = self.base.t2
-        if t2 is None: t2 = self.base.kernel()[1]
+        if t2 is None:
+            if self.base.t2 is None:
+                t2 = self.base.kernel()[1]
+            else:
+                t2 = self.base.t2
         if atmlst is None:
             atmlst = self.atmlst
         else:

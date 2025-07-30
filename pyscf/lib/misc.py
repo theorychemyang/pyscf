@@ -23,6 +23,7 @@ Some helper functions
 import os
 import sys
 import time
+import random
 import platform
 import warnings
 import tempfile
@@ -30,6 +31,8 @@ import functools
 import itertools
 import inspect
 import collections
+import pickle
+import weakref
 import ctypes
 import numpy
 import scipy
@@ -102,7 +105,7 @@ def load_library(libname):
                         return numpy.ctypeslib.load_library(libname, libpath)
         raise
 
-#Fixme, the standard resouce module gives wrong number when objects are released
+#Fixme, the standard resource module gives wrong number when objects are released
 # http://fa.bianp.net/blog/2013/different-ways-to-get-memory-consumption-or-lessons-learned-from-memory_profiler/#fn:1
 #or use slow functions as memory_profiler._get_memory did
 CLOCK_TICKS = os.sysconf("SC_CLK_TCK")
@@ -305,7 +308,7 @@ def prange(start, end, step):
             yield i, min(i+step, end)
 
 def prange_tril(start, stop, blocksize):
-    '''Similar to :func:`prange`, yeilds start (p0) and end (p1) with the
+    '''Similar to :func:`prange`, yields start (p0) and end (p1) with the
     restriction p1*(p1+1)/2-p0*(p0+1)/2 < blocksize
 
     Examples:
@@ -414,8 +417,8 @@ def tril_product(*iterables, **kwds):
     .. math:: i[tril_idx[0]] >= i[tril_idx[1]] >= ... >= i[tril_idx[len(tril_idx)-1]]
 
     Args:
-        *iterables: Variable length argument list of indices for the cartesian product
-        **kwds: Arbitrary keyword arguments.  Acceptable keywords include:
+        ``*iterables``: Variable length argument list of indices for the cartesian product
+        ``**kwds``: Arbitrary keyword arguments.  Acceptable keywords include:
             repeat (int): Number of times to repeat the iterables
             tril_idx (array_like): Indices to put into lower-triangular form.
 
@@ -453,7 +456,7 @@ def tril_product(*iterables, **kwds):
             yield tup
             continue
 
-        if all([tup[tril_idx[i]] >= tup[tril_idx[i+1]] for i in range(ntril_idx-1)]):
+        if all(tup[tril_idx[i]] >= tup[tril_idx[i+1]] for i in range(ntril_idx-1)):
             yield tup
         else:
             pass
@@ -547,6 +550,29 @@ def view(obj, cls):
     new_obj.__dict__.update(obj.__dict__)
     return new_obj
 
+def generate_pickle_methods(excludes=(), reset_state=False):
+    '''Generate methods for pickle, e.g.:
+
+    class A:
+        __getstate__, __setstate__ = generate_pickle_methods(excludes=('a', 'b', 'c'))
+    '''
+    def getstate(obj):
+        dic = {**obj.__dict__}
+        dic.pop('stdout', None)
+        for key in excludes:
+            dic.pop(key, None)
+        return dic
+
+    def setstate(obj, state):
+        obj.stdout = sys.stdout
+        obj.__dict__.update(state)
+        for key in excludes:
+            setattr(obj, key, None)
+        if reset_state and hasattr(obj, 'reset'):
+            obj.reset()
+
+    return getstate, setstate
+
 
 SANITY_CHECK = getattr(__config__, 'SANITY_CHECK', True)
 class StreamObject:
@@ -556,7 +582,7 @@ class StreamObject:
     ``mf = scf.RHF(mol).set(conv_tol=1e-5)`` is identical to proceed in two steps
     ``mf = scf.RHF(mol); mf.conv_tol=1e-5``
 
-    2 ``.run`` function to execute the kenerl function (the function arguments
+    2 ``.run`` function to execute the kernel function (the function arguments
     are passed to kernel function).  If keyword arguments is given, it will first
     call ``.set`` function to update object attributes then execute the kernel
     function.  Eg
@@ -638,7 +664,7 @@ class StreamObject:
 
     def apply(self, fn, *args, **kwargs):
         '''
-        Apply the fn to rest arguments:  return fn(*args, **kwargs).  The
+        Apply the fn to rest arguments:  return ``fn(*args, **kwargs)``.  The
         return value of method set is the object itself.  This allows a series
         of functions/methods to be executed in pipe.
         '''
@@ -668,6 +694,9 @@ class StreamObject:
     def copy(self):
         '''Returns a shallow copy'''
         return self.view(self.__class__)
+
+    __getstate__, __setstate__ = generate_pickle_methods()
+
 
 _warn_once_registry = {}
 def check_sanity(obj, keysref, stdout=sys.stdout):
@@ -726,7 +755,7 @@ def alias(fn, alias_name=None):
 
     Using alias function instead of fn1 = fn because some methods may be
     overloaded in the child class. Using "alias" can make sure that the
-    overloaded mehods were called when calling the aliased method.
+    overloaded methods were called when calling the aliased method.
     '''
     name = fn.__name__
     if alias_name is None:
@@ -841,25 +870,27 @@ def invalid_method(name):
     fn.__name__ = name
     return fn
 
-@functools.lru_cache(None)
-def _define_class(name, bases):
-    return type(name, bases, {})
-
+_registered_classes = {}
 def make_class(bases, name=None, attrs=None):
     '''
     Construct a class
 
-    class {name}(*bases):
-        __dict__ = attrs
+    .. code-block:: python
+
+        class {name}(*bases):
+            __dict__ = attrs
     '''
+    _registered_classes
     if name is None:
         name = ''.join(getattr(x, '__name_mixin__', x.__name__) for x in bases)
 
-    cls = _define_class(name, bases)
-    cls.__name_mixin__ = name
-    if attrs is not None:
-        for key, val in attrs.items():
-            setattr(cls, key, val)
+    cls = _registered_classes.get((name, bases))
+    if cls is None:
+        if attrs is None:
+            attrs = {}
+        cls = type(name, bases, attrs)
+        cls.__name_mixin__ = name
+        _registered_classes[name, bases] = cls
     return cls
 
 def set_class(obj, bases, name=None, attrs=None):
@@ -898,7 +929,8 @@ def drop_class(cls, base_cls, name_mixin=None):
 
     # rebuild the dynamic_mixin class
     attrs = {**cls.__dict__, '__name_mixin__': cls_name}
-    cls_undressed = type(cls_name, tuple(filter_bases), attrs)
+    cls_undressed = make_class(tuple(filter_bases), cls_name, attrs)
+    cls_undressed.__module__ = cls.__module__
     return cls_undressed
 
 def replace_class(cls, old_cls, new_cls):
@@ -920,7 +952,9 @@ def replace_class(cls, old_cls, new_cls):
 
     name = cls.__name__.replace(old_cls.__name__, new_cls.__name__)
     attrs = {**cls.__dict__, '__name_mixin__': name}
-    return type(name, tuple(bases), attrs)
+    _cls = make_class(tuple(bases), name, attrs)
+    _cls.__module__ = cls.__module__
+    return _cls
 
 def overwrite_mro(obj, mro):
     '''A hacky function to overwrite the __mro__ attribute'''
@@ -1014,7 +1048,7 @@ class call_in_background:
 
     Attributes:
         sync (bool): Whether to run in synchronized mode.  The default value
-            is False (asynchoronized mode).
+            is False (asynchronized mode).
 
     Examples:
 
@@ -1063,7 +1097,7 @@ class call_in_background:
                 # import lock) bug in the threading module.  See also
                 # https://github.com/paramiko/paramiko/issues/104
                 # https://docs.python.org/2/library/threading.html#importing-in-threaded-code
-                # Disable the asynchoronous mode for safe importing
+                # Disable the asynchronous mode for safe importing
                 def def_async_fn(i):
                     return fns[i]
 
@@ -1111,8 +1145,52 @@ class call_in_background:
         if self.executor is not None:
             self.executor.shutdown(wait=True)
 
+class H5FileWrap(h5py.File):
+    '''
+    A wrapper for h5py.File that allows global options to be set by
+    the user via lib.param.H5F_WRITE_KWARGS, which is imported
+    upon startup from the user's configuration file.
 
-class H5TmpFile(h5py.File):
+    These options are, as the name suggests, not used when the
+    HDF5 file is opened in read-only mode.
+
+    Example:
+
+    >>> with temporary_env(lib.param, H5F_WRITE_KWARGS={'driver': 'core'}):
+    ...     with lib.H5TmpFile() as f:
+    ...         print(f.driver)
+    core
+    '''
+    def __init__(self, filename, mode, *args, **kwargs):
+        if mode != 'r':
+            options = param.H5F_WRITE_KWARGS.copy()
+            options.update(kwargs)
+        else:
+            options = kwargs
+        super().__init__(filename, mode, *args, **options)
+
+    def _finished(self):
+        '''
+        Close the file and flush it if it is open.
+        Flushing explicitly should not be necessary:
+        this is intended to avoid a bug that unpredictably
+        causes outcore DF to hang on an NFS filesystem.
+        '''
+        try:
+            if super().id and super().id.valid:
+                super().flush()
+            super().close()
+        except AttributeError:  # close not defined in old h5py
+            pass
+        except ValueError:  # if close() is called twice
+            pass
+        except ImportError:  # exit program before de-referring the object
+            pass
+
+    def __del__(self):
+        self._finished()
+
+class H5TmpFile(H5FileWrap):
     '''Create and return an HDF5 temporary file.
 
     Kwargs:
@@ -1130,22 +1208,46 @@ class H5TmpFile(h5py.File):
     >>> from pyscf import lib
     >>> ftmp = lib.H5TmpFile()
     '''
-    def __init__(self, filename=None, mode='a', *args, **kwargs):
+    def __init__(self, filename=None, mode='a', prefix='', suffix='',
+                 dir=param.TMPDIR, *args, **kwargs):
+        self.delete_on_close = False
         if filename is None:
-            with tempfile.NamedTemporaryFile(dir=param.TMPDIR) as tmpf:
-                h5py.File.__init__(self, tmpf.name, mode, *args, **kwargs)
-        else:
-            h5py.File.__init__(self, filename, mode, *args, **kwargs)
+            filename = H5TmpFile._gen_unique_name(dir, pre=prefix, suf=suffix)
+            self.delete_on_close = True
 
-    def __del__(self):
-        try:
-            self.close()
-        except AttributeError:  # close not defined in old h5py
-            pass
-        except ValueError:  # if close() is called twice
-            pass
-        except ImportError:  # exit program before de-referring the object
-            pass
+        def _delete_with_check(fname, should_delete):
+            if should_delete and os.path.exists(fname):
+                os.remove(fname)
+
+        self._finalizer = weakref.finalize(self, _delete_with_check,
+                                           filename, self.delete_on_close)
+
+        super().__init__(filename, mode, *args, **kwargs)
+
+    # Python 3 stdlib does not have a way to just generate
+    # temporary file names.
+    @staticmethod
+    def _gen_unique_name(directory, pre='', suf=''):
+        absdir = os.path.abspath(directory)
+        random.seed()
+        for seq in range(10000):
+            name = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=8))
+            filename = os.path.join(absdir, pre + name + suf)
+            try:
+                f = open(filename, 'x')
+            except FileExistsError:
+                continue    # try again
+            f.close()
+            return filename
+        raise FileExistsError("No usable temporary file name found")
+
+    def close(self):
+        self._finished()
+        self._finalizer()
+
+    def __exit__(self, type, value, traceback):
+        self.close()
+
 
 def fingerprint(a):
     '''Fingerprint of numpy array'''
@@ -1231,7 +1333,7 @@ class temporary_env:
                 setattr(self.obj, k, v)
 
 class light_speed(temporary_env):
-    '''Within the context of this macro, the environment varialbe LIGHT_SPEED
+    '''Within the context of this macro, the environment variable LIGHT_SPEED
     can be customized.
 
     Examples:
@@ -1248,6 +1350,20 @@ class light_speed(temporary_env):
     def __enter__(self):
         temporary_env.__enter__(self)
         return self.c
+
+class h5filewrite_options(temporary_env):
+    '''Within the context of this macro, extra keyword arguments are
+    passed to h5py.File() whenever an HDF5 file is opened for writing.
+
+    Examples:
+
+    >>> with h5filewrite_options(alignment_interval=4096, alignment_threshold=4096):
+    ...     f = lib.H5FileWrap('mydata.h5', 'w')
+    >>> print(h5py.h5p.PropFAID.get_alignment(f.id.get_access_plist()))
+    (4096, 4096)
+    '''
+    def __init__(self, **kwargs):
+        super().__init__(param, H5F_WRITE_KWARGS=kwargs)
 
 def repo_info(repo_path):
     '''
@@ -1313,7 +1429,8 @@ def format_sys_info():
     result = [
         f'System: {platform.uname()}  Threads {num_threads()}',
         f'Python {sys.version}',
-        f'numpy {numpy.__version__}  scipy {scipy.__version__}',
+        f'numpy {numpy.__version__}  scipy {scipy.__version__}  '
+        f'h5py {h5py.__version__}',
         f'Date: {time.ctime()}',
         f'PySCF version {pyscf.__version__}',
         f'PySCF path  {info["path"]}',
@@ -1366,7 +1483,7 @@ class _OmniObject:
     '''
     verbose = 0
     max_memory = param.MAX_MEMORY
-    stdout = sys.stdout
+    stdout = StreamObject.stdout
 
     def __init__(self, default_factory=None):
         self._default = default_factory
@@ -1383,6 +1500,10 @@ omniobj._built = True
 omniobj.mol = omniobj
 omniobj._scf = omniobj
 omniobj.base = omniobj
+omniobj.precision = 1e-8 # utilized by several pbc modules
+
+# Attributes that are kept in np.ndarray during the to_gpu conversion
+_ATTRIBUTES_IN_NPARRAY = {'kpt', 'kpts', 'kpts_band', 'mesh', 'frozen'}
 
 def to_gpu(method, out=None):
     '''Convert a method to its corresponding GPU variant, and recursively
@@ -1425,10 +1546,11 @@ def to_gpu(method, out=None):
     for key in keys:
         val = getattr(method, key)
         if isinstance(val, numpy.ndarray):
-            val = cupy.asarray(val)
+            if key not in _ATTRIBUTES_IN_NPARRAY:
+                val = cupy.asarray(val)
         elif hasattr(val, 'to_gpu'):
             val = val.to_gpu()
         setattr(out, key, val)
-    out.reset()
+    if hasattr(out, 'reset'):
+        out.reset()
     return out
-

@@ -89,7 +89,8 @@ def gen_g_hop_rhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None,
     if with_symmetry and mol.symmetry:
         g[sym_forbid] = 0
         h_diag[sym_forbid] = 0
-    vind = mf.gen_response(mo_coeff, mo_occ, singlet=None, hermi=1)
+    vind = mf.gen_response(mo_coeff, mo_occ, singlet=None, hermi=1,
+                           with_nlc=False)
 
     def h_op(x):
         x = x.reshape(nvir,nocc)
@@ -202,7 +203,7 @@ def gen_g_hop_uhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None,
         g[sym_forbid] = 0
         h_diag[sym_forbid] = 0
 
-    vind = mf.gen_response(mo_coeff, mo_occ, hermi=1)
+    vind = mf.gen_response(mo_coeff, mo_occ, hermi=1, with_nlc=False)
 
     def h_op(x):
         if with_symmetry and mol.symmetry:
@@ -258,7 +259,7 @@ def gen_g_hop_ghf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None,
         g[sym_forbid] = 0
         h_diag[sym_forbid] = 0
 
-    vind = mf.gen_response(mo_coeff, mo_occ, hermi=1)
+    vind = mf.gen_response(mo_coeff, mo_occ, hermi=1, with_nlc=False)
 
     def h_op(x):
         x = x.reshape(nvir,nocc)
@@ -413,7 +414,7 @@ def _rotate_orb_cc(mf, h1e, s1e, conv_tol_grad=None, verbose=None):
                 elif (ikf > 2 and # avoid frequent keyframe
                       #TODO: replace it with keyframe_scheduler
                       (ikf >= max(mf.kf_interval, mf.kf_interval-numpy.log(norm_dr+1e-9)) or
-                       # Insert keyframe if the keyframe and the esitimated g_orb are too different
+                       # Insert keyframe if the keyframe and the estimated g_orb are too different
                        norm_gorb < norm_gkf/kf_trust_region)):
                     ikf = 0
                     u = mf.update_rotate_matrix(dr, mo_occ, mo_coeff=mo_coeff)
@@ -508,10 +509,14 @@ def kernel(mf, mo_coeff=None, mo_occ=None, dm=None,
     # Save mo_coeff and mo_occ because they are needed by function rotate_mo
     mf.mo_coeff, mf.mo_occ = mo_coeff, mo_occ
 
+    scf_conv = False
     e_tot = mf._scf.energy_tot(dm, h1e, vhf)
     fock = mf.get_fock(h1e, s1e, vhf, dm, level_shift_factor=0)
     log.info('Initial guess E= %.15g  |g|= %g', e_tot,
              numpy.linalg.norm(mf._scf.get_grad(mo_coeff, mo_occ, fock)))
+
+    if mf.max_cycle <= 0:
+        return scf_conv, e_tot, mo_energy, mo_coeff, mo_occ
 
     if dump_chk and mf.chkfile:
         chkfile.save_mol(mol, mf.chkfile)
@@ -525,7 +530,6 @@ def kernel(mf, mo_coeff=None, mo_occ=None, dm=None,
     next(rotaiter)  # start the iterator
     kftot = jktot = 0
     norm_gorb = 0.
-    scf_conv = False
     cput1 = log.timer('initializing second order scf', *cput0)
 
     for imacro in range(max_cycle):
@@ -799,6 +803,21 @@ class _CIAH_SOSCF:
             log.debug('Overlap to last step, SVD = %s',
                       _effective_svd(u[idx][:,idx], 1e-5))
         return mo
+
+    def density_fit(self, auxbasis=None, with_df=None, only_dfj=False):
+        '''Approximate the orbital Hessian using density fitting integrals.
+
+        This method applies the density fitting approximation to the SOSCF
+        accelerator rather than the mean-field instance itself. It specifically
+        affects the computation of the orbital Hessian.
+        '''
+        return self.approx_hessian(auxbasis, with_df, only_dfj)
+
+    def approx_hessian(self, auxbasis=None, with_df=None, only_dfj=False):
+        '''Approximate the orbital Hessian using density fitting integrals.'''
+        import pyscf.df.df_jk
+        logger.debug(self, 'Approximate the orbital hessian using DF integrals')
+        return pyscf.df.df_jk.density_fit(self, auxbasis, with_df, only_dfj)
 
     def to_gpu(self):
         return self.undo_soscf().to_gpu()

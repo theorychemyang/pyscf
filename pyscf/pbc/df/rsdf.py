@@ -32,7 +32,7 @@ ref.:
 In RSGDF, the two-center and three-center Coulomb integrals are calculated in two pars:
     j2c = j2c_SR(omega) + j2c_LR(omega)
     j3c = j3c_SR(omega) + j3c_LR(omega)
-where the SR and LR integrals correpond to using the following potentials
+where the SR and LR integrals correspond to using the following potentials
     g_SR(r_12;omega) = erfc(omega * r_12) / r_12
     g_LR(r_12;omega) = erf(omega * r_12) / r_12
 The SR integrals are evaluated in real space using a lattice summation, while
@@ -47,6 +47,7 @@ import numpy as np
 
 from pyscf import lib
 from pyscf.lib import logger, zdotCN
+from pyscf.lib import parameters as param
 from pyscf.pbc.df.df import GDF
 from pyscf.pbc.df import aft, aft_jk
 from pyscf.pbc.df import ft_ao
@@ -219,7 +220,7 @@ cell.dimension=3 with large vacuum.""")
             # Use the thus determined mesh_compact only if not p[rovided
             if self.mesh_compact is None:
                 self.mesh_compact = mesh_compact
-        # If omega is provded but mesh_compact is not
+        # If omega is provided but mesh_compact is not
         elif self.mesh_compact is None:
             self.ke_cutoff, self.mesh_compact = \
                                 rsdf_helper.estimate_mesh_for_omega(
@@ -294,6 +295,7 @@ cell.dimension=3 with large vacuum.""")
             kpts_union = unique(np.vstack([self.kpts, self.kpts_band]))[0]
         dfbuilder = _RSGDFBuilder(cell, auxcell, kpts_union)
         dfbuilder.__dict__.update(self.__dict__)
+        dfbuilder.kpts = kpts_union
         j_only = self._j_only or len(kpts_union) == 1
         dfbuilder.make_j3c(cderi_file, j_only=j_only, dataname=self._dataname,
                            kptij_lst=kptij_lst)
@@ -421,9 +423,11 @@ class _RSGDFBuilder(rsdf_builder._RSGDFBuilder):
     def outcore_auxe2(self, cderi_file, intor='int3c2e', aosym='s2', comp=None,
                       kptij_lst=None, j_only=False, dataname='j3c-junk',
                       shls_slice=None):
-        swapfile = tempfile.NamedTemporaryFile(dir=os.path.dirname(cderi_file))
-        fswap = lib.H5TmpFile(swapfile.name)
-        swapfile = None
+        # Deadlock on NFS if you open an already-opened tmpfile in H5PY
+        # swapfile = tempfile.NamedTemporaryFile(dir=os.path.dirname(cderi_file))
+        fswap = lib.H5TmpFile(dir=os.path.dirname(cderi_file), prefix='.outcore_auxe2_swap')
+        # avoid trash files
+        os.unlink(fswap.filename)
 
         cell = self.cell
         if self.use_bvk and self.kpts_band is None:
@@ -557,6 +561,20 @@ class _RSGDFBuilder(rsdf_builder._RSGDFBuilder):
             ijlst_mapping[kpti_idx * nkpts + kptj_idx] = np.arange(len(kptij_lst))
             kk_idx = kpti_idx * nkpts + kptj_idx
 
+        # TODO: Store rs_density_fit cderi tensor in v1 format for the moment.
+        # It should be changed to 'v2' format in the future.
+        data_version = 'v1'
+        if h5py.is_hdf5(cderi_file):
+            feri = lib.H5FileWrap(cderi_file, 'a')
+            if 'kpts' in feri:
+                del feri['j3c-kptij']
+            if dataname in feri:
+                log.warn(f'Overwritting {dataname} in {cderi_file}.')
+                del feri[dataname]
+        else:
+            feri = lib.H5FileWrap(cderi_file, 'w')
+        feri['j3c-kptij'] = kptij_lst
+
         fswap = self.outcore_auxe2(cderi_file, intor, aosym, comp,
                                    kptij_lst, j_only, 'j3c-junk', shls_slice)
         cpu1 = log.timer_debug1('3c2e', *cpu1)
@@ -573,16 +591,6 @@ class _RSGDFBuilder(rsdf_builder._RSGDFBuilder):
         # Add (1) short-range G=0 (i.e., charge) part and (2) long-range part
         tspans = np.zeros((3,2))    # lr, j2c_inv, j2c_cntr
         tspannames = ["ftaop+pw", "j2c_inv", "j2c_cntr"]
-        feri = h5py.File(cderi_file, 'w')
-
-        # TODO: Store rs_density_fit cderi tensor in v1 format for the moment.
-        # It should be changed to 'v2' format in the future.
-        data_version = 'v1'
-        if data_version == 'v1':
-            feri['j3c-kptij'] = kptij_lst
-        else:
-            feri['kpts'] = kpts
-            ijlst_mapping = None
         def make_cderi(kpt, kpt_ij_idx, j2c):
             log.debug1('make_cderi for %s', kpt)
             kptjs = kpts[kpt_ij_idx % nkpts]

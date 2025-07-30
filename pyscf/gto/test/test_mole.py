@@ -17,6 +17,7 @@ import unittest
 import tempfile
 from functools import reduce
 import numpy
+import numpy as np
 import scipy.linalg
 from pyscf import gto
 from pyscf import lib
@@ -126,7 +127,7 @@ C    SP
                  ['H3', ( 0, 0, 0)]]
         basis = {'H2':'sto3g', 'H3':'6-31g', 'H0':'sto3g', 'H1': '6-31g'}
         atmgroup = gto.mole.atom_types(atoms, basis)
-        self.assertEqual(atmgroup, {'H2': [2], 'H3': [3], 'H0': [0], 'H1': [1]})
+        self.assertEqual(atmgroup, {'H0': [0, 2], 'H1': [1, 3]})
 
     def test_input_symmetry(self):
         mol = gto.M(atom='H 0 0 -1; H 0 0 1', symmetry='D2h')
@@ -257,14 +258,21 @@ C    SP
 
     def test_atom_as_file(self):
         ftmp = tempfile.NamedTemporaryFile('w')
-        # file in xyz format
+        # file in raw format
         ftmp.write('He 0 0 0\nHe 0 0 1\n')
         ftmp.flush()
         mol1 = gto.M(atom=ftmp.name)
         self.assertEqual(mol1.natm, 2)
 
+        # file in xyz format
+        ftmp = tempfile.NamedTemporaryFile('w', suffix='.xyz')
+        ftmp.write('2\n\nHe 0 0 0\nHe 0 0 1\n')
+        ftmp.flush()
+        mol1 = gto.M(atom=ftmp.name)
+        self.assertEqual(mol1.natm, 2)
+
         # file in zmatrix format
-        ftmp = tempfile.NamedTemporaryFile('w')
+        ftmp = tempfile.NamedTemporaryFile('w', suffix='.zmat')
         ftmp.write('He\nHe 1 1.5\n')
         ftmp.flush()
         mol1 = gto.M(atom=ftmp.name)
@@ -736,6 +744,13 @@ O    SP
         mol1.build()
         self.assertAlmostEqual(abs(mol1._symm_axes - numpy.eye(3)[[1,2,0]]).max(), 0, 9)
 
+        mol1 = gto.M(
+            atom='He 0 0 0',
+            basis='aug-cc-pvdz',
+            symmetry='SO3'
+        )
+        self.assertEqual(mol1.groupname, 'SO3')
+
     def test_symm_orb(self):
         rs = numpy.array([[.1, -.3, -.2],
                           [.3,  .1,  .8]])
@@ -949,9 +964,9 @@ O    SP
         out1 = mol.tofile(tmpfile.name, format='xyz')
         ref = '''3
 XYZ from PySCF
-H           0.00000        1.00000        1.00000
-O           0.00000        0.00000        0.00000
-H           1.00000        1.00000        0.00000
+H           0.00000000        1.00000000        1.00000000
+O           0.00000000        0.00000000        0.00000000
+H           1.00000000        1.00000000        0.00000000
 '''
         with open(tmpfile.name, 'r') as f:
             self.assertEqual(f.read(), ref)
@@ -1037,12 +1052,25 @@ H    P
         mol._bas = mol._bas[:5]
         pmol, c = mol.decontract_basis()
         self.assertEqual(pmol.nbas, 14)
+        self.assertEqual(len(c), 5)
 
         mol = gto.M(atom='He',
                     basis=('ccpvdz', [[0, [5, 1]], [1, [3, 1]]]))
         pmol, contr_coeff = mol.decontract_basis()
+        self.assertEqual(len(contr_coeff), 5)
         contr_coeff = scipy.linalg.block_diag(*contr_coeff)
         s = contr_coeff.T.dot(pmol.intor('int1e_ovlp')).dot(contr_coeff)
+        self.assertAlmostEqual(abs(s - mol.intor('int1e_ovlp')).max(), 0, 12)
+
+        mol = gto.M(atom='H 0 0 0; F 0 0 1', basis=[[0, (2, .5), (1, .5)],
+                                                    [0, (2, .1), (1, .9)],
+                                                    [0, (4., 1)]])
+        with self.assertRaises(RuntimeError):
+            mol.decontract_basis(aggregate=False)
+        pmol, c = mol.decontract_basis(aggregate=True)
+        self.assertEqual(pmol.nbas, 6)
+        self.assertEqual(c.shape, (6, 6))
+        s = c.T.dot(pmol.intor('int1e_ovlp')).dot(c)
         self.assertAlmostEqual(abs(s - mol.intor('int1e_ovlp')).max(), 0, 12)
 
     def test_ao_rotation_matrix(self):
@@ -1055,6 +1083,24 @@ H    P
         v0 = u.T.dot(mol.intor('int1e_nuc')).dot(u)
         v1 = mol1.intor('int1e_nuc')
         self.assertAlmostEqual(abs(v0 - v1).max(), 0, 12)
+
+    def test_to_cell(self):
+        from pyscf.dft import numint
+        mol = gto.M(atom='''
+            O   0.   0.       0.
+            H   0.   -0.757   0.587
+            H   0.   0.757    0.587''', basis='ccpvdz')
+        cell = mol.to_cell()
+        mf = mol.RHF().run()
+        dm = mf.make_rdm1()
+        a = cell.lattice_vectors()
+        edge_grids = np.vstack([
+            a * -.5,
+            a * .5,
+        ])
+        ao = numint.eval_ao(mol, edge_grids)
+        rho = numint.eval_rho(mol, ao, dm)
+        self.assertTrue(all(abs(rho) < 1e-7))
 
 if __name__ == "__main__":
     print("test mole.py")

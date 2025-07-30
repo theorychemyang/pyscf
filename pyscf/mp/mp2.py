@@ -54,7 +54,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
     emp2_ss = emp2_os = 0
     for i in range(nocc):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
-            # When mf._eri is a custom integrals wiht the shape (n,n,n,n), the
+            # When mf._eri is a custom integrals with the shape (n,n,n,n), the
             # ovov integrals might be in a 4-index tensor.
             gi = eris.ovov[i]
         else:
@@ -148,7 +148,7 @@ def update_amps(mp, t2, eris):
     return t2new
 
 
-def make_rdm1(mp, t2=None, eris=None, ao_repr=False):
+def make_rdm1(mp, t2=None, eris=None, ao_repr=False, with_frozen=True):
     r'''Spin-traced one-particle density matrix.
     The occupied-virtual orbital response is not included.
 
@@ -160,7 +160,7 @@ def make_rdm1(mp, t2=None, eris=None, ao_repr=False):
 
     Kwargs:
         ao_repr : boolean
-            Whether to transfrom 1-particle density matrix to AO
+            Whether to transform 1-particle density matrix to AO
             representation.
     '''
     from pyscf.cc import ccsd_rdm
@@ -169,7 +169,7 @@ def make_rdm1(mp, t2=None, eris=None, ao_repr=False):
     nvir = dvv.shape[0]
     dov = numpy.zeros((nocc,nvir), dtype=doo.dtype)
     dvo = dov.T
-    return ccsd_rdm._make_rdm1(mp, (doo, dov, dvo, dvv), with_frozen=True,
+    return ccsd_rdm._make_rdm1(mp, (doo, dov, dvo, dvv), with_frozen=with_frozen,
                                ao_repr=ao_repr)
 
 def _gamma1_intermediates(mp, t2=None, eris=None):
@@ -203,6 +203,17 @@ def _gamma1_intermediates(mp, t2=None, eris=None):
     return -dm1occ, dm1vir
 
 
+def _mo_splitter(mp):
+    maskact = mp.get_frozen_mask()
+    maskocc = mp.mo_occ>1e-6
+    masks = [
+        maskocc  & ~maskact,    # frz occ
+        maskocc  &  maskact,    # act occ
+        ~maskocc &  maskact,    # act vir
+        ~maskocc & ~maskact,    # frz vir
+    ]
+    return masks
+
 def make_fno(mp, thresh=1e-6, pct_occ=None, nvir_act=None, t2=None):
     r'''
     Frozen natural orbitals
@@ -222,30 +233,43 @@ def make_fno(mp, thresh=1e-6, pct_occ=None, nvir_act=None, t2=None):
             Semicanonical NO coefficients in the AO basis
     '''
     mf = mp._scf
-    dm = mp.make_rdm1(t2=t2)
+    dm = mp.make_rdm1(t2=t2, with_frozen=False)
 
     nmo = mp.nmo
     nocc = mp.nocc
+    nvir = nmo - nocc
     n,v = numpy.linalg.eigh(dm[nocc:,nocc:])
     idx = numpy.argsort(n)[::-1]
     n,v = n[idx], v[:,idx]
 
     if nvir_act is None:
         if pct_occ is None:
-            nvir_act = numpy.count_nonzero(n>thresh)
+            nvir_keep = numpy.count_nonzero(n>thresh)
         else:
-            print(numpy.cumsum(n/numpy.sum(n)))
-            nvir_act = numpy.count_nonzero(numpy.cumsum(n/numpy.sum(n))<pct_occ)
+            cumsum = numpy.cumsum(n/numpy.sum(n))
+            logger.debug(mp, 'Sum(pct_occ): %s', cumsum)
+            nvir_keep = numpy.count_nonzero(
+                [c <= pct_occ or numpy.isclose(c, pct_occ) for c in cumsum])
+    else:
+        nvir_keep = min(nvir, nvir_act)
 
-    fvv = numpy.diag(mf.mo_energy[nocc:])
+    masks = _mo_splitter(mp)
+    moeoccfrz0, moeocc, moevir, moevirfrz0 = [mf.mo_energy[m] for m in masks]
+    orboccfrz0, orbocc, orbvir, orbvirfrz0 = [mf.mo_coeff[:,m] for m in masks]
+
+    fvv = numpy.diag(moevir)
     fvv_no = numpy.dot(v.T, numpy.dot(fvv, v))
-    _, v_canon = numpy.linalg.eigh(fvv_no[:nvir_act,:nvir_act])
+    _, v_canon = numpy.linalg.eigh(fvv_no[:nvir_keep,:nvir_keep])
 
-    no_coeff_1 = numpy.dot(mf.mo_coeff[:,nocc:], numpy.dot(v[:,:nvir_act], v_canon))
-    no_coeff_2 = numpy.dot(mf.mo_coeff[:,nocc:], v[:,nvir_act:])
-    no_coeff = numpy.concatenate((mf.mo_coeff[:,:nocc], no_coeff_1, no_coeff_2), axis=1)
+    orbviract = numpy.dot(orbvir, numpy.dot(v[:,:nvir_keep], v_canon))
+    orbvirfrz = numpy.dot(orbvir, v[:,nvir_keep:])
+    no_comp = (orboccfrz0, orbocc, orbviract, orbvirfrz, orbvirfrz0)
+    no_coeff = numpy.hstack(no_comp)
+    nocc_loc = numpy.cumsum([0]+[x.shape[1] for x in no_comp]).astype(int)
+    no_frozen = numpy.hstack((numpy.arange(nocc_loc[0], nocc_loc[1]),
+                              numpy.arange(nocc_loc[3], nocc_loc[5]))).astype(int)
 
-    return numpy.arange(nocc+nvir_act,nmo), no_coeff
+    return no_frozen, no_coeff
 
 
 def make_rdm2(mp, t2=None, eris=None, ao_repr=False):
@@ -335,7 +359,7 @@ def get_nocc(mp):
         nocc = numpy.count_nonzero(mp.mo_occ > 0) - mp.frozen
         assert (nocc > 0)
         return nocc
-    elif isinstance(mp.frozen[0], (int, numpy.integer)):
+    elif hasattr(mp.frozen, '__len__'):
         occ_idx = mp.mo_occ > 0
         occ_idx[list(mp.frozen)] = False
         nocc = numpy.count_nonzero(occ_idx)
@@ -351,7 +375,7 @@ def get_nmo(mp):
         return len(mp.mo_occ)
     elif isinstance(mp.frozen, (int, numpy.integer)):
         return len(mp.mo_occ) - mp.frozen
-    elif isinstance(mp.frozen[0], (int, numpy.integer)):
+    elif hasattr(mp.frozen, '__len__'):
         return len(mp.mo_occ) - len(set(mp.frozen))
     else:
         raise NotImplementedError
@@ -360,7 +384,7 @@ def get_frozen_mask(mp):
     '''Get boolean mask for the restricted reference orbitals.
 
     In the returned boolean (mask) array of frozen orbital indices, the
-    element is False if it corresonds to the frozen orbital.
+    element is False if it corresponds to the frozen orbital.
     '''
     moidx = numpy.ones(mp.mo_occ.size, dtype=bool)
     if mp._nmo is not None:
@@ -369,7 +393,7 @@ def get_frozen_mask(mp):
         pass
     elif isinstance(mp.frozen, (int, numpy.integer)):
         moidx[:mp.frozen] = False
-    elif len(mp.frozen) > 0:
+    elif hasattr(mp.frozen, '__len__'):
         moidx[list(mp.frozen)] = False
     else:
         raise NotImplementedError
@@ -379,6 +403,8 @@ def get_e_hf(mp, mo_coeff=None):
     # Get HF energy, which is needed for total MP2 energy.
     if mo_coeff is None:
         mo_coeff = mp.mo_coeff
+    if mo_coeff is mp._scf.mo_coeff and mp._scf.converged:
+        return mp._scf.e_tot
     dm = mp._scf.make_rdm1(mo_coeff, mp.mo_occ)
     vhf = mp._scf.get_veff(mp._scf.mol, dm)
     return mp._scf.energy_tot(dm=dm, vhf=vhf)
@@ -434,7 +460,7 @@ class MP2_Scanner(lib.SinglePointScanner):
         return self.e_tot
 
 
-class MP2(lib.StreamObject):
+class MP2Base(lib.StreamObject):
     '''restricted MP2 with canonical HF and non-canonical HF reference
 
     Attributes:
@@ -455,7 +481,7 @@ class MP2(lib.StreamObject):
             For non-canonical MP2, DIIS space size in MP2
             iterations.  Default is 6.
         level_shift : float
-            A shift on virtual orbital energies to stablize the MP2 iterations.
+            A shift on virtual orbital energies to stabilize the MP2 iterations.
         frozen : int or list
             If integer is given, the inner-most orbitals are excluded from MP2
             amplitudes.  Given the orbital indices (0-based) in a list, both
@@ -548,8 +574,8 @@ class MP2(lib.StreamObject):
 
     def set_frozen(self, method='auto', window=(-1000.0, 1000.0)):
         from pyscf import mp
-        is_gmp = isinstance(self, mp.gmp2.GMP2)
         from pyscf.cc.ccsd import set_frozen
+        is_gmp = isinstance(self, mp.gmp2.GMP2)
         return set_frozen(self, method=method, window=window, is_gcc=is_gmp)
 
     def dump_flags(self, verbose=None):
@@ -590,21 +616,33 @@ class MP2(lib.StreamObject):
         if self.verbose >= logger.WARN:
             self.check_sanity()
 
+        log = logger.new_logger(self)
+
+        cput0 = cput1 = (logger.process_clock(), logger.perf_counter())
+
         self.dump_flags()
 
         self.e_hf = self.get_e_hf(mo_coeff=mo_coeff)
 
+        cput1 = log.timer('ehf', *cput1)
+
         if eris is None:
             eris = self.ao2mo(mo_coeff)
+
+        cput1 = log.timer('ao2mo', *cput1)
 
         if self._scf.converged:
             self.e_corr, self.t2 = self.init_amps(mo_energy, mo_coeff, eris, with_t2)
         else:
             self.converged, self.e_corr, self.t2 = _iterative_kernel(self, eris)
 
+        cput1 = log.timer('kernel', *cput1)
+
         self.e_corr_ss = getattr(self.e_corr, 'e_corr_ss', 0)
         self.e_corr_os = getattr(self.e_corr, 'e_corr_os', 0)
         self.e_corr = float(self.e_corr)
+
+        log.timer(self.__class__.__name__, *cput0)
 
         self._finalize()
         return self.e_corr, self.t2
@@ -620,14 +658,52 @@ class MP2(lib.StreamObject):
         log.info('E_corr(oppo-spin) = %.15g', self.e_corr_os)
         return self
 
-    def ao2mo(self, mo_coeff=None):
-        return _make_eris(self, mo_coeff, verbose=self.verbose)
+    ao2mo = NotImplemented
+
+    def make_fno(mp, thresh=1e-6, pct_occ=None, nvir_act=None, t2=None):
+        raise NotImplementedError
+
+    def make_rdm1(mp, t2=None, eris=None, ao_repr=False, with_frozen=True):
+        raise NotImplementedError
+
+    def make_rdm2(mp, t2=None, eris=None, ao_repr=False):
+        raise NotImplementedError
+
+    as_scanner = as_scanner
+
+    def energy(self, t2, eris):
+        raise NotImplementedError
+
+    def nuc_grad_method(self):
+        raise NotImplementedError
+
+    def init_amps(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
+        raise NotImplementedError
+
+    # For non-canonical MP2
+    def update_amps(self, t2, eris):
+        raise NotImplementedError
+
+    def density_fit(self, auxbasis=None, with_df=None):
+        raise NotImplementedError
+
+    to_gpu = lib.to_gpu
+
+class RMP2(MP2Base):
 
     make_rdm1 = make_rdm1
     make_fno = make_fno
     make_rdm2 = make_rdm2
 
-    as_scanner = as_scanner
+    update_amps = update_amps
+
+    # For non-canonical MP2
+    energy = energy
+    def init_amps(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
+        return kernel(self, mo_energy, mo_coeff, eris, with_t2)
+
+    def ao2mo(self, mo_coeff=None):
+        return _make_eris(self, mo_coeff, verbose=self.verbose)
 
     def density_fit(self, auxbasis=None, with_df=None):
         from pyscf.mp import dfmp2
@@ -643,22 +719,7 @@ class MP2(lib.StreamObject):
         from pyscf.grad import mp2
         return mp2.Gradients(self)
 
-    # For non-canonical MP2
-    energy = energy
-    update_amps = update_amps
-    def init_amps(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
-        return kernel(self, mo_energy, mo_coeff, eris, with_t2)
-
-    # to_gpu can be reused only when __init__ still takes mf
-    def to_gpu(self):
-        mf = self._scf.to_gpu()
-        from importlib import import_module
-        mod = import_module(self.__module__.replace('pyscf', 'gpu4pyscf'))
-        cls = getattr(mod, self.__class__.__name__)
-        obj = cls(mf)
-        return obj
-
-RMP2 = MP2
+MP2 = RMP2
 
 from pyscf import scf
 scf.hf.RHF.MP2 = lib.class_as_method(MP2)
@@ -799,8 +860,8 @@ def _ao2mo_ovov(mp, orbo, orbv, feri, max_memory=2000, verbose=None):
     with lib.call_in_background(ftmp.__setitem__) as save:
         for ip, (ish0, ish1, ni) in enumerate(sh_ranges):
             for jsh0, jsh1, nj in sh_ranges[:ip+1]:
-                i0, i1 = ao_loc[ish0], ao_loc[ish1]
-                j0, j1 = ao_loc[jsh0], ao_loc[jsh1]
+                i0, i1 = int(ao_loc[ish0]), int(ao_loc[ish1])
+                j0, j1 = int(ao_loc[jsh0]), int(ao_loc[jsh1])
                 jk_blk_slices.append((i0,i1,j0,j1))
 
                 eri = fint(int2e, mol._atm, mol._bas, mol._env,

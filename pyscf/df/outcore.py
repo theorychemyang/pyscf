@@ -27,12 +27,11 @@ from pyscf.lib import logger
 from pyscf import ao2mo
 from pyscf.ao2mo import _ao2mo
 from pyscf.ao2mo.outcore import _load_from_h5g
-from pyscf.df.incore import _eig_decompose
+from pyscf.df.incore import _eig_decompose, LINEAR_DEP_THR
 from pyscf.df.addons import make_auxmol
 from pyscf import __config__
 
 MAX_MEMORY = getattr(__config__, 'df_outcore_max_memory', 2000)  # 2GB
-LINEAR_DEP_THR = getattr(__config__, 'df_df_DF_lindep', 1e-12)
 
 #
 # for auxe1 (P|ij)
@@ -50,6 +49,11 @@ def cholesky_eri(mol, erifile, auxbasis='weigend+etb', dataname='j3c', tmpdir=No
 
     if auxmol is None:
         auxmol = make_auxmol(mol, auxbasis)
+
+    if not mol.cart and auxmol.cart:
+        raise NotImplementedError('Interface for int3c2e_ssc')
+    elif mol.cart and not auxmol.cart:
+        raise RuntimeError('Cartesian orbitals for mol and spherical orbitals for auxmol not supported')
 
     if tmpdir is None:
         tmpdir = lib.param.TMPDIR
@@ -93,6 +97,11 @@ def cholesky_eri(mol, erifile, auxbasis='weigend+etb', dataname='j3c', tmpdir=No
         ti0 = log.timer('step 2 [%d/%d], [%d:%d], row = %d'%
                         (istep+1, totstep, row0, row1, nrow), *ti0)
 
+    # A bug in NFS / HDF5 may cause .close() not to
+    # flush properly, hanging the calculation. Flush manually
+    fswap.flush()
+    feri.flush()
+
     fswap.close()
     feri.close()
     log.timer('cholesky_eri', *time0)
@@ -121,6 +130,12 @@ def cholesky_eri_b(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
 
     if auxmol is None:
         auxmol = make_auxmol(mol, auxbasis)
+
+    if not mol.cart and auxmol.cart:
+        raise NotImplementedError('Interface for int3c2e_ssc')
+    elif mol.cart and not auxmol.cart:
+        raise RuntimeError('Cartesian orbitals for mol and spherical orbitals for auxmol not supported')
+
     j2c = auxmol.intor(int2c, hermi=1)
     log.debug('size of aux basis %d', j2c.shape[0])
     time1 = log.timer('2c2e', *time0)
@@ -142,8 +157,8 @@ def cholesky_eri_b(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
     atm, bas, env = gto.mole.conc_env(mol._atm, mol._bas, mol._env,
                                       auxmol._atm, auxmol._bas, auxmol._env)
     ao_loc = gto.moleintor.make_loc(bas, int3c)
-    nao = ao_loc[mol.nbas]
-    naoaux = ao_loc[-1] - nao
+    nao = int(ao_loc[mol.nbas])
+    naoaux = int(ao_loc[-1] - nao)
     if aosym == 's1':
         nao_pair = nao * nao
         buflen = min(max(int(max_memory*.24e6/8/naoaux/comp), 1), nao_pair)
@@ -163,6 +178,7 @@ def cholesky_eri_b(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
     #    cintopt = gto.moleintor.make_cintopt(atm, bas, env, int3c)
     cintopt = gto.moleintor.make_cintopt(atm, bas, env, int3c)
     bufs1 = numpy.empty((comp*max([x[2] for x in shranges]),naoaux))
+    bufs2 = numpy.empty_like(bufs1)
 
     def transform(b):
         if b.ndim == 3 and b.flags.f_contiguous:
@@ -173,11 +189,16 @@ def cholesky_eri_b(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
             return lib.dot(low, b)
 
         if b.flags.c_contiguous:
-            b = lib.transpose(b).T
-        return scipy.linalg.solve_triangular(low, b, lower=True,
+            trsm, = scipy.linalg.get_blas_funcs(('trsm',), (low, b))
+            return trsm(1.0, low, b.T, lower=True, trans_a = 1, side = 1,
+                     overwrite_b=True).T
+        else:
+            return scipy.linalg.solve_triangular(low, b, lower=True,
                                              overwrite_b=True, check_finite=False)
 
     def process(sh_range):
+        nonlocal bufs1, bufs2
+        bufs2, bufs1 = bufs1, bufs2
         bstart, bend, nrow = sh_range
         shls_slice = (bstart, bend, 0, mol.nbas, mol.nbas, mol.nbas+auxmol.nbas)
         ints = gto.moleintor.getints3c(int3c, atm, bas, env, shls_slice, comp,
@@ -189,6 +210,7 @@ def cholesky_eri_b(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
         return dat
 
     feri = _create_h5file(erifile, dataname)
+
     for istep, dat in enumerate(lib.map_with_prefetch(process, shranges)):
         sh_range = shranges[istep]
         label = '%s/%d'%(dataname,istep)
@@ -204,6 +226,8 @@ def cholesky_eri_b(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
                   istep+1, len(shranges), *sh_range)
         time1 = log.timer('gen CD eri [%d/%d]' % (istep+1,len(shranges)), *time1)
     bufs1 = None
+    bufs2 = None
+    feri.flush()
     feri.close()
     return erifile
 
@@ -276,12 +300,12 @@ def general(mol, mo_coeffs, erifile, auxbasis='weigend+etb', dataname='eri_mo', 
 
 def _guess_shell_ranges(mol, buflen, aosym, start=0, stop=None):
     from pyscf.ao2mo.outcore import balance_partition
-    ao_loc = mol.ao_loc_nr()
+    ao_loc_long = mol.ao_loc_nr().astype(numpy.int64)
     if 's2' in aosym:
-        return balance_partition(ao_loc*(ao_loc+1)//2, buflen, start, stop)
+        return balance_partition(ao_loc_long*(ao_loc_long+1)//2, buflen, start, stop)
     else:
-        nao = ao_loc[-1]
-        return balance_partition(ao_loc*nao, buflen, start, stop)
+        nao = ao_loc_long[-1]
+        return balance_partition(ao_loc_long*nao, buflen, start, stop)
 
 def _create_h5file(erifile, dataname):
     if isinstance(getattr(erifile, 'name', None), str):
@@ -289,11 +313,11 @@ def _create_h5file(erifile, dataname):
         erifile = erifile.name
 
     if h5py.is_hdf5(erifile):
-        feri = h5py.File(erifile, 'a')
+        feri = lib.H5FileWrap(erifile, 'a')
         if dataname in feri:
             del (feri[dataname])
     else:
-        feri = h5py.File(erifile, 'w')
+        feri = lib.H5FileWrap(erifile, 'w')
     return feri
 
 del (MAX_MEMORY)

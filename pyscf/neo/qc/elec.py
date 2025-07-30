@@ -22,7 +22,6 @@ def dump_elec_qc_info(self, log):
     log.note("Fock space dimension: %g",2**self.n_qubit)
 
     Hamiltonian = self.hamiltonian
-    ham_dim = Hamiltonian.shape[0]
     psi_HF = self.psi_hf
     S2_op = self.s2_op
 
@@ -365,6 +364,7 @@ class QC_FCI_ELEC(QC_ELEC_BASE):
         # diagonalize FCI Hamiltonian
         ham_kern = self.hamiltonian
         ham_dim = ham_kern.shape[0]
+        E_FCI, C_FCI = numpy.linalg.eigh(ham_kern.todense()) #eigh should use dense matrix
 
         # Fock space target for number of electrons
         if num_e is None:
@@ -450,11 +450,11 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
     >>> qc_mf = qc.QC_UCC_ELEC(mf)
     >>> qc_mf.kernel()
     ------- Quantum Computing Protocol -------
-    --- UCCSD Calculation --- 
+    --- UCCSD Calculation ---
     number of cluster amplitudes: 27
     res.success: True
-    res.message: Optimization terminated successfully. 
-    UCC Energy: -1.151672544961234  
+    res.message: Optimization terminated successfully.
+    UCC Energy: -1.151672544961234
     '''
     def __init__(self, mf):
         QC_ELEC_BASE.__init__(self, mf)

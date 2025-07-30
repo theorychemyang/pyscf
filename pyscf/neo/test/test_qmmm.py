@@ -55,8 +55,7 @@ def tearDownModule():
 class KnowValues(unittest.TestCase):
     def test(self):
         # energy
-        mf = neo.CDFT(mol)
-        mf.mf_elec.xc = 'PBE0'
+        mf = neo.CDFT(mol, xc='PBE0')
         e0 = mf.kernel()
         self.assertAlmostEqual(e0, -76.23177544660282, 8)
         # gradient
@@ -94,8 +93,7 @@ class KnowValues(unittest.TestCase):
         mm_mol1 = create_mm_mol(mm_coords1, mm_charges, mm_radii)
         mol1 = mol.copy()
         mol1.mm_mol = mm_mol1
-        mf1 = neo.CDFT(mol1)
-        mf1.mf_elec.xc = 'PBE0'
+        mf1 = neo.CDFT(mol1, xc='PBE0')
         e1 = mf1.kernel()
         mm_coords2 = [(1.369, 0.145,-0.395),
                       (1.894, 0.486, 0.335),
@@ -103,21 +101,18 @@ class KnowValues(unittest.TestCase):
         mm_mol2 = create_mm_mol(mm_coords2, mm_charges, mm_radii)
         mol2 = mol.copy()
         mol2.mm_mol = mm_mol2
-        mf2 = neo.CDFT(mol2)
-        mf2.mf_elec.xc = 'PBE0'
+        mf2 = neo.CDFT(mol2, xc='PBE0')
         e2 = mf2.kernel()
         self.assertAlmostEqual(g_mm[0,1], (e1-e2)/0.002*lib.param.BOHR, 6)
 
     def test_no_neo(self):
-        mf = neo.CDFT(mol_1e6)
-        mf.mf_elec.xc = 'PBE0'
+        mf = neo.CDFT(mol_1e6, xc='PBE0')
         e0 = mf.kernel()
         # kinetic energy of 1e6 basis
         mass = mol_1e6.mass[1] * nist.ATOMIC_MASS / nist.E_MASS
-        ke = mol_1e6.nuc[0].intor_symmetric('int1e_kin')[0,0] / mass
+        ke = mol_1e6.components['n1'].intor_symmetric('int1e_kin')[0,0] / mass
 
-        mf_dft = dft.RKS(mol_dft)
-        mf_dft.xc = 'PBE0'
+        mf_dft = dft.RKS(mol_dft, xc='PBE0')
         mf1 = itrf.mm_charge(mf_dft, mm_coords, mm_charges, mm_radii)
         e1 = mf1.kernel()
         self.assertAlmostEqual(e0 - 2*ke, e1, 5)
@@ -131,8 +126,7 @@ class KnowValues(unittest.TestCase):
     def test_no_mm(self):
         mol0 = mol.copy()
         mol0.mm_mol = None
-        mf = neo.CDFT(mol0)
-        mf.mf_elec.xc = 'PBE0'
+        mf = neo.CDFT(mol0, xc='PBE0')
         e0 = mf.kernel()
         g = mf.Gradients()
         g_qm0 = g.grad()
@@ -140,8 +134,7 @@ class KnowValues(unittest.TestCase):
         mm_mol1 = create_mm_mol(numpy.array(mm_coords)+100, mm_charges, mm_radii)
         mol1 = mol.copy()
         mol1.mm_mol = mm_mol1
-        mf = neo.CDFT(mol1)
-        mf.mf_elec.xc = 'PBE0'
+        mf = neo.CDFT(mol1, xc='PBE0')
         e1 = mf.kernel()
         self.assertAlmostEqual(e0, e1, 7)
         g = mf.Gradients()
@@ -153,8 +146,7 @@ class KnowValues(unittest.TestCase):
         mm_mol2 = create_mm_mol(mm_coords, numpy.zeros_like(mm_charges), mm_radii)
         mol2 = mol.copy()
         mol2.mm_mol = mm_mol2
-        mf = neo.CDFT(mol2)
-        mf.mf_elec.xc = 'PBE0'
+        mf = neo.CDFT(mol2, xc='PBE0')
         e2 = mf.kernel()
         self.assertAlmostEqual(e0, e2, 8)
         g = mf.Gradients()
@@ -164,10 +156,8 @@ class KnowValues(unittest.TestCase):
         self.assertAlmostEqual(numpy.linalg.norm(g_mm2), 0.0, 6)
 
     def test_point_and_small_radius_gaussian(self):
-        mf_point = neo.CDFT(mol_point)
-        mf_point.mf_elec.xc = 'PBE0'
-        mf_small_radius = neo.CDFT(mol_small_radius)
-        mf_small_radius.mf_elec.xc = 'PBE0'
+        mf_point = neo.CDFT(mol_point, xc='PBE0')
+        mf_small_radius = neo.CDFT(mol_small_radius, xc='PBE0')
         self.assertAlmostEqual(mf_point.kernel(), mf_small_radius.kernel())
 
         g_point = mf_point.Gradients()

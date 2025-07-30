@@ -23,7 +23,7 @@ Simple usage::
     >>> mf = scf.RHF(mol).run()
     >>> cc.CCSD(mf).run()
 
-:func:`cc.CCSD` returns an instance of CCSD class.  Followings are parameters
+:func:`cc.CCSD` returns an instance of CCSD class.  Following are parameters
 to control CCSD calculation.
 
     verbose : int
@@ -54,8 +54,8 @@ to control CCSD calculation.
 
 Saved results
 
-    converged : bool
-        CCSD converged or not
+    iterinfo : common.IterationInfo
+        Information about iteration (see pyscf.common.Iteration in detail)
     e_tot : float
         Total CCSD energy (HF + correlation)
     t1, t2 :
@@ -120,15 +120,14 @@ RCCSD.__doc__ = ccsd.CCSD.__doc__
 
 def UCCSD(mf, frozen=None, mo_coeff=None, mo_occ=None):
     from pyscf.df.df_jk import _DFHF
+    from pyscf.cc import dfuccsd
 
     mf = mf.remove_soscf()
     if not mf.istype('UHF'):
         mf = mf.to_uhf()
 
     if isinstance(mf, _DFHF) and mf.with_df:
-        # TODO: DF-UCCSD with memory-efficient particle-particle ladder,
-        # similar to dfccsd.RCCSD
-        return uccsd.UCCSD(mf, frozen, mo_coeff, mo_occ)
+        return dfuccsd.UCCSD(mf, frozen, mo_coeff, mo_occ)
     else:
         return uccsd.UCCSD(mf, frozen, mo_coeff, mo_occ)
 UCCSD.__doc__ = uccsd.UCCSD.__doc__
@@ -194,15 +193,9 @@ def FNOCCSD(mf, thresh=1e-6, pct_occ=None, nvir_act=None, frozen=None):
             Number of virtual NOs to keep. Default is None. If present, overrides `thresh` and `pct_occ`.
     """
     import numpy
-    if frozen is None:
-        frozenocc = 0
-    else:
-        assert(isinstance(frozen, (int,numpy.int64)))
-        frozenocc = frozen
     from pyscf import mp
-    pt = mp.MP2(mf).set(verbose=0).run()
+    pt = mp.MP2(mf, frozen=frozen).set(verbose=0).run()
     frozen, no_coeff = pt.make_fno(thresh=thresh, pct_occ=pct_occ, nvir_act=nvir_act)
-    frozen = numpy.hstack([numpy.arange(frozenocc),frozen])
     if len(frozen) == 0: frozen = None
     pt_no = mp.MP2(mf, frozen=frozen, mo_coeff=no_coeff).set(verbose=0).run()
     mycc = CCSD(mf, frozen=frozen, mo_coeff=no_coeff)
@@ -222,3 +215,21 @@ def FNOCCSD(mf, thresh=1e-6, pct_occ=None, nvir_act=None, frozen=None):
         return self
     mycc._finalize = _finalize.__get__(mycc, mycc.__class__)
     return mycc
+
+def BCCD(mf, frozen=None, u=None, conv_tol_normu=1e-5, max_cycle=20, diis=True,
+         canonicalization=True):
+    from pyscf.cc.bccd import bccd_kernel_
+    from pyscf.lib import StreamObject
+    mycc = CCSD(mf, frozen=frozen)
+
+    class BCCD(mycc.__class__):
+        def kernel(self):
+            obj = self.view(mycc.__class__)
+            obj.conv_tol = 1e-3
+            obj.kernel()
+            bccd_kernel_(obj, u, conv_tol_normu, max_cycle, diis,
+                         canonicalization, self.verbose)
+            self.__dict__.update(obj.__dict__)
+            return self.e_tot
+
+    return mycc.view(BCCD)

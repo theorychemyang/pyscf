@@ -35,6 +35,7 @@ from pyscf.pbc.dft import krks
 from pyscf.pbc.dft import rks
 from pyscf.pbc.dft import multigrid
 from pyscf.pbc.dft.numint2c import KNumInt2C
+from pyscf.dft import gks as mol_ks
 from pyscf import __config__
 
 def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
@@ -49,7 +50,7 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
             A density matrix or a list of density matrices
 
     Returns:
-        Veff : (nkpts, 2*nao, 2*nao) or (*, nkpts, 2*nao, 2*nao) ndarray
+        Veff : ``(nkpts, 2*nao, 2*nao)`` or ``(*, nkpts, 2*nao, 2*nao)`` ndarray
         Veff = J + Vxc.
     '''
     if cell is None: cell = ks.cell
@@ -58,7 +59,7 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
     t0 = (logger.process_clock(), logger.perf_counter())
 
     ni = ks._numint
-    if ks.nlc or ni.libxc.is_nlc(ks.xc):
+    if ks.do_nlc():
         raise NotImplementedError(f'NLC functional {ks.xc} + {ks.nlc}')
 
     hybrid = ni.libxc.is_hybrid_xc(ks.xc)
@@ -94,9 +95,20 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
         vxc += vj
     else:
         omega, alpha, hyb = ks._numint.rsh_and_hybrid_coeff(ks.xc, spin=cell.spin)
-        vj, vk = ks.get_jk(cell, dm, hermi, kpts, kpts_band)
-        vk *= hyb
-        if omega != 0:
+        if omega == 0:
+            vj, vk = ks.get_jk(cell, dm, hermi, kpts, kpts_band)
+            vk *= hyb
+        elif alpha == 0: # LR=0, only SR exchange
+            vj = ks.get_j(cell, dm, hermi, kpts, kpts_band)
+            vk = ks.get_k(cell, dm, hermi, kpts, kpts_band, omega=-omega)
+            vk *= hyb
+        elif hyb == 0: # SR=0, only LR exchange
+            vj = ks.get_j(cell, dm, hermi, kpts, kpts_band)
+            vk = ks.get_k(cell, dm, hermi, kpts, kpts_band, omega=omega)
+            vk *= alpha
+        else: # SR and LR exchange with different ratios
+            vj, vk = ks.get_jk(cell, dm, hermi, kpts, kpts_band)
+            vk *= hyb
             vklr = ks.get_k(cell, dm, hermi, kpts, kpts_band, omega=omega)
             vklr *= (alpha - hyb)
             vk += vklr
@@ -117,6 +129,8 @@ class KGKS(rks.KohnShamDFT, kghf.KGHF):
     '''GKS class adapted for PBCs with k-point sampling.
     '''
 
+    collinear = mol_ks.GKS.collinear
+    spin_samples = mol_ks.GKS.spin_samples
     get_veff = get_veff
     energy_elec = krks.energy_elec
     get_rho = krks.get_rho
