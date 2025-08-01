@@ -168,16 +168,6 @@ def column_vec(vector):
         vector = vector.T
     return vector
 
-def convert_coeff(coeff):
-    ''' converts coefficients to real-valued quantities'''
-    for i in range(coeff.shape[1]):
-        coeff[:,i] = coeff[:,i] + coeff[:,i].conj()
-        c2 = numpy.multiply(coeff[:,i], coeff[:,i])
-        normval = c2.sum()
-        coeff[:,i] *= 1.0/numpy.sqrt(normval)
-
-    return coeff
-
 def pc_projection(n_qubit_e, n_qubit_p, num_e):
     '''Particle-conserving projection
 
