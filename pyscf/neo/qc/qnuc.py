@@ -19,13 +19,6 @@ from pyscf.neo.qc.elec import number_operator_e, t1_op_e, t2_op_e,\
 from pyscf.neo.qc import lib as qc_lib
 from pyscf.neo.fci_n_resolution import symmetry_finder
 
-def max_imag_comp(sparse_matrix):
-    if not numpy.iscomplexobj(sparse_matrix.data):
-        return 0.0
-    else:
-        max_imag = numpy.max(numpy.abs(numpy.imag(sparse_matrix.data)))
-    return max_imag
-
 def dump_neo_qc_info(self, log):
     nvirt_so = self.n_qubit_e - self.nocc_so_e
     nvirt_qn = 0
@@ -49,11 +42,12 @@ def dump_neo_qc_info(self, log):
     psi_HF = self.psi_hf
     S2_op = self.s2_op
     pos_op = self.r_op
+    ecore = self.mf.mf_elec.energy_nuc()
 
     E_HF = numpy.real(psi_HF.conj().T @ Hamiltonian @ psi_HF)
     HF_S2 = numpy.real(psi_HF.conj().T @ S2_op @ psi_HF)
     log.note("\nCalculating <psi_HF| H |psi_HF> as sanity check")
-    log.note("Hartree-Fock Energy: %-18.15f",E_HF.item())
+    log.note("Hartree-Fock Energy: %-18.15f",E_HF.item()+ecore)
     log.note("Hartree-Fock S_e^2: %-18.15f",HF_S2.item())
     for k in range(len(self.mf_nuc)):
         rx_hf = numpy.real(psi_HF.conj().T @ pos_op[k,0] @ psi_HF).item()
@@ -823,7 +817,7 @@ class QC_FCI_NEO(QC_NEO_BASE):
             self.num_e = num_e
 
         # Verify Hamiltonian is real
-        max_i = max_imag_comp(ham_kern)
+        max_i = qc_lib.max_imag_comp(ham_kern)
         if max_i > 1e-15:
             log.warn(f"Maximum |imaginary part| in Hamiltonian: {max_i:.5e}")
 
@@ -1022,7 +1016,7 @@ class QC_CFCI_NEO(QC_NEO_BASE):
             ham_loc += ham_r_x + ham_r_y + ham_r_z
 
         # Verify Hamiltonian is real
-        max_i = max_imag_comp(ham_loc)
+        max_i = qc_lib.max_imag_comp(ham_loc)
         if max_i > 1e-15:
             log.warn(f"Maximum |imaginary part| in Hamiltonian: {max_i:.5e}")
 
@@ -1055,7 +1049,7 @@ class QC_CFCI_NEO(QC_NEO_BASE):
 
         log.timer("Constrained FCI Procedure: ", time_kernel)
 
-        return E_CFCI_final, C_CFCI_final, cpnum, cs2
+        return E_CFCI_final+ecore, C_CFCI_final, cpnum, cs2
 
     def analyze(self, verbose=None):
         if verbose is None: verbose = self.verbose
@@ -1158,6 +1152,11 @@ class QC_UCC_NEO(QC_NEO_BASE):
         n_qubit_e = self.n_qubit_e
         nvirt_so_e = n_qubit_e - nocc_so_e
 
+        # Verify Hamiltonian is real
+        max_i = qc_lib.max_imag_comp(ham_kern)
+        if max_i > 1e-15:
+            log.warn(f"Maximum |imaginary part| in Hamiltonian: {max_i:.5e}")
+
         tau, tau_dag = ucc_op_list_neo(nocc_so_e, nvirt_so_e, create, destroy,
                                        nuc_coeff, ucc_level)
         nt_amp = len(tau)
@@ -1214,7 +1213,7 @@ class QC_UCC_NEO(QC_NEO_BASE):
             log.note("\nUCC Failed: %-20.15f", E_UCC+ecore)
 
         log.timer("UCC Procedure: ", time_kernel)
-        return E_UCC, psi_UCC, ucc_pnum[0], ucc_s2[0]
+        return E_UCC+ecore, psi_UCC, ucc_pnum[0], ucc_s2[0]
 
     def analyze(self, verbose=None):
         if verbose is None: verbose = self.verbose
@@ -1315,6 +1314,11 @@ class QC_CUCC_NEO(QC_NEO_BASE):
         r_op = self.r_op
         nvirt_so_e = n_qubit_e - nocc_so_e
 
+        # Verify Hamiltonian is real
+        max_i = qc_lib.max_imag_comp(ham_kern)
+        if max_i > 1e-15:
+            log.warn(f"Maximum |imaginary part| in Hamiltonian: {max_i:.5e}")
+
         tau, tau_dag = ucc_op_list_neo(nocc_so_e, nvirt_so_e, create, destroy,
                                        nuc_coeff, ucc_level)
         nt_amp = len(tau)
@@ -1397,7 +1401,7 @@ class QC_CUCC_NEO(QC_NEO_BASE):
             log.note("\nConstrained UCC Failed: %-20.15f", E_UCC+ecore)
 
         log.timer("Constrained UCC Procedure: ", time_kernel)
-        return E_UCC, psi_UCC, ucc_pnum[0], ucc_s2[0]
+        return E_UCC+ecore, psi_UCC, ucc_pnum[0], ucc_s2[0]
 
     def analyze(self, verbose=None):
         if verbose is None: verbose = self.verbose

@@ -168,6 +168,13 @@ def column_vec(vector):
         vector = vector.T
     return vector
 
+def max_imag_comp(sparse_matrix):
+    if not numpy.iscomplexobj(sparse_matrix.data):
+        return 0.0
+    else:
+        max_imag = numpy.max(numpy.abs(numpy.imag(sparse_matrix.data)))
+    return max_imag
+
 def pc_projection(n_qubit_e, n_qubit_p, num_e):
     '''Particle-conserving projection
 

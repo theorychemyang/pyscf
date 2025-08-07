@@ -3,7 +3,7 @@
 import numpy
 import scipy
 import unittest
-from pyscf import scf
+from pyscf import gto, scf
 from pyscf import neo
 from pyscf.neo import qc
 
@@ -90,6 +90,38 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(s_en1, 0.35729303918592326, 10)
         self.assertAlmostEqual(s_en2, 0.3586027811164263, 10)
         self.assertAlmostEqual(s_n1n2, 0.02169334201137005, 10)
+
+    def test_qc5(self):
+        mol = gto.M(atom='H 0 0 0; H 0.74 0 0', basis='6-31G', spin=0)
+        mf = scf.RHF(mol)
+        mf.scf()
+        qc_mf = qc.FCI(mf)
+        e, c, n, s2 = qc_mf.kernel()
+
+        rdm1 = qc_mf.make_rdm1()
+        eigvals = scipy.linalg.eigh(rdm1, eigvals_only=True)
+        svn_1rdm = -sum(e*numpy.log(e) for e in eigvals if e>1e-15)
+
+        self.assertAlmostEqual(e[0], -1.151672544961243, 10)
+        self.assertAlmostEqual(n[0],  2.00000, 8)
+        self.assertAlmostEqual(s2[0], 0.0000000, 8)
+        self.assertAlmostEqual(svn_1rdm, 0.16518003760885933, 10)
+
+    def test_qc6(self):
+        mol = gto.M(atom='H 0 0 0; H 0.74 0 0', basis='6-31G', spin=0)
+        mf = scf.RHF(mol)
+        mf.scf()
+        qc_mf = qc.UCC(mf)
+        e, c, n, s2 = qc_mf.kernel()
+
+        rdm1 = qc_mf.make_rdm1()
+        eigvals = scipy.linalg.eigh(rdm1, eigvals_only=True)
+        svn_1rdm = -sum(e*numpy.log(e) for e in eigvals if e>1e-15)
+
+        self.assertAlmostEqual(e, -1.151672544961117, 10)
+        self.assertAlmostEqual(n,  2.00000, 8)
+        self.assertAlmostEqual(s2, 0.0000000, 8)
+        self.assertAlmostEqual(svn_1rdm, 0.1651804361515093, 6)
 
 if __name__ == "__main__":
     print("Full Tests for neo.qc")

@@ -24,11 +24,12 @@ def dump_elec_qc_info(self, log):
     Hamiltonian = self.hamiltonian
     psi_HF = self.psi_hf
     S2_op = self.s2_op
+    ecore = self.mf.energy_nuc()
 
     E_HF = numpy.real(psi_HF.conj().T @ Hamiltonian @ psi_HF)
     HF_S2 = numpy.real(psi_HF.conj().T @ S2_op @ psi_HF)
     log.note("\nCalculating <psi_HF| H |psi_HF> as sanity check")
-    log.note("Hartree-Fock Energy: %-18.15f",E_HF.item())
+    log.note("Hartree-Fock Energy: %-18.15f",E_HF.item()+ecore)
     log.note("Hartree-Fock S_e^2 : %-18.15f",HF_S2.item())
 
     fci_exc_e = math.comb(self.n_qubit, self.nocc_so)
@@ -101,18 +102,6 @@ def make_rdm1_e(vector, create, destroy):
         for j in range(e_dim):
             rho[i,j] = (vector.conj().T @ create[0][i] @ destroy[0][j] @ vector).item()
     return rho
-
-#def vN_entropy_1rdm_e(log, vector, str_method, create, destroy, tol=1e-15):
-#    S_vN = 0.0
-#    preamble = "SvN 1RDM "
-#    rho = make_rdm1_e(vector, create, destroy)
-#    label = preamble + str_method + " e: %15.8e"
-#    e_rho = scipy.linalg.eigh(rho, eigvals_only=True)
-#    for i in range(len(e_rho)):
-#        if e_rho[i] > tol:
-#            S_vN -= e_rho[i]*numpy.log(e_rho[i])
-#    log.note(label, S_vN)
-#    return
 
 def t1_op_e(nocc_so, nvirt_so, create, destroy):
     tau = []
@@ -207,9 +196,6 @@ def Ham_elec(mf, moa, mob, ea, eb, eri_ao, hao, create, destroy, n_qubit_e, tol=
                         op_pqrs = qc_lib.ca2_op(idx, create, destroy, 0)
                         Hamiltonian += 0.5*eri_ee_mo[p,q,r,s]*op_pqrs
 
-    #if not (isinstance(mf, neo.CDFT) or isinstance(mf, neo.HF)):
-    #    E_nuc = mf.energy_nuc()
-    #    Hamiltonian += E_nuc*qc_lib.kron_I(n_qubit_e)
     return Hamiltonian
 
 def JW_array(n_qubit, op_id):
@@ -374,7 +360,7 @@ class QC_FCI_ELEC(QC_ELEC_BASE):
             self.num_e = num_e
 
         # Verify Hamiltonian is real
-        max_i = max_imag_comp(ham_kern)
+        max_i = qc_lib.max_imag_comp(ham_kern)
         if max_i > 1e-15:
             log.warn(f"Maximum |imaginary part| in Hamiltonian: {max_i:.5e}")
 
@@ -485,6 +471,11 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
         destroy = self.destroy
         nvirt_so = n_qubit - nocc_so
 
+        # Verify Hamiltonian is real
+        max_i = qc_lib.max_imag_comp(ham_kern)
+        if max_i > 1e-15:
+            log.warn(f"Maximum |imaginary part| in Hamiltonian: {max_i:.5e}")
+
         t1_e, t1_e_dag = t1_op_e(nocc_so, nvirt_so, create, destroy)
         t2_e, t2_e_dag = t2_op_e(nocc_so, nvirt_so, create, destroy)
         tau = t1_e + t2_e
@@ -517,7 +508,7 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
             log.note("\nUCC Failed: %-20.15f", E_UCC+ecore)
 
         log.timer("UCC Procedure: ", time_kernel)
-        return E_UCC, psi_UCC, ucc_pnum[0], ucc_s2[0]
+        return E_UCC+ecore, psi_UCC, ucc_pnum[0], ucc_s2[0]
 
     def analyze(self, verbose=None):
         if verbose is None: verbose = self.verbose
