@@ -54,7 +54,7 @@ def max_imag_comp(matrix):
     return max_imag
 
 def analyze_complex(matrix, log, tol=1e-15):
-    '''Analyze matrix for complex components. 
+    '''Analyze matrix for complex components.
        If complex, warn and return unmodified matrix
        If real, change dtype to real
     '''
@@ -165,7 +165,7 @@ def UCC_energy_shift(t, Hamiltonian, tau, tau_dag, nt_amp, psi_HF,
 def fci_wf_analysis(log, state, n_qubit_tot, str_lab, tol=1e-10):
     max_i = max_imag_comp(state)
     if max_i > 1e-15:
-        log.warn(f"FCI coefficients are complex, only reporting Re[C]")
+        log.warn("FCI coefficients are complex, only reporting Re[C]")
     wf_dim = state.shape[0]
     basis_list = list(itertools.product([0,1], repeat=n_qubit_tot))
     log.note("\n       ---" + str_lab + " Wave Function Data ---")
