@@ -1,8 +1,12 @@
 # 2s1p basis
+# Exponents from Table I:
+# S.P. Webb, T. Iordanov, S. Hammes-Schiffer. J. Chem. Phys., 117 4106 (2002).
+# both s-type taken directly,  p-type is an AVERAGE
+# p-type: (18.21766 + 26.16688)/2 = 22.19227
 
 H   S
-21.111   1.000
+20.17583   1.000
 H   S
-27.778   1.000
+29.29266   1.000
 H   P
-23.333   1.000
+22.19227   1.000

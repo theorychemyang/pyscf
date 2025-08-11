@@ -13,28 +13,28 @@ from scipy import sparse
 from pyscf.lib import logger
 from pyscf.neo.qc import lib as qc_lib
 
-def dump_elec_qc_info(self, log):
-    nvirt_so = self.n_qubit - self.nocc_so
-    log.note("\noccupied spin-orbitals electrons: %g",self.nocc_so)
+def dump_elec_qc_info(qc_obj, log):
+    nvirt_so = qc_obj.n_qubit - qc_obj.nocc_so
+    log.note("\noccupied spin-orbitals electrons: %g",qc_obj.nocc_so)
     log.note("virtual  spin-orbitals electrons: %g",nvirt_so)
-    log.note("total    spin-orbitals electrons: %g",self.n_qubit)
-    log.note("\ntotal qubits: %g",self.n_qubit)
-    log.note("Hilbert space dimension: %g",2**self.n_qubit)
+    log.note("total    spin-orbitals electrons: %g",qc_obj.n_qubit)
+    log.note("\ntotal qubits: %g",qc_obj.n_qubit)
+    log.note("Fock space dimension: %g",2**qc_obj.n_qubit)
 
-    Hamiltonian = self.hamiltonian
-    #ham_dim = Hamiltonian.shape[0]
-    psi_HF = self.psi_hf
-    S2_op = self.s2_op
+    Hamiltonian = qc_obj.hamiltonian
+    psi_HF = qc_obj.psi_hf
+    S2_op = qc_obj.s2_op
+    ecore = qc_obj._scf.energy_nuc()
 
     E_HF = numpy.real(psi_HF.conj().T @ Hamiltonian @ psi_HF)
     HF_S2 = numpy.real(psi_HF.conj().T @ S2_op @ psi_HF)
     log.note("\nCalculating <psi_HF| H |psi_HF> as sanity check")
-    log.note("Hartree-Fock Energy: %-18.15f",E_HF.item())
+    log.note("Hartree-Fock Energy: %-18.15f",E_HF.item()+ecore)
     log.note("Hartree-Fock S_e^2 : %-18.15f",HF_S2.item())
 
-    fci_exc_e = math.comb(self.n_qubit, self.nocc_so)
+    fci_exc_e = math.comb(qc_obj.n_qubit, qc_obj.nocc_so)
     log.note("\nparticle-conserving determinants electrons: %g", fci_exc_e)
-    log.note("\nNumber of quantum particles: %g", self.nocc_so)
+    log.note("\nNumber of quantum particles: %g", qc_obj.nocc_so)
     log.note("Hilbert-subspace-particle-conserving dimension: %g", fci_exc_e)
     return
 
@@ -58,7 +58,7 @@ def parse_mf_elec(mf):
         noa = numpy.sum(mf.mo_occ[0]>0)
         nob = numpy.sum(mf.mo_occ[1]>0)
     else:
-        raise NotImplementedError('Reference must be RHF or UHF')
+        raise TypeError('Reference must be RHF or UHF')
     return moa, mob, ea, eb, na, nb, noa, nob
 
 def fci_index_e(C_FCI, nocc_e, Num_op_e, S2_op, bool_ge=False):
@@ -91,6 +91,18 @@ def number_operator_e(n_qubit_tot, n_qubit_e, create, destroy):
         Num_op += create[0][p] @ destroy[0][p]
     return Num_op
 
+def make_rdm1_e(vector, create, destroy):
+    '''Make 1-RDM for electrons
+       rho_ij = < a_i^+ a_j >
+    '''
+    e_dim = len(create[0])
+    rho = numpy.zeros((e_dim, e_dim), dtype=complex)
+    vector = qc_lib.column_vec(vector)
+    for i in range(e_dim):
+        for j in range(e_dim):
+            rho[i,j] = (vector.conj().T @ create[0][i] @ destroy[0][j] @ vector).item()
+    return rho
+
 def t1_op_e(nocc_so, nvirt_so, create, destroy):
     tau = []
     tau_dag = []
@@ -120,8 +132,10 @@ def t2_op_e(nocc_so, nvirt_so, create, destroy):
 def HF_state(n_occ, n_qubit):
     q0 = numpy.array([[1.0+0.0j],[0.0+0.0j]])
     q1 = numpy.array([[0.0+0.0j],[1.0+0.0j]])
-    if n_occ < 1:
-        raise NotImplementedError('No occupied qubits')
+    if n_occ == 0:
+        a = numpy.kron(q0,q0)
+        for i in range(2,n_qubit):
+            a = numpy.kron(a,q0)
     elif n_occ == 1:
         a = numpy.kron(q1,q0)
         for i in range(2,n_qubit):
@@ -182,9 +196,6 @@ def Ham_elec(mf, moa, mob, ea, eb, eri_ao, hao, create, destroy, n_qubit_e, tol=
                         op_pqrs = qc_lib.ca2_op(idx, create, destroy, 0)
                         Hamiltonian += 0.5*eri_ee_mo[p,q,r,s]*op_pqrs
 
-    if not (isinstance(mf, neo.CDFT) or isinstance(mf, neo.HF)):
-        E_nuc = mf.energy_nuc()
-        Hamiltonian += E_nuc*qc_lib.kron_I(n_qubit_e)
     return Hamiltonian
 
 def JW_array(n_qubit, op_id):
@@ -202,7 +213,7 @@ def JW_array(n_qubit, op_id):
     elif (op_id=="annihilation"):
         ladder_op = s_plus
     else:
-        raise NotImplementedError("Invalid JW operator designation")
+        raise ValueError("Invalid JW operator designation")
     for i in range(n_qubit):
         if i == 0:
             mat1 = ladder_op
@@ -230,7 +241,7 @@ class QC_ELEC_BASE(lib.StreamObject):
 
     def __init__(self, mf):
         self.verbose = mf.verbose
-        self.mf = mf
+        self._scf = mf
         self.n_qubit = None
         self.hamiltonian = None
         self.create = None
@@ -244,13 +255,13 @@ class QC_ELEC_BASE(lib.StreamObject):
         self.nocc_so = None
 
         if isinstance(mf, neo.HF):
-            raise NotImplementedError('Electronic QC Protocol cannot take NEO mf object')
+            raise TypeError('Electronic QC Protocol cannot take NEO mf object')
 
     def qc_components(self):
-        log = logger.new_logger(self.mf, self.verbose)
+        log = logger.new_logger(self._scf, self.verbose)
         time_qc_components = logger.process_clock()
 
-        mf = self.mf
+        mf = self._scf
 
         # find out what kind of calculation we have
         moa, mob, ea, eb, na, nb, noa, nob = parse_mf_elec(mf)
@@ -320,14 +331,15 @@ class QC_FCI_ELEC(QC_ELEC_BASE):
     '''
 
     def __init__(self, mf):
-        QC_ELEC_BASE.__init__(self, mf)
+        super().__init__(mf)
         self.e = None
         self.c = None
         self.num = None
+        self.num_e = None
         self.s2 = None
 
-    def kernel(self):
-        log = logger.new_logger(self.mf, self.verbose)
+    def kernel(self, full_diag=False, nstates=1, num_e=None):
+        log = logger.new_logger(self._scf, self.verbose)
         time_kernel = logger.process_clock()
 
         qc_lib.dump_qc_header(log)
@@ -335,18 +347,41 @@ class QC_FCI_ELEC(QC_ELEC_BASE):
         # get all quantum computing components needed for calculation
         self.qc_components()
 
-        # diagonalize FCI Hamiltonian
+        # FCI Hamiltonian
         ham_kern = self.hamiltonian
-        #ham_dim = ham_kern.shape[0]
-        E_FCI, C_FCI = numpy.linalg.eigh(ham_kern.todense()) #eigh should use dense matrix
+        ecore = self._scf.energy_nuc()
+        ham_dim = ham_kern.shape[0]
 
-        fci_idx, fci_pnum, fci_s2 = fci_index_e(C_FCI, self.nocc_so, self.num_op, self.s2_op)
+        # Fock space target for number of electrons
+        if num_e is None:
+            num_e = self.nocc_so
+            self.num_e = num_e
+        else:
+            self.num_e = num_e
+
+        # Diagonalize
+        if full_diag:
+            ham_kern = qc_lib.analyze_complex(ham_kern, log)
+            E_FCI, C_FCI = numpy.linalg.eigh(ham_kern.todense()) #eigh should use dense matrix
+        else:
+            # Project out all non-particle-conserving blocks in Fock space
+            proj_op = qc_lib.pc_projection(self.n_qubit, None, num_e)
+            ham_kern = proj_op @ ham_kern @ proj_op
+            ham_kern = qc_lib.analyze_complex(ham_kern, log)
+            E_FCI, C_FCI = sparse.linalg.eigsh(ham_kern, k=nstates, which='SA')
+            # guarantee proper sorting
+            sorted_indices = numpy.argsort(E_FCI)
+            E_FCI = E_FCI[sorted_indices]
+            C_FCI = C_FCI[:, sorted_indices]
+
+        fci_idx, fci_pnum, fci_s2 = fci_index_e(C_FCI, num_e, self.num_op, self.s2_op)
+
         E_FCI_final = []
-        C_FCI_final = []
-
+        C_FCI_final = numpy.zeros((ham_dim, len(fci_idx)), dtype=complex)
         for i in range(len(fci_idx)):
-            E_FCI_final.append(E_FCI[fci_idx[i]])
-            C_FCI_final.append(C_FCI[:,fci_idx[i]])
+            E_FCI_final.append(E_FCI[fci_idx[i]] + ecore)
+            C_FCI_final[:,i] = C_FCI[:, fci_idx[i]].reshape(-1)
+        C_FCI_final = qc_lib.analyze_complex(C_FCI_final, log)
 
         self.e = E_FCI_final
         self.c = C_FCI_final
@@ -359,7 +394,7 @@ class QC_FCI_ELEC(QC_ELEC_BASE):
 
     def analyze(self, nstates=1, verbose = None):
         if verbose is None: verbose = self.verbose
-        log = logger.new_logger(self.mf, verbose)
+        log = logger.new_logger(self._scf, verbose)
 
         qc_lib.dump_analysis_header(log)
         qc_lib.dump_spin_order(log, self.a_id, self.b_id)
@@ -373,9 +408,16 @@ class QC_FCI_ELEC(QC_ELEC_BASE):
         if nstates > len(self.e): nstates = len(self.e)
         for i in range(nstates):
             log.note("\n------------------- STATE %g -------------------\n", i)
-            log.note("E FCI %g: %20.15f", i, self.e[i])
-            qc_lib.fci_wf_analysis(log, self.c[i], self.n_qubit, '')
+            log.note("E FCI %g: %-20.15f", i, self.e[i])
+            log.note("<S^2>  : %-20.15f", self.s2[i])
+            qc_lib.fci_wf_analysis(log, self.c[:,i], self.n_qubit, '')
+
         return
+
+    def make_rdm1(self, state_vec=None):
+        if state_vec is None:
+            state_vec = self.c[:,0]
+        return make_rdm1_e(state_vec, self.create, self.destroy)
 
 class QC_UCC_ELEC(QC_ELEC_BASE):
     ''' Unitary coupled-cluster calculation using minimization in qubit basis
@@ -399,14 +441,15 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
     UCC Energy: -1.151672544961234
     '''
     def __init__(self, mf):
-        QC_ELEC_BASE.__init__(self, mf)
+        super().__init__(mf)
         self.e = None
         self.c = None
         self.num = None
         self.s2 = None
+        self.t = None
 
-    def kernel(self, ucc_level=2):
-        log = logger.new_logger(self.mf, self.verbose)
+    def kernel(self, conv_tol=None, method='BFGS'):
+        log = logger.new_logger(self._scf, self.verbose)
         time_kernel = logger.process_clock()
 
         qc_lib.dump_qc_header(log)
@@ -415,6 +458,8 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
         self.qc_components()
 
         ham_kern = self.hamiltonian
+        ham_kern = qc_lib.analyze_complex(ham_kern, log)
+        ecore = self._scf.energy_nuc()
         psi_HF = self.psi_hf
         S2_op = self.s2_op
         nocc_so = self.nocc_so
@@ -431,31 +476,40 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
         nt_amp = len(tau)
         t_amp = numpy.zeros(nt_amp)
 
-        qc_lib.dump_ucc_level(log, ucc_level)
+        qc_lib.dump_ucc_level(log, 2)
         log.note("number of cluster amplitudes: %g", nt_amp)
+
+        for i in range(len(tau)):
+            tau[i] = qc_lib.analyze_complex(tau[i], log)
+            tau_dag[i] = qc_lib.analyze_complex(tau_dag[i], log)
+        psi_HF = qc_lib.analyze_complex(psi_HF, log)
         res = minimize(lambda z: qc_lib.UCC_energy(z, ham_kern, tau, tau_dag, nt_amp,
-                                            psi_HF), t_amp, tol=1e-7, method= 'BFGS')
-        theta = res.x
-        E_UCC = res.fun
+                                            psi_HF), t_amp, tol=conv_tol, method=method)
         log.note("\nres.success: %s", res.success)
         log.note("res.message: %s \n", res.message)
-        if res.success:
-            psi_UCC = qc_lib.construct_UCC_wf(nt_amp, theta, tau, tau_dag, psi_HF)
-            E_UCC = numpy.real(psi_UCC.conj().T @ ham_kern @ psi_UCC).item()
-            ucc_idx, ucc_pnum, ucc_s2 = fci_index_e(psi_UCC, nocc_so, self.num_op, S2_op)
 
-            self.e = E_UCC
-            self.c = psi_UCC
-            self.num = ucc_pnum[0]
-            self.s2 = ucc_s2[0]
+        theta = res.x
+        E_UCC = res.fun
+        psi_UCC = qc_lib.construct_UCC_wf(nt_amp, theta, tau, tau_dag, psi_HF)
+        ucc_idx, ucc_pnum, ucc_s2 = fci_index_e(psi_UCC, nocc_so, self.num_op, S2_op)
+
+        self.e = E_UCC + ecore
+        self.c = psi_UCC
+        self.num = ucc_pnum[0]
+        self.s2 = ucc_s2[0]
+        self.t = theta
+
+        if res.success:
+            log.note("\nUCC Energy: %-20.15f", E_UCC+ecore)
+        else:
+            log.note("\nUCC Failed: %-20.15f", E_UCC+ecore)
 
         log.timer("UCC Procedure: ", time_kernel)
-        log.note("\nUCC Energy: %-20.15f", E_UCC)
-        return E_UCC, psi_UCC, ucc_pnum[0], ucc_s2[0]
+        return E_UCC+ecore, psi_UCC, ucc_pnum[0], ucc_s2[0]
 
     def analyze(self, verbose=None):
         if verbose is None: verbose = self.verbose
-        log = logger.new_logger(self.mf, verbose)
+        log = logger.new_logger(self._scf, verbose)
 
         qc_lib.dump_analysis_header(log)
         qc_lib.dump_spin_order(log, self.a_id, self.b_id)
@@ -465,4 +519,11 @@ class QC_UCC_ELEC(QC_ELEC_BASE):
         log.note("E UCC: %-20.15f", self.e)
         log.note("<S_e^2>: %-20.15f", self.s2)
         log.note("Particles: %-11.7f \n", self.num)
+        log.note("Amplitudes: \n%s\n", self.t)
+
         return
+
+    def make_rdm1(self, state_vec=None):
+        if state_vec is None:
+            state_vec = self.c
+        return make_rdm1_e(state_vec, self.create, self.destroy)
