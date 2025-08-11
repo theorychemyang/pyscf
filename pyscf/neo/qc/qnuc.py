@@ -19,54 +19,54 @@ from pyscf.neo.qc.elec import number_operator_e, t1_op_e, t2_op_e,\
 from pyscf.neo.qc import lib as qc_lib
 from pyscf.neo.fci_n_resolution import symmetry_finder
 
-def dump_neo_qc_info(self, log):
-    nvirt_so = self.n_qubit_e - self.nocc_so_e
+def dump_neo_qc_info(qc_obj, log):
     nvirt_qn = 0
     n_qnuc_so = 0
-    nocc_p = len(self.mf_nuc)
-    for i in range(len(self.mf_nuc)):
-        n_qnuc_so += self.n_qubit_p[i]
-        nvirt_qn += self.n_qubit_p[i] - 1 # always only 1 for distinguishable particle
-    log.note("\noccupied spin-orbitals electrons: %g", self.nocc_so_e)
-    log.note("virtual  spin-orbitals electrons: %g", nvirt_so)
-    log.note("total    spin-orbitals electrons: %g", self.n_qubit_e)
-    log.note("\noccupied spin-orbitals quantum nuclei: %g", len(self.mf_nuc))
+    mf_nuc = qc_obj._scf.mf_nuc
+    nocc_p = len(mf_nuc)
+    for i in range(len(mf_nuc)):
+        n_qnuc_so += qc_obj.n_qubit_p[i]
+        nvirt_qn += qc_obj.n_qubit_p[i] - 1 # always only 1 for distinguishable particle
+    log.note("\noccupied spin-orbitals electrons: %g", qc_obj.nocc_so_e)
+    log.note("virtual  spin-orbitals electrons: %g", qc_obj.n_qubit_e-qc_obj.nocc_so_e)
+    log.note("total    spin-orbitals electrons: %g", qc_obj.n_qubit_e)
+    log.note("\noccupied spin-orbitals quantum nuclei: %g", len(mf_nuc))
     log.note("virtual  spin-orbitals quantum nuclei: %g", nvirt_qn)
     log.note("total    spin-orbitals quantum nuclei: %g", n_qnuc_so)
-    log.note("\nnuclear    qubits: %g", self.n_qubit_tot-self.n_qubit_e)
-    log.note("electronic qubits: %g", self.n_qubit_e)
-    log.note("total      qubits: %g", self.n_qubit_tot)
-    log.note("Fock space dimension: %g", 2**self.n_qubit_tot)
+    log.note("\nnuclear    qubits: %g", qc_obj.n_qubit_tot-qc_obj.n_qubit_e)
+    log.note("electronic qubits: %g", qc_obj.n_qubit_e)
+    log.note("total      qubits: %g", qc_obj.n_qubit_tot)
+    log.note("Fock space dimension: %g", 2**qc_obj.n_qubit_tot)
 
-    Hamiltonian = self.hamiltonian
-    psi_HF = self.psi_hf
-    S2_op = self.s2_op
-    pos_op = self.r_op
-    ecore = self.mf.mf_elec.energy_nuc()
+    Hamiltonian = qc_obj.hamiltonian
+    psi_HF = qc_obj.psi_hf
+    S2_op = qc_obj.s2_op
+    pos_op = qc_obj.r_op
+    ecore = qc_obj._scf.energy_nuc()
 
     E_HF = numpy.real(psi_HF.conj().T @ Hamiltonian @ psi_HF)
     HF_S2 = numpy.real(psi_HF.conj().T @ S2_op @ psi_HF)
     log.note("\nCalculating <psi_HF| H |psi_HF> as sanity check")
     log.note("Hartree-Fock Energy: %-18.15f",E_HF.item()+ecore)
     log.note("Hartree-Fock S_e^2: %-18.15f",HF_S2.item())
-    for k in range(len(self.mf_nuc)):
+    for k in range(len(mf_nuc)):
         rx_hf = numpy.real(psi_HF.conj().T @ pos_op[k,0] @ psi_HF).item()
         ry_hf = numpy.real(psi_HF.conj().T @ pos_op[k,1] @ psi_HF).item()
         rz_hf = numpy.real(psi_HF.conj().T @ pos_op[k,2] @ psi_HF).item()
-        nuc_lab = self.mf_nuc[k].mol.atom_symbol(k)
+        nuc_lab = mf_nuc[k].mol.atom_symbol(k)
         log.note("Hartree-Fock <%s>: %-15.7e %-15.7e %-15.7e", nuc_lab, rx_hf, ry_hf, rz_hf)
 
-    fci_exc_e = math.comb(self.n_qubit_e, self.nocc_so_e)
+    fci_exc_e = math.comb(qc_obj.n_qubit_e, qc_obj.nocc_so_e)
     log.note("\nparticle-conserving determinants electrons: %g", fci_exc_e)
     fci_exc_p = []
     fci_exc_tot = fci_exc_e
-    for k in range(len(self.mf_nuc)):
-        fci_tmp_p = math.comb(self.n_qubit_p[k], 1)
-        nuc_lab = self.mf_nuc[k].mol.atom_symbol(k)
+    for k in range(len(mf_nuc)):
+        fci_tmp_p = math.comb(qc_obj.n_qubit_p[k], 1)
+        nuc_lab = mf_nuc[k].mol.atom_symbol(k)
         log.note("particle-conserving determinants %s: %g",nuc_lab, fci_tmp_p)
         fci_exc_tot *= fci_tmp_p
         fci_exc_p.append(fci_tmp_p)
-    log.note("\nNumber of quantum particles: %g",self.nocc_so_e + nocc_p)
+    log.note("\nNumber of quantum particles: %g",qc_obj.nocc_so_e + nocc_p)
     log.note("Hilbert-subspace-particle-conserving dimension: %g",fci_exc_tot)
     return
 
@@ -650,8 +650,7 @@ class QC_NEO_BASE(lib.StreamObject):
     def __init__(self, mf, cas_orb_nuc=None, c_shift=False):
         # these are fixed, not inputs
         self.verbose = mf.verbose
-        self.mf = mf
-        self.mf_nuc = None
+        self._scf = mf
         self.n_qubit_e = None
         self.n_qubit_p = None
         self.n_qubit_tot = None
@@ -676,7 +675,7 @@ class QC_NEO_BASE(lib.StreamObject):
             raise TypeError('NEO QC Protocol must take NEO mf object')
 
     def qc_components(self, c_shift=None):
-        log = logger.new_logger(self.mf, self.verbose)
+        log = logger.new_logger(self._scf, self.verbose)
         time_qc_components = logger.process_clock()
 
         if c_shift is None:
@@ -687,12 +686,12 @@ class QC_NEO_BASE(lib.StreamObject):
         if c_shift:
             log.note("\nOrigin of each quantum nuclear position operator has been shifted")
             log.note("to the corresponding nuclear basis function center")
-        if self.mf.mf_positron is not None:
+        if self._scf.mf_positron is not None:
             raise NotImplementedError('QC CNEO code does not currently work for positrons')
 
-        mf = self.mf
-        mf_nuc = mf.mf_nuc
-        mf_elec = mf.mf_elec
+        mf = self._scf
+        mf_nuc = self._scf.mf_nuc
+        mf_elec = self._scf.mf_elec
         cas_orb_nuc = self.cas_orb_nuc
 
         # parse electronic mf object
@@ -747,7 +746,6 @@ class QC_NEO_BASE(lib.StreamObject):
         pos_op = position_operator(mf_nuc, nuc_coeff, n_qubit_p, create, destroy, c_shift)
         psi_HF = HF_state_cneo(nocc_so_e, n_qubit_e, nocc_p, n_qubit_p)
 
-        self.mf_nuc = mf_nuc
         self.n_qubit_e = n_qubit_e
         self.n_qubit_p = n_qubit_p
         self.n_qubit_tot = n_qubit_tot
@@ -795,7 +793,7 @@ class QC_FCI_NEO(QC_NEO_BASE):
         self.num_e = None
 
     def kernel(self, full_diag=False, nstates=1, num_e=None):
-        log = logger.new_logger(self.mf, self.verbose)
+        log = logger.new_logger(self._scf, self.verbose)
         time_kernel = logger.process_clock()
 
         qc_lib.dump_qc_header(log)
@@ -803,7 +801,7 @@ class QC_FCI_NEO(QC_NEO_BASE):
         # get all quantum computing components needed for calculation
         self.qc_components()
 
-        ecore = self.mf.mf_elec.energy_nuc()
+        ecore = self._scf.energy_nuc()
 
         # FCI Hamiltonian
         ham_kern = self.hamiltonian
@@ -816,20 +814,15 @@ class QC_FCI_NEO(QC_NEO_BASE):
         else:
             self.num_e = num_e
 
-        # Verify Hamiltonian is real
-        max_i = qc_lib.max_imag_comp(ham_kern)
-        if max_i > 1e-15:
-            log.warn(f"Maximum |imaginary part| in Hamiltonian: {max_i:.5e}")
-
         # Diagonalize
         if full_diag:
-            ham_kern.real
+            ham_kern = qc_lib.analyze_complex(ham_kern, log)
             E_FCI, C_FCI = numpy.linalg.eigh(ham_kern.todense()) #eigh should use dense matrix
         else:
             # Project out all non-particle-conserving blocks in Fock space
             proj_op = qc_lib.pc_projection(self.n_qubit_e, self.n_qubit_p, num_e)
             ham_kern = proj_op @ ham_kern @ proj_op
-            ham_kern = ham_kern.real
+            ham_kern = qc_lib.analyze_complex(ham_kern, log)
             E_FCI, C_FCI = sparse.linalg.eigsh(ham_kern, k=nstates, which='SA')
 
             # guarantee proper sorting
@@ -837,7 +830,7 @@ class QC_FCI_NEO(QC_NEO_BASE):
             E_FCI = E_FCI[sorted_indices]
             C_FCI = C_FCI[:, sorted_indices]
 
-        fci_idx, fci_pnum, fci_s2 = fci_index(C_FCI, num_e, self.mf_nuc,
+        fci_idx, fci_pnum, fci_s2 = fci_index(C_FCI, num_e, self._scf.mf_nuc,
                                               self.num_op_e, self.num_op_p, self.s2_op)
 
         E_FCI_final = []
@@ -845,6 +838,7 @@ class QC_FCI_NEO(QC_NEO_BASE):
         for i in range(len(fci_idx)):
             E_FCI_final.append(E_FCI[fci_idx[i]] + ecore)
             C_FCI_final[:,i] = C_FCI[:, fci_idx[i]].reshape(-1)
+        C_FCI_final = qc_lib.analyze_complex(C_FCI_final, log)
 
         self.e = E_FCI_final
         self.c = C_FCI_final
@@ -857,7 +851,7 @@ class QC_FCI_NEO(QC_NEO_BASE):
 
     def analyze(self, nstates=1, verbose=None):
         if verbose is None: verbose = self.verbose
-        log = logger.new_logger(self.mf, verbose)
+        log = logger.new_logger(self._scf, verbose)
 
         qc_lib.dump_analysis_header(log)
         qc_lib.dump_spin_order(log, self.a_id, self.b_id)
@@ -876,11 +870,11 @@ class QC_FCI_NEO(QC_NEO_BASE):
             log.note("E FCI %g: %-20.15f", i, self.e[i])
             log.note("<S_e^2>: %-20.15f", self.s2[i])
             log.note("\nQuantum Nuclear Expectation Values: ")
-            for k in range(len(self.mf_nuc)):
+            for k in range(len(self._scf.mf_nuc)):
                 rx_fci = numpy.real(c_iter.conj().T @ self.r_op[k,0] @ c_iter).item()
                 ry_fci = numpy.real(c_iter.conj().T @ self.r_op[k,1] @ c_iter).item()
                 rz_fci = numpy.real(c_iter.conj().T @ self.r_op[k,2] @ c_iter).item()
-                nuc_lab = self.mf_nuc[k].mol.atom_symbol(k)
+                nuc_lab = self._scf.mf_nuc[k].mol.atom_symbol(k)
                 log.note("<%s>: %-15.7e %-15.7e %-15.7e", nuc_lab, rx_fci, ry_fci, rz_fci)
 
             qc_lib.fci_wf_analysis(log, self.c[:,i], self.n_qubit_tot, '')
@@ -936,7 +930,7 @@ class QC_CFCI_NEO(QC_NEO_BASE):
         self.f = None
 
     def kernel(self, lm_guess='hf', f=None, full_diag=False, num_e=None):
-        log = logger.new_logger(self.mf, self.verbose)
+        log = logger.new_logger(self._scf, self.verbose)
         time_kernel = logger.process_clock()
 
         qc_lib.dump_qc_header(log)
@@ -944,9 +938,9 @@ class QC_CFCI_NEO(QC_NEO_BASE):
         # get all quantum computing components needed for calculation
         self.qc_components()
 
-        mf = self.mf
-        ecore = self.mf.mf_elec.energy_nuc()
-        mf_nuc = self.mf_nuc
+        mf = self._scf
+        ecore = self._scf.energy_nuc()
+        mf_nuc = self._scf.mf_nuc
         num_op_e = self.num_op_e
         num_op_p = self.num_op_p
         s2_op = self.s2_op
@@ -954,8 +948,9 @@ class QC_CFCI_NEO(QC_NEO_BASE):
         n_qubit_e = self.n_qubit_e
         n_qubit_p = self.n_qubit_p
 
-        # For CNEO-FCI, ham_kern is not to be modified
+        # FCI Hamiltonian
         ham_kern = self.hamiltonian
+        ham_kern = qc_lib.analyze_complex(ham_kern, log)
         ham_dim = ham_kern.shape[0]
 
         if f is None:
@@ -1015,17 +1010,12 @@ class QC_CFCI_NEO(QC_NEO_BASE):
             ham_r_z = f[3*k+2]*r_op[k,2]
             ham_loc += ham_r_x + ham_r_y + ham_r_z
 
-        # Verify Hamiltonian is real
-        max_i = qc_lib.max_imag_comp(ham_loc)
-        if max_i > 1e-15:
-            log.warn(f"Maximum |imaginary part| in Hamiltonian: {max_i:.5e}")
-
         if full_diag:
-            ham_loc.real
+            ham_loc = qc_lib.analyze_complex(ham_loc, log)
             E_CFCI, C_CFCI = numpy.linalg.eigh(ham_loc.todense())
         else:
             ham_loc = proj_op @ ham_loc @ proj_op
-            ham_loc.real
+            ham_loc = qc_lib.analyze_complex(ham_loc, log)
             E_CFCI, C_CFCI = sparse.linalg.eigsh(ham_loc, k=1, which='SA')
         cfci_idx, cfci_pnum, cfci_s2 = fci_index(C_CFCI, num_e, mf_nuc, num_op_e,
                                                  num_op_p, s2_op, True)
@@ -1034,6 +1024,7 @@ class QC_CFCI_NEO(QC_NEO_BASE):
         cs2 = cfci_s2[0]
 
         C_CFCI_final = C_CFCI[:,cia].reshape(ham_dim, 1)
+        C_CFCI_final = qc_lib.analyze_complex(C_CFCI_final, log)
         E_CFCI_final = numpy.real(C_CFCI_final.conj().T @ ham_kern @ C_CFCI_final).item()
 
         self.e = E_CFCI_final + ecore
@@ -1053,7 +1044,7 @@ class QC_CFCI_NEO(QC_NEO_BASE):
 
     def analyze(self, verbose=None):
         if verbose is None: verbose = self.verbose
-        log = logger.new_logger(self.mf, verbose)
+        log = logger.new_logger(self._scf, verbose)
 
         qc_lib.dump_analysis_header(log)
         qc_lib.dump_spin_order(log, self.a_id, self.b_id)
@@ -1064,16 +1055,16 @@ class QC_CFCI_NEO(QC_NEO_BASE):
         log.note("<S_e^2>: %-20.15f", self.s2)
         log.note("Particles: %-11.7f", self.num)
         log.note("\nQuantum Nuclear Expectation Values: ")
-        for k in range(len(self.mf_nuc)):
-            nuc_lab = self.mf_nuc[k].mol.atom_symbol(k)
+        for k in range(len(self._scf.mf_nuc)):
+            nuc_lab = self._scf.mf_nuc[k].mol.atom_symbol(k)
             rx_fci = numpy.real(self.c.conj().T @ self.r_op[k,0] @ self.c).item()
             ry_fci = numpy.real(self.c.conj().T @ self.r_op[k,1] @ self.c).item()
             rz_fci = numpy.real(self.c.conj().T @ self.r_op[k,2] @ self.c).item()
             log.note("<%s>: %-15.7e %-15.7e %-15.7e", nuc_lab, rx_fci, ry_fci, rz_fci)
 
         log.note("\nConstrained FCI Lagrange multiplier: ")
-        for i in range(len(self.mf_nuc)):
-            nuc_lab = self.mf_nuc[i].mol.atom_symbol(i)
+        for i in range(len(self._scf.mf_nuc)):
+            nuc_lab = self._scf.mf_nuc[i].mol.atom_symbol(i)
             f_tmp = self.f[3*i:3*(i+1)]
             log.note("%s: %s", nuc_lab, f_tmp)
 
@@ -1132,7 +1123,7 @@ class QC_UCC_NEO(QC_NEO_BASE):
         self.t = None
 
     def kernel(self, ucc_level=2, adv_init=True, conv_tol=None, method='BFGS'):
-        log = logger.new_logger(self.mf, self.verbose)
+        log = logger.new_logger(self._scf, self.verbose)
         time_kernel = logger.process_clock()
 
         qc_lib.dump_qc_header(log)
@@ -1141,24 +1132,21 @@ class QC_UCC_NEO(QC_NEO_BASE):
         self.qc_components()
 
         ham_kern = self.hamiltonian
-        ecore = self.mf.mf_elec.energy_nuc()
+        ham_kern = qc_lib.analyze_complex(ham_kern, log)
+        ecore = self._scf.energy_nuc()
         psi_HF = self.psi_hf
         S2_op = self.s2_op
         nocc_so_e = self.nocc_so_e
-        mf_nuc = self.mf_nuc
+        mf_nuc = self._scf.mf_nuc
         nuc_coeff = self.nuc_coeff
         create = self.create
         destroy = self.destroy
         n_qubit_e = self.n_qubit_e
         nvirt_so_e = n_qubit_e - nocc_so_e
 
-        # Verify Hamiltonian is real
-        max_i = qc_lib.max_imag_comp(ham_kern)
-        if max_i > 1e-15:
-            log.warn(f"Maximum |imaginary part| in Hamiltonian: {max_i:.5e}")
-
         tau, tau_dag = ucc_op_list_neo(nocc_so_e, nvirt_so_e, create, destroy,
                                        nuc_coeff, ucc_level)
+
         nt_amp = len(tau)
         t_amp = numpy.zeros(nt_amp)
 
@@ -1187,8 +1175,14 @@ class QC_UCC_NEO(QC_NEO_BASE):
             opt_dic = {'maxiter': maxiter}
         else:
             opt_dic = None
+
         qc_lib.dump_ucc_level(log, ucc_level)
         log.note("number of cluster amplitudes: %g", nt_amp)
+
+        for i in range(len(tau)):
+            tau[i] = qc_lib.analyze_complex(tau[i], log)
+            tau_dag[i] = qc_lib.analyze_complex(tau_dag[i], log)
+        psi_HF = qc_lib.analyze_complex(psi_HF, log)
         res = minimize(lambda z: qc_lib.UCC_energy(z, ham_kern, tau, tau_dag, nt_amp,
                                             psi_HF), t_amp, tol=conv_tol, options=opt_dic,
                                             method=method)
@@ -1217,7 +1211,7 @@ class QC_UCC_NEO(QC_NEO_BASE):
 
     def analyze(self, verbose=None):
         if verbose is None: verbose = self.verbose
-        log = logger.new_logger(self.mf, verbose)
+        log = logger.new_logger(self._scf, verbose)
 
         qc_lib.dump_analysis_header(log)
         qc_lib.dump_spin_order(log, self.a_id, self.b_id)
@@ -1229,8 +1223,8 @@ class QC_UCC_NEO(QC_NEO_BASE):
         log.note("Particles: %-11.7f", self.num)
         log.note("Amplitudes: \n%s\n", self.t)
         log.note("Quantum Nuclear Expectation Values: ")
-        for k in range(len(self.mf_nuc)):
-            nuc_lab = self.mf_nuc[k].mol.atom_symbol(k)
+        for k in range(len(self._scf.mf_nuc)):
+            nuc_lab = self._scf.mf_nuc[k].mol.atom_symbol(k)
             rx_ucc = numpy.real(self.c.conj().T @ self.r_op[k,0] @ self.c).item()
             ry_ucc = numpy.real(self.c.conj().T @ self.r_op[k,1] @ self.c).item()
             rz_ucc = numpy.real(self.c.conj().T @ self.r_op[k,2] @ self.c).item()
@@ -1293,7 +1287,7 @@ class QC_CUCC_NEO(QC_NEO_BASE):
 
     def kernel(self, ucc_level=2, adv_init=True, nuc_adv_init=False, neo_init=False, conv_tol=None,
                r_coeff=None, S2_constraint=False, S2_coeff=None, S2_target=0.0, method='BFGS'):
-        log = logger.new_logger(self.mf, self.verbose)
+        log = logger.new_logger(self._scf, self.verbose)
         time_kernel = logger.process_clock()
 
         qc_lib.dump_qc_header(log)
@@ -1302,22 +1296,18 @@ class QC_CUCC_NEO(QC_NEO_BASE):
         self.qc_components()
 
         ham_kern = self.hamiltonian
-        ecore = self.mf.mf_elec.energy_nuc()
+        ham_kern = qc_lib.analyze_complex(ham_kern, log)
+        ecore = self._scf.energy_nuc()
         psi_HF = self.psi_hf
         S2_op = self.s2_op
         nocc_so_e = self.nocc_so_e
-        mf_nuc = self.mf_nuc
+        mf_nuc = self._scf.mf_nuc
         nuc_coeff = self.nuc_coeff
         create = self.create
         destroy = self.destroy
         n_qubit_e = self.n_qubit_e
         r_op = self.r_op
         nvirt_so_e = n_qubit_e - nocc_so_e
-
-        # Verify Hamiltonian is real
-        max_i = qc_lib.max_imag_comp(ham_kern)
-        if max_i > 1e-15:
-            log.warn(f"Maximum |imaginary part| in Hamiltonian: {max_i:.5e}")
 
         tau, tau_dag = ucc_op_list_neo(nocc_so_e, nvirt_so_e, create, destroy,
                                        nuc_coeff, ucc_level)
@@ -1378,6 +1368,10 @@ class QC_CUCC_NEO(QC_NEO_BASE):
         if S2_constraint and S2_coeff is None:
             S2_coeff = 1e4
 
+        for i in range(len(tau)):
+            tau[i] = qc_lib.analyze_complex(tau[i], log)
+            tau_dag[i] = qc_lib.analyze_complex(tau_dag[i], log)
+        psi_HF = qc_lib.analyze_complex(psi_HF, log)
         res = minimize(lambda z: qc_lib.UCC_energy_shift(z, ham_kern, tau, tau_dag, nt_amp,
                 psi_HF, len(mf_nuc), r_op, r_coeff, S2_constraint, S2_op, S2_coeff, S2_target),
                 t_amp, tol=conv_tol, method=method)
@@ -1405,7 +1399,7 @@ class QC_CUCC_NEO(QC_NEO_BASE):
 
     def analyze(self, verbose=None):
         if verbose is None: verbose = self.verbose
-        log = logger.new_logger(self.mf, verbose)
+        log = logger.new_logger(self._scf, verbose)
 
         qc_lib.dump_analysis_header(log)
         qc_lib.dump_spin_order(log, self.a_id, self.b_id)
@@ -1417,8 +1411,8 @@ class QC_CUCC_NEO(QC_NEO_BASE):
         log.note("Particles: %-11.7f", self.num)
         log.note("Amplitudes: \n%s\n", self.t)
         log.note("Quantum Nuclear Expectation Values: ")
-        for k in range(len(self.mf_nuc)):
-            nuc_lab = self.mf_nuc[k].mol.atom_symbol(k)
+        for k in range(len(self._scf.mf_nuc)):
+            nuc_lab = self._scf.mf_nuc[k].mol.atom_symbol(k)
             rx_ucc = numpy.real(self.c.conj().T @ self.r_op[k,0] @ self.c).item()
             ry_ucc = numpy.real(self.c.conj().T @ self.r_op[k,1] @ self.c).item()
             rz_ucc = numpy.real(self.c.conj().T @ self.r_op[k,2] @ self.c).item()

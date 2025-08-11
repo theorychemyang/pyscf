@@ -45,6 +45,26 @@ def dump_ucc_level(log, ucc_level, bool_con=False):
         raise NotImplementedError('UCC level not available')
     return
 
+def max_imag_comp(matrix):
+    if sparse.issparse(matrix):
+        values = matrix.data
+    else:
+        values = numpy.asarray(matrix)
+    max_imag = numpy.max(numpy.abs(numpy.imag(values)))
+    return max_imag
+
+def analyze_complex(matrix, log, tol=1e-15):
+    '''Analyze matrix for complex components. 
+       If complex, warn and return unmodified matrix
+       If real, change dtype to real
+    '''
+    max_imag = max_imag_comp(matrix)
+    if max_imag > tol:
+        log.warn(f"Maximum |imaginary part| in data: {max_imag:.5e}")
+        return matrix
+    else:
+        return matrix.real
+
 def ca1_op(idx, create, destroy, pid):
     op1 = create[pid][idx[0]] @ destroy[pid][idx[1]]
     return op1
@@ -143,6 +163,9 @@ def UCC_energy_shift(t, Hamiltonian, tau, tau_dag, nt_amp, psi_HF,
 
 
 def fci_wf_analysis(log, state, n_qubit_tot, str_lab, tol=1e-10):
+    max_i = max_imag_comp(state)
+    if max_i > 1e-15:
+        log.warn(f"FCI coefficients are complex, only reporting Re[C]")
     wf_dim = state.shape[0]
     basis_list = list(itertools.product([0,1], repeat=n_qubit_tot))
     log.note("\n       ---" + str_lab + " Wave Function Data ---")
@@ -167,13 +190,6 @@ def column_vec(vector):
     elif vector.shape[0] == 1:
         vector = vector.T
     return vector
-
-def max_imag_comp(sparse_matrix):
-    if not numpy.iscomplexobj(sparse_matrix.data):
-        return 0.0
-    else:
-        max_imag = numpy.max(numpy.abs(numpy.imag(sparse_matrix.data)))
-    return max_imag
 
 def pc_projection(n_qubit_e, n_qubit_p, num_e):
     '''Particle-conserving projection
@@ -209,7 +225,7 @@ def pc_projection(n_qubit_e, n_qubit_p, num_e):
     #     specifically, requiring non-sparse diagonalization and
     #     filtering the results based on particle number
     def qubit_state(val):
-        return numpy.array([1, 0]) if val == 0 else numpy.array([0, 1])
+        return numpy.array([1.0, 0.0]) if val == 0 else numpy.array([0.0, 1.0])
 
     final_state = []
 
@@ -304,7 +320,7 @@ def basis_list(n_qubit_e, n_qubit_p, num_e, subsystem, complement=False):
     '''
 
     def qubit_state(val):
-        return numpy.array([1, 0]) if val == 0 else numpy.array([0, 1])
+        return numpy.array([1.0, 0.0]) if val == 0 else numpy.array([0.0, 1.0])
 
     def complement_set(subsystem, num_tot):
         full_set = set(range(num_tot))
