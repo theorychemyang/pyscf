@@ -65,7 +65,7 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs((e2[:len(e1)] - e1) * 27.2114).max(), 0, 5)
 
     def test_tddft_uhf(self):
-        mf = neo.KS(mol, xc='hf', unrestricted=True)
+        mf = neo.HF(mol, unrestricted=True)
         mf.run()
 
         td_mf1 = tddft_slow.TDDirect(mf)
@@ -74,7 +74,7 @@ class KnownValues(unittest.TestCase):
 
         td_mf2 = tddft.TDDFT(mf)
         td_mf2.nstates = 5
-        td_mf2.positive_eig_threshold = 0.012
+        td_mf2.positive_eig_threshold = 0.013
         e2 = td_mf2.kernel()[0]
 
         self.assertAlmostEqual(abs((e2[:len(e1)] - e1) * 27.2114).max(), 0, 5)

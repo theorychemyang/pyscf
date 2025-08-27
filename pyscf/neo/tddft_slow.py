@@ -55,7 +55,7 @@ def get_ab_elec(mf_elec):
         nocc = mf_elec.mo_coeff[:,mf_elec.mo_occ>0].shape[1]
         nvir = mf_elec.mo_coeff.shape[1]-nocc
         a_e, b_e = rhf.get_ab(mf_elec)
-        return a_e.reshape((nocc*nvir,nocc*nvir)),b_e.reshape((nocc*nvir,nocc*nvir))
+        return a_e.reshape((nocc*nvir,nocc*nvir)), b_e.reshape((nocc*nvir,nocc*nvir))
 
 def get_ab_nuc(mf_nuc):
     mo_occ_p = mf_nuc.mo_occ
@@ -284,7 +284,7 @@ class TDDirect(lib.StreamObject):
         log = logger.Logger(self.stdout, self.verbose)
 
         m = self.get_td_mat()
-        w, x1 = eig_mat(m, nroots = nstates)
+        w, x1 = eig_mat(m, nroots=nstates)
 
         self.e = w
         self.xy = _normalize(x1.T, self._scf.mo_occ, log)

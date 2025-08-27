@@ -16,6 +16,7 @@ def _gen_neo_response(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=None, 
     '''
     assert isinstance(mf, neo.HF)
     if isinstance(mf, neo.KS):
+        # TODO: Integrate EPC response calculation into _gen_neo_response
         if mf.epc is not None and not no_epc:
             raise NotImplementedError('Response with EPC kernel is not available.')
     if mo_coeff is None: mo_coeff = mf.mo_coeff

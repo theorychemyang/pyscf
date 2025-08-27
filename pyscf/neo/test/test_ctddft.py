@@ -57,6 +57,7 @@ class KnownValues(unittest.TestCase):
         e1 = td_mf1.kernel()[0]
 
         td_mf2 = mf.TDDFT()
+        td_mf2.conv_tol = 1e-6
         e2 = td_mf2.kernel()[0]
 
         self.assertAlmostEqual(abs((e2[:len(e1)] - e1) * 27.2114).max(), 0, 5)

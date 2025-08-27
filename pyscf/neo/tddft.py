@@ -77,9 +77,9 @@ def _normalize(x1, mo_occ, log):
             x, y = zs[t]
             if is_component_unrestricted[t]:
                 xys[t] = ((x[:nocc[t][0]*nvir[t][0]].reshape(nocc[t][0],nvir[t][0]) * norm,  # X_alpha
-                            x[nocc[t][0]*nvir[t][0]:].reshape(nocc[t][1],nvir[t][1]) * norm), # X_beta
-                        (y[:nocc[t][0]*nvir[t][0]].reshape(nocc[t][0],nvir[t][0]) * norm,  # Y_alpha
-                            y[nocc[t][0]*nvir[t][0]:].reshape(nocc[t][1],nvir[t][1]) * norm)) # Y_beta
+                           x[nocc[t][0]*nvir[t][0]:].reshape(nocc[t][1],nvir[t][1]) * norm), # X_beta
+                          (y[:nocc[t][0]*nvir[t][0]].reshape(nocc[t][0],nvir[t][0]) * norm,  # Y_alpha
+                           y[nocc[t][0]*nvir[t][0]:].reshape(nocc[t][1],nvir[t][1]) * norm)) # Y_beta
             else:
                 xys[t] = (x.reshape(nocc[t],nvir[t]) * norm,
                           y.reshape(nocc[t],nvir[t]) * norm)
@@ -140,8 +140,8 @@ def eval_fxc(epc, rho_e, rho_p):
 
         numerator_common = -3*a*b - 3*b*c*rho_product + b**2*numpy.sqrt(rho_product) + 8*a*c*numpy.sqrt(rho_product)
 
-        ee_numerator = numpy.multiply(numpy.square(rho_p) , numerator_common)
-        pp_numerator = numpy.multiply(numpy.square(rho_e) , numerator_common)
+        ee_numerator = numpy.multiply(numpy.square(rho_p), numerator_common)
+        pp_numerator = numpy.multiply(numpy.square(rho_e), numerator_common)
         ep_numerator = (
             -4 * a**2 * numpy.sqrt(rho_product)
             - b * numpy.multiply(rho_product, c * rho_product + b * numpy.sqrt(rho_product))
@@ -302,7 +302,6 @@ def get_epc_iajb_rhf(mf, reshape=False):
             iajb[t2] += lib.einsum('ria,rjb->iajb', rho_ov[t2], w_ov_p)
             iajb_int[(t1, t2)] += lib.einsum('ria,rjb->iajb', rho_ov[t1], w_ov_ep)
 
-
     if reshape:
         for t in iajb.keys():
             iajb[t] = iajb[t].reshape((nocc[t]*nvir[t], nocc[t]*nvir[t]))
@@ -321,7 +320,6 @@ def get_epc_iajb_uhf(mf, reshape=False):
     nvir = {}
 
     assert isinstance(mf.components['e'], scf.uhf.UHF)
-
 
     for t in mf.components.keys():
         mo_occ[t] = numpy.asarray(mo_occ[t])
@@ -413,6 +411,7 @@ def get_epc_iajb_uhf(mf, reshape=False):
 
         for (t1, t2) in iajb_int.keys():
             assert t1.startswith('e')
+            # TODO: cache reusable electronic quantities
             f_ee, f_pp, f_ep = eval_fxc(mf.epc, rho[t1], rho[t2])
             w_ov_ep = numpy.einsum('ria,r->ria', rho_ov[t2], f_ep*weight)
             w_ov_p = numpy.einsum('ria,r->ria', rho_ov[t2], f_pp*weight)
@@ -448,8 +447,7 @@ def get_tdrhf_add_epc(xs, ys, iajb, iajb_int):
     for (t1,t2), comp in iajb_int.items():
         if t1.startswith('e'):
             epc[t1] += numpy.einsum('iajb,njb->nia',comp,xys[t2]) * numpy.sqrt(2)
-            _comp = comp.transpose(2,3,0,1)
-            epc[t2] += numpy.einsum('iajb,njb->nia',_comp,xys[t1]) * numpy.sqrt(2)
+            epc[t2] += numpy.einsum('jbia,njb->nia',comp,xys[t1]) * numpy.sqrt(2)
 
     return epc
 
@@ -461,9 +459,8 @@ def get_tduhf_add_epc(xs, ys, iajb, iajb_int):
             xys[t] = [xs[t][0] + ys[t][0], xs[t][1] + ys[t][1]]
             epca = numpy.einsum('iajb,njb->nia',iajb[t][0], xys[t][0])
             epca += numpy.einsum('iajb,njb->nia',iajb[t][1], xys[t][1])
-            _iajb = iajb[t][1].transpose(2,3,0,1)
-            epcb = numpy.einsum('iajb,njb->nia', _iajb, xys[t][0])
-            epcb += numpy.einsum('iajb,njb->nia', iajb[t][1], xys[t][1])
+            epcb = numpy.einsum('jbia,njb->nia', iajb[t][1], xys[t][0])
+            epcb += numpy.einsum('iajb,njb->nia', iajb[t][2], xys[t][1])
             epc[t] = [epca, epcb]
         else:
             xys[t] = xs[t] + ys[t]
@@ -473,10 +470,8 @@ def get_tduhf_add_epc(xs, ys, iajb, iajb_int):
         if t1.startswith('e'):
             epc[t1][0] += numpy.einsum('iajb,njb->nia', comp[0], xys[t2])
             epc[t1][1] += numpy.einsum('iajb,njb->nia', comp[1], xys[t2])
-            _comp = comp[0].transpose(2,3,0,1)
-            epc[t2] += numpy.einsum('iajb,njb->nia', _comp, xys[t1][0])
-            _comp = comp[1].transpose(2,3,0,1)
-            epc[t2] += numpy.einsum('iajb,njb->nia', _comp, xys[t1][1])
+            epc[t2] += numpy.einsum('jbia,njb->nia', comp[0], xys[t1][0])
+            epc[t2] += numpy.einsum('jbia,njb->nia', comp[1], xys[t1][1])
 
     return epc
 
@@ -512,6 +507,9 @@ def gen_tdrhf_operation(mf):
         hdiag.append(numpy.hstack((_hdiag.ravel(),-_hdiag.ravel())))
 
     vresp = mf.gen_response(hermi=0, no_epc=True)
+    # TODO: Integrate EPC response calculation into _gen_neo_response
+    # Currently, the EPC response in Davidson algorithm is computed
+    # via straightforward matrix multiplication.
     if has_epc:
         iajb, iajb_int = get_epc_iajb_rhf(mf, reshape=False)
 
@@ -612,6 +610,9 @@ def gen_tduhf_operation(mf):
             hdiag.append(numpy.hstack((_hdiag.ravel(),-_hdiag.ravel())))
 
     vresp = mf.gen_response(hermi=0, no_epc=True)
+    # TODO: Integrate EPC response calculation into _gen_neo_response
+    # Currently, the EPC response in Davidson algorithm is computed
+    # via straightforward matrix multiplication.
     if has_epc:
         iajb, iajb_int = get_epc_iajb_uhf(mf, reshape=False)
 
@@ -716,7 +717,21 @@ class TDDFT(rhf.TDBase):
     [0.62060056 0.62060056 0.69023232 1.24762233 1.33973627]
     '''
     max_space = getattr(__config__, 'tdscf_rhf_TDA_max_space', 40)
+
+    # The default conv_tol is set to 1e-8 for nuclear excitations.
+    # This ensures that Davidson results in all test cases
+    # (test/test_tddft.py) agree with full matrix diagonalization
+    # to at least 5 decimal places.
+    # The table below shows the deviation between Davidson and
+    # full diagonalization for the HF molecule at different conv_tol
+    # values. "N/A" indicates that the NEO-TDSCF root did not converge.
+    # |conv_tol|  rhf   |  rks   |  uhf   |  uks   |epc 17-1|epc 17-2|
+    # |  1e-5  | 1.4e-5 | 1.3e-7 | 8.6e-5 | 8.6e-4 | 1.3e-6 | 1.3e-5 |
+    # |  1e-6  | 3.7e-6 | 1.3e-7 | 5.3e-7 | 6.1e-5 | 7.6e-6 | 4.4e-7 |
+    # |  1e-7  | 3.0e-7 | 1.3e-7 |  N/A   | 6.3e-6 | 7.7e-7 | 9.3e-7 |
+    # |  1e-8  | 2.4e-8 | 1.3e-7 | 1.1e-7 | 3.8e-6 | 5.9e-9 | 1.5e-7 |
     conv_tol = getattr(__config__, 'tdscf_rhf_TDA_conv_tol', 1e-8)
+
 
     def __init__(self, mf):
         super().__init__(mf)

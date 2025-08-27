@@ -31,8 +31,8 @@ kernel = solve
 
 # h1 shape is (:,nvir,nocc)
 def solve_nos1(fvind, mo_energy, mo_occ, h1, with_f1=False,
-               max_cycle=30, tol=1e-9, hermi=False, verbose=logger.WARN,
-               level_shift = 0):
+               max_cycle=100, tol=1e-9, hermi=False, verbose=logger.WARN,
+               level_shift=0):
     '''For field independent basis. First order overlap matrix is zero'''
     log = logger.new_logger(verbose=verbose)
     t0 = (logger.process_clock(), logger.perf_counter())

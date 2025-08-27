@@ -195,24 +195,22 @@ class Pyscf_NEO(Calculator):
 
 class Pyscf_TDNEO(Pyscf_NEO):
     '''CNEO-TDDFT PySCF calculator'''
-    implemented_properties = ['energy', 'forces', 'ground_energy', 'excited_energies']
+    implemented_properties = ['energy', 'forces', 'excitation-energy']
     def __init__(self, state=1,
                  nstates=3,
-                 is_davidson = False,
-                 max_space = 40,
+                 is_davidson=True,
                  **kwargs):
         super().__init__(**kwargs)
         self.run_tda = False
         if not self.scanner_available:
-            raise NotImplementedError('mf_scanner not initialized')
+            raise RuntimeError('mf_scanner not initialized')
         if self.epc is not None:
-            raise NotImplementedError('epc not supported for CNEO-TDDFT gradient')
+            raise NotImplementedError('EPC not supported for CNEO-TDDFT gradient')
 
         self.scanner_available = False
         self.state = state
         self.nstates = nstates
         self.is_davidson = is_davidson
-        self.max_space = max_space
 
         mol = neo.M(atom='H 0 0 0; F 0 0 0.9')
         td_mf, td_grad = self.create_tdmf(mol)
@@ -225,7 +223,6 @@ class Pyscf_TDNEO(Pyscf_NEO):
         if self.is_davidson:
             td_mf = ctddft.CTDDFT(mf)
             td_mf.nstates = self.nstates
-            td_mf.max_space = self.max_space
         else:
             td_mf = ctddft.CTDDirect(mf)
             td_mf.nstates = self.nstates
@@ -239,7 +236,7 @@ class Pyscf_TDNEO(Pyscf_NEO):
         Calculator.calculate(self, atoms, properties, system_changes)
         mol = self.get_mol_from_atoms(atoms)
         if not self.scanner_available:
-            raise ValueError('td scanner not initialized')
+            raise RuntimeError('td scanner not initialized')
 
         if 'forces' in properties:
             e_tot, de = self.td_grad_scanner(mol)
@@ -251,12 +248,9 @@ class Pyscf_TDNEO(Pyscf_NEO):
         self.results['energy'] = e_tot * Hartree
         if 'forces' in properties:
             self.results['forces'] = -de * Hartree / Bohr
-        if 'ground_energy' in properties:
-            e_gs = td_mf._scf.e_tot
-            self.results['ground_energy'] = e_gs
-        if 'excited_energies' in properties:
+        if 'excitation-energy' in properties:
             e_ex = td_mf.e
-            self.results['excited_energies'] = e_ex * nist.HARTREE2EV
+            self.results['excitation-energy'] = e_ex * nist.HARTREE2EV
 
 
 

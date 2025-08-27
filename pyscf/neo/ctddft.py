@@ -1,8 +1,8 @@
 '''Cneo TDDFT with frozen orbital assumption'''
 
 from pyscf.neo import tddft_slow
-from pyscf import neo, lib, scf
-from pyscf.tdscf._lr_eig import eigh as lr_eigh, eig as lr_eig, real_eig
+from pyscf import neo, lib, tdscf
+from pyscf.tdscf._lr_eig import eig as lr_eig, real_eig
 from pyscf.tdscf import rhf, TDDFT
 from pyscf.lib import logger
 from pyscf import __config__
@@ -38,7 +38,7 @@ def _normalize(x1, mo_occ):
                 norm = 1/numpy.sqrt(norm)
                 xy.append(((x[:nocca*nvira].reshape(nocca,nvira) * norm,  # X_alpha
                             x[nocca*nvira:].reshape(noccb,nvirb) * norm), # X_beta
-                        (y[:nocca*nvira].reshape(nocca,nvira) * norm,  # Y_alpha
+                           (y[:nocca*nvira].reshape(nocca,nvira) * norm,  # Y_alpha
                             y[nocca*nvira:].reshape(noccb,nvirb) * norm)))# Y_beta
 
     else:
@@ -125,12 +125,6 @@ class CTDDFT(CTDDirect):
     Excited State energies (eV)
     [ 6.82308887  7.68777851  7.68777851 10.05706016 10.05706016]
     '''
-    max_space = getattr(__config__, 'tdscf_rhf_TDA_max_space', 40)
-    conv_tol = getattr(__config__, 'tdscf_rhf_TDA_conv_tol', 1e-6)
-
-    def __init__(self, mf):
-        super().__init__(mf)
-        self._keys = self._keys.union(['max_space'])
 
     def gen_vind(self, mf=None):
         if mf is None:
@@ -139,9 +133,9 @@ class CTDDFT(CTDDirect):
             raise NotImplementedError('epc is not implemented for CNEO-TDDFT davidson')
         return TDDFT(mf.components['e']).gen_vind()
 
-    def get_init_guess(self, mf, nstates=None, wfnsym=None):
+    def get_init_guess(self, mf, nstates=None, wfnsym=None, **kwargs):
         mf_elec = mf.components['e']
-        return TDDFT(mf_elec).get_init_guess(mf_elec, nstates, wfnsym)
+        return TDDFT(mf_elec).get_init_guess(mf_elec, nstates, wfnsym, **kwargs)
 
     def kernel(self, x0=None, nstates=None):
         '''
@@ -155,33 +149,40 @@ class CTDDFT(CTDDirect):
             nstates = self.nstates
         else:
             self.nstates = nstates
+        mol = self.mol
 
-        log = logger.Logger(self.stdout, self.verbose)
+        real_system = self._scf.mo_coeff['e'][0].dtype == numpy.double
 
         vind, hdiag = self.gen_vind(self._scf)
         precond = self.get_precond(hdiag)
+        if real_system:
+            eig = real_eig
+            pickeig = None
+        else:
+            eig = lr_eig
+            # We only need positive eigenvalues
+            def pickeig(w, v, nroots, envs):
+                realidx = numpy.where((abs(w.imag) < rhf.REAL_EIG_THRESHOLD) &
+                                      (w.real > self.positive_eig_threshold))[0]
+                # If the complex eigenvalue has small imaginary part, both the
+                # real part and the imaginary part of the eigenvector can
+                # approximately be used as the "real" eigen solutions.
+                return lib.linalg_helper._eigs_cmplx2real(w, v, realidx, real_system)
+
+        x0sym = None
         if x0 is None:
-            x0 = self.get_init_guess(self._scf, self.nstates)
+            x0, x0sym = self.get_init_guess(
+                self._scf, self.nstates, return_symmetry=True)
+        elif mol.symmetry:
+            x_sym = y_sym = tdscf.rhf._get_x_sym_table(self._scf.components['e']).ravel()
+            x_sym = numpy.append(x_sym, y_sym)
+            x0sym = [tdscf.rhf._guess_wfnsym_id(self, x_sym, x) for x in x0]
 
-        # We only need positive eigenvalues
-        def pickeig(w, v, nroots, envs):
-            realidx = numpy.where((abs(w.imag) < rhf.REAL_EIG_THRESHOLD) &
-                                  (w.real > self.positive_eig_threshold))[0]
-            # If the complex eigenvalue has small imaginary part, both the
-            # real part and the imaginary part of the eigenvector can
-            # approximately be used as the "real" eigen solutions.
-            return lib.linalg_helper._eigs_cmplx2real(w, v, realidx,
-                                                      real_eigenvectors=True)
+        self.converged, self.e, x1 = eig(
+            vind, x0, precond, tol_residual=self.conv_tol, lindep=self.lindep,
+            nroots=nstates, x0sym=x0sym, pick=pickeig, max_cycle=self.max_cycle,
+            max_memory=self.max_memory, verbose=log)
 
-        self.converged, w, x1 = \
-                lib.davidson_nosym1(vind, x0, precond,
-                                    tol=self.conv_tol,
-                                    nroots=nstates, lindep=self.lindep,
-                                    max_cycle=self.max_cycle,
-                                    max_space=self.max_space, pick=pickeig,
-                                    verbose=log)
-
-        self.e = numpy.array(w)
         self.xy = _normalize(x1, self._scf.mo_occ['e'])
 
         log.timer('CNEO-TDDFT Davidson', *cpu0)

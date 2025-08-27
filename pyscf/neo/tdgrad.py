@@ -24,7 +24,7 @@ def get_fock_add_cdft(f1n, int1e_r_ao, fac=2.0):
     return f_add
 
 def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
-              max_memory=2000, verbose=logger.INFO):
+                  max_memory=2000, verbose=logger.INFO):
 
     log = logger.new_logger(td_grad, verbose)
     time0 = logger.process_clock(), logger.perf_counter()
@@ -174,10 +174,10 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
         return v1, rfn
 
     z1, mo_e1, f1 = cphf.solve_nos1(fvind, mf.mo_energy, mo_occ, wvo,
-                                          with_f1 = True,
-                                          max_cycle=td_grad.cphf_max_cycle,
-                                          tol=td_grad.cphf_conv_tol,
-                                          verbose = verbose)
+                                    with_f1=True,
+                                    max_cycle=td_grad.cphf_max_cycle,
+                                    tol=td_grad.cphf_conv_tol,
+                                    verbose=verbose)
     for t in z1.keys():
         z1[t] = z1[t].reshape(nvir[t], nocc[t])
     time1 = log.timer('Z-vector using CPHF solver', *time0)
@@ -262,10 +262,10 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
                 veff1[:2] = vj[:2] * 2
 
         fxcz1 = tdrks._contract_xc_kernel(td_grad_e, mf_e.xc, z1ao_e, None,
-                                    False, False, True, max_memory)[0]
+                                          False, False, True, max_memory)[0]
 
         veff1[0] += vxc1[1:]
-        veff1[1] +=(f1oo[1:] + fxcz1[1:] + k1ao[1:]*2)*2 # *2 for dmz1doo+dmz1oo.T
+        veff1[1] +=(f1oo[1:] + fxcz1[1:] + k1ao[1:]*2)*2 # *2 for dmz1doo+dmz1doo.T
         if singlet:
             veff1[2] += f1vo[1:] * 2
         else:
@@ -303,9 +303,9 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
                 charge = -mf.components[t1].charge
                 shls_slice = (shl0, shl1) + (0, mol_e.nbas) + (0, mol_n.nbas)*2
                 v1en = get_jk((mol_e, mol_e, mol_n, mol_n),
-                          (dm_gs[t1], dm_z[t1]), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
-                          intor='int2e_ip1', aosym='s2kl', comp=3,
-                          shls_slice=shls_slice)
+                              (dm_gs[t1], dm_z[t1]), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
+                              intor='int2e_ip1', aosym='s2kl', comp=3,
+                              shls_slice=shls_slice)
                 v1en = [_v * charge for _v in v1en]
                 h1ao_e[:,p0:p1] += v1en[0]
                 h1ao_e[:,:,p0:p1] += v1en[0].transpose(0,2,1)
@@ -316,8 +316,8 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
                 if ja == ka:
                     # derivative w.r.t. nuclear basis center
                     v1ne = get_jk((mol_n, mol_n, mol_e, mol_e),
-                                (dm_gs['e'], dmz1doo), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
-                                intor='int2e_ip1', aosym='s2kl', comp=3)
+                                  (dm_gs['e'], dmz1doo), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
+                                  intor='int2e_ip1', aosym='s2kl', comp=3)
                     v1ne = [_v * charge for _v in v1ne]
                     h1ao_n += v1ne[0] + v1ne[0].transpose(0,2,1)
                     z1ao_n += v1ne[1] * 2.0
@@ -326,8 +326,8 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
                         if (t2.startswith('n')) and (t2 != t1):
                             mol_n2 = mol.components[t2]
                             v1nn = get_jk((mol_n, mol_n, mol_n2, mol_n2),
-                                        (dm_gs[t2], dm_z[t2]), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
-                                        intor='int2e_ip1', aosym='s2kl', comp=3)
+                                          (dm_gs[t2], dm_z[t2]), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
+                                          intor='int2e_ip1', aosym='s2kl', comp=3)
                             _charge = charge * mf.components[t2].charge
                             v1nn = [_v * _charge for _v in v1nn]
                             h1ao_n += v1nn[0] + v1nn[0].transpose(0,2,1)
@@ -464,11 +464,11 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
                                             mo_coeff['e'], mo_occ['e'], spin=1)
         f1vo, f1oo, vxc1, k1ao = \
                 tduks._contract_xc_kernel(td_grad_e, mf_e.xc, (dmxpya,dmxpyb),
-                                    (dmzooa,dmzoob), True, True, max_memory)
+                                          (dmzooa,dmzoob), True, True, max_memory)
 
         if ni.libxc.is_hybrid_xc(mf_e.xc):
             dm = (dmzooa, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
-                dmzoob, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T)
+                  dmzoob, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T)
             vj, vk = mf_e.get_jk(mol_e, dm, hermi=0)
             vk *= hyb
             if omega != 0:
@@ -495,7 +495,7 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
             wvob += numpy.einsum('ac,ai->ci', veff0momb[noccb:,noccb:], xmyb) * 2
         else:
             dm = (dmzooa, dmxpya+dmxpya.T,
-                dmzoob, dmxpyb+dmxpyb.T)
+                  dmzoob, dmxpyb+dmxpyb.T)
             vj = mf.get_j(mol_e, dm, hermi=1).reshape(2,2,nao_e,nao_e)
 
             veff0doo = vj[0,0]+vj[1,0] + f1oo[:,0] + k1ao[:,0] * 2
@@ -568,10 +568,10 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
         return v1, rfn
 
     z1, mo_e1, f1 = cphf.solve_nos1(fvind, mo_energy, mo_occ, wvo,
-                          with_f1=True,
-                          max_cycle=td_grad.cphf_max_cycle,
-                          tol=td_grad.cphf_conv_tol,
-                          verbose=verbose)
+                                    with_f1=True,
+                                    max_cycle=td_grad.cphf_max_cycle,
+                                    tol=td_grad.cphf_conv_tol,
+                                    verbose=verbose)
     time1 = log.timer('Z-vector using UCPHF solver', *time0)
 
     dm_z = {}
@@ -646,7 +646,7 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
 
     if mf.xc_e.upper() == 'HF':
         vj, vk = td_grad.get_jk(mol, (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
-                                  oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T))
+                                oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T))
         vj = vj.reshape(2,4,3,nao_e,nao_e)
         vk = vk.reshape(2,4,3,nao_e,nao_e)
         veff1a, veff1b = vj[0] + vj[1] - vk
@@ -654,7 +654,7 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
     else:
         if ni.libxc.is_hybrid_xc(mf_e.xc):
             dm = (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
-                oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T)
+                  oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T)
             vj, vk = td_grad_e.get_jk(mol_e, dm)
             vj = vj.reshape(2,4,3,nao_e,nao_e)
             vk = vk.reshape(2,4,3,nao_e,nao_e) * hyb
@@ -663,13 +663,13 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
             veff1 = vj[0] + vj[1] - vk
         else:
             dm = (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T,
-                oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T)
+                  oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T)
             vj = td_grad.get_j(mol, dm).reshape(2,3,3,nao_e,nao_e)
             veff1 = numpy.zeros((2,4,3,nao_e,nao_e))
             veff1[:,:3] = vj[0] + vj[1]
 
         fxcz1 = tduks._contract_xc_kernel(td_grad_e, mf_e.xc, z1ao, None,
-                                    False, False, max_memory)[0]
+                                          False, False, max_memory)[0]
 
         veff1[:,0] += vxc1[:,1:]
         veff1[:,1] +=(f1oo[:,1:] + fxcz1[:,1:] + k1ao[:,1:]*2)*2 # *2 for dmz1doo+dmz1oo.T
@@ -724,9 +724,9 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
                 charge = -mf.components[t1].charge
                 shls_slice = (shl0, shl1) + (0, mol_e.nbas) + (0, mol_n.nbas)*2
                 v1en = get_jk((mol_e, mol_e, mol_n, mol_n),
-                          (dm_gs[t1], dm_z[t1]), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
-                          intor='int2e_ip1', aosym='s2kl', comp=3,
-                          shls_slice=shls_slice)
+                              (dm_gs[t1], dm_z[t1]), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
+                              intor='int2e_ip1', aosym='s2kl', comp=3,
+                              shls_slice=shls_slice)
                 v1en = [_v * charge for _v in v1en]
                 h1ao_e[:,p0:p1] += v1en[0]
                 h1ao_e[:,:,p0:p1] += v1en[0].transpose(0,2,1)
@@ -737,8 +737,8 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
                 if ja == ka:
                     # derivative w.r.t. nuclear basis center
                     v1ne = get_jk((mol_n, mol_n, mol_e, mol_e),
-                                (dm_e, dmz1dooa+dmz1doob), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
-                                intor='int2e_ip1', aosym='s2kl', comp=3)
+                                  (dm_e, dmz1dooa+dmz1doob), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
+                                  intor='int2e_ip1', aosym='s2kl', comp=3)
                     v1ne = [_v * charge for _v in v1ne]
                     h1ao_n += v1ne[0] + v1ne[0].transpose(0,2,1)
                     z1ao_n += v1ne[1]
@@ -747,8 +747,8 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
                         if (t2.startswith('n')) and (t2 != t1):
                             mol_n2 = mol.components[t2]
                             v1nn = get_jk((mol_n, mol_n, mol_n2, mol_n2),
-                                        (dm_gs[t2], dm_z[t2]), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
-                                        intor='int2e_ip1', aosym='s2kl', comp=3)
+                                          (dm_gs[t2], dm_z[t2]), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
+                                          intor='int2e_ip1', aosym='s2kl', comp=3)
                             _charge = charge * mf.components[t2].charge
                             v1nn = [_v * _charge for _v in v1nn]
                             h1ao_n += v1nn[0] + v1nn[0].transpose(0,2,1)
