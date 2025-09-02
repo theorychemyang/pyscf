@@ -34,7 +34,157 @@ def solve_nos1(fvind, mo_energy, mo_occ, h1, with_f1=False,
                max_cycle=100, tol=1e-9, hermi=False, verbose=logger.WARN,
                level_shift=0):
     '''For field independent basis. First order overlap matrix is zero'''
-    raise NotImplementedError('(C)NEO-CP equation without s1 is not implemented yet.')
+    log = logger.new_logger(verbose=verbose)
+    t0 = (logger.process_clock(), logger.perf_counter())
+
+    occidx = {}
+    viridx = {}
+    e_i = {}
+    e_a = {}
+    e_ai = {}
+    nocc = {}
+    nvir = {}
+    hs = {}
+    scale = {}
+    mo1base = []
+    is_component_unrestricted = {}
+    nov = {}
+    total_mo1 = 0
+    total_f1 = 0
+    sorted_keys = sorted(mo_occ.keys())
+
+    for t in sorted_keys:
+        mo_occ[t] = numpy.asarray(mo_occ[t])
+        if mo_occ[t].ndim > 1: # unrestricted
+            assert not t.startswith('n')
+            assert mo_occ[t].shape[0] == 2
+            is_component_unrestricted[t] = True
+            occidx[t] = []
+            viridx[t] = []
+            nocc[t] = []
+            nvir[t] = []
+            e_a[t] = []
+            e_i[t] = []
+            e_ai[t] = []
+            hs[t] = []
+            nov[t] = []
+            for i in range(2):
+                occidx[t].append(mo_occ[t][i] > 0)
+                viridx[t].append(mo_occ[t][i] == 0)
+                nocc[t].append(numpy.count_nonzero(occidx[t][i]))
+                nvir[t].append(numpy.count_nonzero(viridx[t][i]))
+                e_a[t].append(mo_energy[t][i][viridx[t][i]])
+                e_i[t].append(mo_energy[t][i][occidx[t][i]])
+                e_ai[t].append(1. / lib.direct_sum('a-i->ai', e_a[t][i], e_i[t][i]))
+
+                hs[t].append(h1[t][i].reshape(-1,nvir[t][i],nocc[t][i]))
+                hs[t][i] *= -e_ai[t][i]
+                mo1base.append(hs[t][i].reshape(-1,nvir[t][i]*nocc[t][i]))
+            nov[t] = nvir[t][0] * nocc[t][0] + nvir[t][1] * nocc[t][1]
+            total_mo1 += nov[t]
+        else:
+            is_component_unrestricted[t] = False
+            occidx[t] = mo_occ[t] > 0
+            viridx[t] = mo_occ[t] == 0
+            e_a[t] = mo_energy[t][viridx[t]]
+            e_i[t] = mo_energy[t][occidx[t]]
+            e_ai[t] = 1. / lib.direct_sum('a-i->ai', e_a[t], e_i[t])
+            nvir[t], nocc[t] = e_ai[t].shape
+            if with_f1 and t.startswith('n'):
+                scale[t] = (e_a[t][0] + level_shift - e_i[t][-1]) * 100.  # see neo.cphf.solve_withs1
+                total_f1 += 3
+
+            hs[t] = h1[t].reshape(-1,nvir[t],nocc[t])
+            hs[t] *= -e_ai[t]
+            mo1base.append(hs[t].reshape(-1,nvir[t]*nocc[t]))
+            nov[t] = nvir[t] * nocc[t]
+            total_mo1 += nov[t]
+
+    if with_f1:
+        nset = mo1base[0].shape[0]
+        for t in sorted_keys:
+            if t.startswith('n'):
+                mo1base.append(numpy.zeros((nset,3)))
+    mo1base = numpy.hstack(mo1base)
+
+    def vind_vo(mo1_and_f1):
+        mo1_and_f1 = mo1_and_f1.reshape(-1,total_mo1+total_f1)
+        mo1_array = mo1_and_f1[:,:total_mo1]
+        mo1 = {}
+        offset = 0
+        for t in sorted_keys:
+            mo1[t] = mo1_array[:,offset:offset+nov[t]]
+            offset += nov[t]
+        f1 = None
+        if with_f1:
+            f1_array = mo1_and_f1[:,total_mo1:]
+            f1 = {}
+            offset = 0
+            for t in sorted_keys:
+                if t.startswith('n'):
+                    f1[t] = f1_array[:,offset:offset+3]
+                    offset += 3
+        v, r = fvind(mo1, f1=f1)
+        for t in v:
+            v[t] = v[t].reshape(-1, nov[t])
+            if is_component_unrestricted[t]:
+                nvira, nvirb = nvir[t]
+                nocca, noccb = nocc[t]
+                eai_a, eai_b = e_ai[t]
+                v1a = v[t][:,:nvira*nocca].reshape(-1,nvira,nocca)
+                v1b = v[t][:,nvira*nocca:].reshape(-1,nvirb,noccb)
+                v1a *= eai_a
+                v1b *= eai_b
+                v1a = v1a.reshape(-1,nvira*nocca)
+                v1b = v1b.reshape(-1,nvirb*noccb)
+                v[t] = numpy.hstack([v1a, v1b])
+            else:
+                v[t] = v[t].reshape(-1, nvir[t], nocc[t])
+                v[t] *= e_ai[t]
+                v[t] = v[t].reshape(-1, nov[t])
+        if with_f1 and r is not None:
+            for t in r:
+                # NOTE: this scale factor is somewhat empirical. The goal is
+                # to try to bring the position constraint equation r * mo1 = 0
+                # to be of a similar magnitude as compared to the conventional
+                # CPHF equations.
+                r[t] = r[t] * scale[t] - f1[t]
+                r[t] = r[t].reshape(-1,3)
+                # NOTE: f1 got subtracted because krylov solver solves (1+a)x=b
+            return numpy.hstack([v[k] for k in sorted_keys]
+                                + [r[k] for k in sorted_keys if k in r]).ravel()
+        return numpy.hstack([v[k] for k in sorted_keys]).ravel()
+
+    mo1_and_f1 = lib.krylov(vind_vo, mo1base.ravel(),
+                            tol=tol, max_cycle=max_cycle, hermi=hermi, verbose=log)
+    mo1_and_f1 = mo1_and_f1.reshape(-1,total_mo1+total_f1)
+    mo1_array = mo1_and_f1[:,:total_mo1]
+    mo1 = {}
+    offset = 0
+    for t in sorted_keys:
+        mo1[t] = mo1_array[:,offset:offset+nov[t]]
+        offset += nov[t]
+        if is_component_unrestricted[t]:
+            mo1[t] = mo1[t].reshape(-1, nov[t])
+            nvira, nvirb = nvir[t]
+            nocca, noccb = nocc[t]
+            mo1a = mo1[t][:,:nvira*nocca].reshape(-1,nvira,nocca)
+            mo1b = mo1[t][:,nvira*nocca:].reshape(-1,nvirb,noccb)
+            mo1[t] = [mo1a, mo1b]
+        else:
+            mo1[t] = mo1[t].reshape(-1, nvir[t], nocc[t])
+    f1 = None
+    if with_f1:
+        f1_array = mo1_and_f1[:,total_mo1:]
+        f1 = {}
+        offset = 0
+        for t in sorted_keys:
+            if t.startswith('n'):
+                f1[t] = f1_array[:,offset:offset+3]
+                offset += 3
+    log.timer('krylov solver in CNEO CPHF', *t0)
+
+    return mo1, None, f1
 
 # h1 shape is (:,nocc+nvir,nocc)
 def solve_withs1(fvind, mo_energy, mo_occ, h1, s1, with_f1=False,

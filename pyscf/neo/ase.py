@@ -9,6 +9,7 @@ from pyscf import neo
 from pyscf import gto, dft, tddft
 from pyscf.lib import logger
 from pyscf.tdscf.rhf import oscillator_strength
+from pyscf.neo import ctddft, tdgrad
 
 
 # from examples/scf/17-stability.py
@@ -191,6 +192,65 @@ class Pyscf_NEO(Calculator):
 
             self.results['excited_energies'] = e * nist.HARTREE2EV
             self.results['oscillator_strength'] = os
+
+class Pyscf_TDNEO(Pyscf_NEO):
+    '''CNEO-TDDFT PySCF calculator'''
+    implemented_properties = ['energy', 'forces', 'excitation-energy']
+    def __init__(self, state=1,
+                 nstates=3,
+                 is_davidson=True,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.run_tda = False
+        if not self.scanner_available:
+            raise RuntimeError('mf_scanner not initialized')
+        if self.epc is not None:
+            raise NotImplementedError('EPC not supported for CNEO-TDDFT gradient')
+
+        self.scanner_available = False
+        self.state = state
+        self.nstates = nstates
+        self.is_davidson = is_davidson
+
+        mol = neo.M(atom='H 0 0 0; F 0 0 0.9')
+        td_mf, td_grad = self.create_tdmf(mol)
+        self.td_scanner = td_mf.as_scanner()
+        self.td_grad_scanner = td_grad.as_scanner(state=self.state)
+        self.scanner_available = True
+
+    def create_tdmf(self, mol):
+        mf = self.create_mf(mol)
+        if self.is_davidson:
+            td_mf = ctddft.CTDDFT(mf)
+            td_mf.nstates = self.nstates
+        else:
+            td_mf = ctddft.CTDDirect(mf)
+            td_mf.nstates = self.nstates
+
+        td_grad = tdgrad.Gradients(td_mf)
+        td_grad.state = self.state
+
+        return td_mf, td_grad
+
+    def calculate(self, atoms, properties, system_changes):
+        Calculator.calculate(self, atoms, properties, system_changes)
+        mol = self.get_mol_from_atoms(atoms)
+        if not self.scanner_available:
+            raise RuntimeError('td scanner not initialized')
+
+        if 'forces' in properties:
+            e_tot, de = self.td_grad_scanner(mol)
+            td_mf = self.td_grad_scanner.base
+        else:
+            e_tot = self.td_scanner(mol)[self.state-1]
+            td_mf = self.td_scanner
+
+        self.results['energy'] = e_tot * Hartree
+        if 'forces' in properties:
+            self.results['forces'] = -de * Hartree / Bohr
+        if 'excitation-energy' in properties:
+            e_ex = td_mf.e
+            self.results['excitation-energy'] = e_ex * nist.HARTREE2EV
 
 
 
