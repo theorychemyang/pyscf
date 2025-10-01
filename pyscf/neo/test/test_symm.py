@@ -23,7 +23,7 @@ class KnownValues(unittest.TestCase):
         self.assertEqual(mol.components['n1'].groupname, 'Coov')
 
     def test_HD(self):
-        mol = neo.M(atom='H 0 0 0; H+ 1 0 0', basis='ccpvdz', symmetry=True)
+        mol = neo.M(atom='H 0 0 0; H+ 1 0 0', basis={'H' : 'ccpvdz'}, symmetry=True)
         self.assertEqual(mol.groupname, 'Coov')
         self.assertEqual(mol.components['e'].groupname, 'Coov')
         self.assertEqual(mol.components['n0'].groupname, 'Coov')

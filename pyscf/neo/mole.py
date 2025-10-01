@@ -249,7 +249,10 @@ class Mole(gto.Mole):
         for i in range(self.natm):
             if self._quantum_nuc[i]:
                 modified_symbol = self.atom_symbol(i) + str(i)
-                self._basis[modified_symbol] = cp.deepcopy(_basis_bak[self.atom_symbol(i)])
+                if self.atom_symbol(i) in _basis_bak:
+                    self._basis[modified_symbol] = cp.deepcopy(_basis_bak[self.atom_symbol(i)])
+                else:
+                    self._basis[modified_symbol] = cp.deepcopy(_basis_bak[self.atom_pure_symbol(i)])
                 self._basis[modified_symbol].append(self.mass[i].item())
                 n_mol = self.components[f'n{i}']
                 self._basis[modified_symbol].append(n_mol._basis[modified_symbol])
