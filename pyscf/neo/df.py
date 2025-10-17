@@ -376,16 +376,17 @@ class _DFNEO:
             self.components['e'] = density_fit_e(self.components['e'],
                                                  auxbasis=self.auxbasis,
                                                  only_dfj=self.ee_only_dfj)
+            self.interactions.clear()
             if isinstance(self, neo.KS):
-                self.interactions = hf.generate_interactions(
+                self.interactions.update(hf.generate_interactions(
                     self.components, DFInteractionCorrelation,
                     self.max_memory, df_ne=self.df_ne,
-                    auxbasis=self.auxbasis, epc=self.epc)
+                    auxbasis=self.auxbasis, epc=self.epc))
             else:
-                self.interactions = hf.generate_interactions(
+                self.interactions.update(hf.generate_interactions(
                     self.components, DFInteractionCoulomb,
                     self.max_memory, df_ne=self.df_ne,
-                    auxbasis=self.auxbasis)
+                    auxbasis=self.auxbasis))
         if self.components['e'].with_df is not None:
             self.components['e'].with_df._low = None
         for t, comp in self.interactions.items():

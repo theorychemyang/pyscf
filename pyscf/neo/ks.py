@@ -602,9 +602,10 @@ class KS(hf.HF):
                     if t.startswith('p'):
                         charge = -1.
                     self.components[t] = hf.general_scf(mf, charge=charge)
-            self.interactions = hf.generate_interactions(self.components,
-                                                         InteractionCorrelation,
-                                                         self.max_memory, epc=self.epc)
+            self.interactions.clear()
+            self.interactions.update(hf.generate_interactions(self.components,
+                                                              InteractionCorrelation,
+                                                              self.max_memory, epc=self.epc))
         # EPC grids
         self._epc_n_types = None
         self._skip_epc = False

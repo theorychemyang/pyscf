@@ -64,6 +64,25 @@ class KnownValues(unittest.TestCase):
         e_tot = pes_scanner(numpy.array([[0,0,0],[0,0,1.1]]))
         self.assertAlmostEqual(e_tot, e_tot2, 9)
 
+    def test_scanner3(self):
+        mol = neo.M(atom='H 0 0 0; F 0 0 0.94')
+        mf = neo.CDFT(mol, xc='b3lyp5')
+        pes_scanner = mf.as_scanner()
+        grad_scanner = mf.nuc_grad_method().as_scanner()
+
+        mol2 = neo.M(atom='''O  0.0000000  0.0000000  0.1188510
+                             H  0.0000000  0.7519640 -0.4754050
+                             H  0.0000000 -0.7519640 -0.4754050''')
+        e = pes_scanner(mol2)
+        e1, g = grad_scanner(mol2)
+
+        mf2 = neo.CDFT(mol2, xc='b3lyp5')
+        e2 = mf2.kernel()
+        g2 = mf2.nuc_grad_method().grad()
+        self.assertAlmostEqual(e, e2, 9)
+        self.assertAlmostEqual(e1, e2, 9)
+        self.assertTrue(abs(g-g2).max() < 1e-8)
+
 
 if __name__ == "__main__":
     print("Testing as_scanner for neo SCF and Gradients")
