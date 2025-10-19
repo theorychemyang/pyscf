@@ -1425,7 +1425,36 @@ class HF(scf.hf.SCF):
 
     def dip_moment(self, mol=None, dm=None, unit='Debye', origin=None,
                    verbose=logger.NOTE, **kwargs):
-        raise TypeError('Use CDFT to calculate total dipole moment.') # CDFT will have this
+        if mol is None: mol = self.mol
+        if dm is None: dm = self.make_rdm1()
+        log = logger.new_logger(mol, verbose)
+
+        # Suppress warning about nonzero charge (if neutral)
+        charge = self.components['e'].mol.charge
+        self.components['e'].mol.charge = self.mol.charge
+        el_dip = self.components['e'].dip_moment(mol.components['e'],
+                                                 dm['e'], unit=unit,
+                                                 origin=origin, verbose=verbose-1)
+        self.components['e'].mol.charge = charge
+
+        # Quantum nuclei
+        if origin is None:
+            origin = numpy.zeros(3)
+        else:
+            origin = numpy.asarray(origin, dtype=numpy.float64)
+        assert origin.shape == (3,)
+        nucl_dip = 0
+        for t, comp in self.components.items():
+            if t.startswith('n'):
+                nucl_dip -= comp.charge * (lib.einsum('xij,ji->x', comp.mol.intor_symmetric('int1e_r', comp=3), dm[t]) - origin)
+        if unit.upper() == 'DEBYE':
+            nucl_dip *= nist.AU2DEBYE
+            mol_dip = nucl_dip + el_dip
+            log.note('Dipole moment(X, Y, Z, Debye): %8.5f, %8.5f, %8.5f', *mol_dip)
+        else:
+            mol_dip = nucl_dip + el_dip
+            log.note('Dipole moment(X, Y, Z, A.U.): %8.5f, %8.5f, %8.5f', *mol_dip)
+        return mol_dip
 
     def quad_moment(self, mol=None, dm=None, unit='DebyeAngstrom', origin=None,
                     verbose=logger.NOTE, **kwargs):
