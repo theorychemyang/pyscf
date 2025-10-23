@@ -30,6 +30,7 @@
 #if defined(HAVE_LIBXSMM)
     #include "libxsmm.h"
 #endif
+#define EXPMIN          -700
 
 int get_lmax(int ish0, int ish1, int* bas)
 {
@@ -231,6 +232,9 @@ static int _orth_components(double *xs_exp, int* bounds, double dx, double radiu
     double base_x = dx * xij_latt;
     double x0xij = base_x - xij;
     double _x0x0 = -aij * x0xij * x0xij;
+    if (_x0x0 < EXPMIN) {
+        return 0;
+    }
 
     double *gridx = cache;
     double *xs_all = xs_exp;
@@ -242,8 +246,7 @@ static int _orth_components(double *xs_exp, int* bounds, double dx, double radiu
     double _x0dx = -2 * aij * x0xij * dx;
     double exp_dxdx = exp(_dxdx);
     double exp_2dxdx = exp_dxdx * exp_dxdx;
-    double exp_x0dx_cache = exp(_x0dx);
-    double exp_x0dx = exp_dxdx * exp_x0dx_cache;
+    double exp_x0dx = exp(_dxdx + _x0dx);
     double exp_x0x0_cache = exp(_x0x0);
     double exp_x0x0 = exp_x0x0_cache;
 
@@ -255,7 +258,7 @@ static int _orth_components(double *xs_exp, int* bounds, double dx, double radiu
         exp_x0dx *= exp_2dxdx;
     }
 
-    exp_x0dx = exp_dxdx / exp_x0dx_cache;
+    exp_x0dx = exp(_dxdx - _x0dx);
     exp_x0x0 = exp_x0x0_cache;
     for (i = istart-1; i >= 0; i--) {
         exp_x0x0 *= exp_x0dx;
@@ -510,12 +513,15 @@ static void _poly_exp(double *xs_all, int* bounds, double dx,
     int ngridx = x1_latt - x0_latt;
 
     double _x0x0 = -ap * xoff * xoff;
+    if (_x0x0 < EXPMIN) {
+        return;
+    }
+
     double _dxdx = -ap * dx * dx;
     double _x0dx = -2 * ap * xoff * dx;
     double exp_dxdx = exp(_dxdx);
     double exp_2dxdx = exp_dxdx * exp_dxdx;
-    double exp_x0dx_cache = exp(_x0dx);
-    double exp_x0dx = exp_x0dx_cache * exp_dxdx;
+    double exp_x0dx = exp(_dxdx + _x0dx);
     double exp_x0x0_cache = exp(_x0x0);
     double exp_x0x0 = exp_x0x0_cache;
 
@@ -527,7 +533,7 @@ static void _poly_exp(double *xs_all, int* bounds, double dx,
         exp_x0dx *= exp_2dxdx;
     }
 
-    exp_x0dx = exp_dxdx / exp_x0dx_cache;
+    exp_x0dx = exp(_dxdx - _x0dx);
     exp_x0x0 = exp_x0x0_cache;
     for (i = istart-1; i >= 0; i--) {
         exp_x0x0 *= exp_x0dx;
@@ -1045,11 +1051,11 @@ void dgemm_wrapper(const char transa, const char transb,
 
 
 void get_gga_vrho_gs(double complex *vrho_gs, double complex *vsigma1_gs,
-                     double *Gv, double weight, int ngrid)
+                     double *Gv, double fac, double weight, int ngrid)
 {
     int i;
     int ngrid2 = 2 * ngrid;
-    double complex fac = -2. * _Complex_I;
+    double complex zfac = -fac * _Complex_I;
 #pragma omp parallel
 {
     double complex v;
@@ -1057,7 +1063,7 @@ void get_gga_vrho_gs(double complex *vrho_gs, double complex *vsigma1_gs,
     for (i = 0; i < ngrid; i++) {
         v = ( Gv[i*3]   * vsigma1_gs[i]
              +Gv[i*3+1] * vsigma1_gs[i+ngrid]
-             +Gv[i*3+2] * vsigma1_gs[i+ngrid2]) * fac;
+             +Gv[i*3+2] * vsigma1_gs[i+ngrid2]) * zfac;
         vrho_gs[i] += v;
         vrho_gs[i] *= weight;
     }

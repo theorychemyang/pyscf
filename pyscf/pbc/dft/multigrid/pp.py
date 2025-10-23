@@ -25,6 +25,8 @@ from pyscf.pbc import tools
 from pyscf.pbc.gto import pseudo
 from pyscf.pbc.gto.pseudo import pp_int
 from pyscf.pbc.lib.kpts_helper import gamma_point
+from pyscf.pbc.lib.kpts import KPoints
+from pyscf.pbc.df import fft
 from pyscf.pbc.dft.multigrid import _backend_c as backend
 
 PP_WITH_RHO_CORE = getattr(__config__, 'pbc_dft_multigrid_pp_with_rho_core', True)
@@ -58,21 +60,22 @@ def _get_pp_without_erf(mydf, kpts=None):
     '''
     cell = mydf.cell
     if kpts is None:
-        kpts_lst = np.zeros((1,3))
-    else:
-        kpts_lst = np.reshape(kpts, (-1,3))
+        kpts = np.zeros((1,3))
+    elif isinstance(kpts, KPoints):
+        kpts = kpts.kpts_ibz
+    kpts, is_single_kpt = fft._check_kpts(mydf, kpts)
 
-    vpp = pp_int.get_pp_loc_part2(cell, kpts_lst)
-    vppnl = pp_int.get_pp_nl(cell, kpts_lst)
+    vpp = pp_int.get_pp_loc_part2(cell, kpts)
+    vppnl = pp_int.get_pp_nl(cell, kpts)
 
-    for k, kpt in enumerate(kpts_lst):
+    for k, kpt in enumerate(kpts):
         if gamma_point(kpt):
             vpp[k] = vpp[k].real + vppnl[k].real
         else:
             vpp[k] += vppnl[k]
     vppnl = None
 
-    if kpts is None or np.shape(kpts) == (3,):
+    if is_single_kpt:
         vpp = vpp[0]
     return np.asarray(vpp)
 
@@ -121,10 +124,9 @@ def _get_vpplocG_part1(mydf, with_rho_core=PP_WITH_RHO_CORE):
         rhoG_core = coulG = None
         # G = 0 contribution
         chargs = cell.atom_charges()
-        rloc = []
-        for ia in range(cell.natm):
-            symb = cell.atom_symbol(ia)
-            rloc.append(cell._pseudo[symb][1])
+        symbs = map(cell.atom_symbol, range(cell.natm))
+        rloc = [cell._pseudo[symb][1] if symb in cell._pseudo else 0.
+                for symb in symbs]
         rloc = np.asarray(rloc)
         vpplocG_part1[0] += 2. * np.pi * np.sum(rloc * rloc * chargs)
     return vpplocG_part1
@@ -132,12 +134,11 @@ def _get_vpplocG_part1(mydf, with_rho_core=PP_WITH_RHO_CORE):
 
 def get_vpploc_part1_ip1(mydf, kpts=np.zeros((1,3))):
     from .multigrid_pair import _get_j_pass2_ip1
-    if mydf.pp_with_erf:
-        return 0
-
-    mesh = mydf.mesh
+    if isinstance(kpts, KPoints):
+        raise NotImplementedError
     vG = mydf.vpplocG_part1
-    vG.reshape(-1,*mesh)
+    if vG is None:
+        vG = _get_vpplocG_part1(mydf)
 
     vpp_kpts = _get_j_pass2_ip1(mydf, vG, kpts, hermi=0, deriv=1)
     if gamma_point(kpts):
@@ -149,6 +150,8 @@ def get_vpploc_part1_ip1(mydf, kpts=np.zeros((1,3))):
 
 def vpploc_part1_nuc_grad(mydf, dm, kpts=np.zeros((1,3)), atm_id=None, precision=None):
     from .multigrid_pair import _eval_rhoG
+    if isinstance(kpts, KPoints):
+        raise NotImplementedError
     t0 = (logger.process_clock(), logger.perf_counter())
     cell = mydf.cell
     fakecell, max_radius = fake_cell_vloc_part1(cell, atm_id=atm_id, precision=precision)
