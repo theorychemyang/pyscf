@@ -3,10 +3,10 @@ from pyscf.tdscf import rhf
 from pyscf.dft.numint import eval_ao, eval_rho
 from pyscf import lib
 from pyscf import scf
-from pyscf import __config__
 from pyscf.lib import logger
 from pyscf.data import nist
 from pyscf import neo
+from pyscf.tdscf._lr_eig import eig as lr_eig, real_eig
 
 def _normalize(x1, mo_occ, log):
     ''' Normalize the NEO-TDDFT eigenvectors
@@ -15,6 +15,7 @@ def _normalize(x1, mo_occ, log):
 
     Args:
         x1: list of 1D array
+            Each 1D array is organized as: [Xe, Xn, Ye, Yn]
         mo_occ: dict
 
     Returns:
@@ -55,14 +56,15 @@ def _normalize(x1, mo_occ, log):
             nov[t] = nvir[t] * nocc[t]
 
     def norm_xy(z1):
+        xs, ys = z1.reshape((2, -1))
         offset = 0
         norm = .0
         zs = {}
         xys = {}
         for t in sorted_keys:
-            z = z1[offset: offset+nov[t]*2]
-            offset += nov[t] * 2
-            x, y = z.reshape(2,-1)
+            x = xs[offset:offset+nov[t]]
+            y = ys[offset:offset+nov[t]]
+            offset += nov[t]
             zs[t] = [x, y]
             norm += lib.norm(x)**2 - lib.norm(y)**2
         if norm < 0:
@@ -207,19 +209,8 @@ def get_init_guess(mf, nstates, deg_eia_thresh, tda=False):
     if tda:
         return x0
     else:
-        offset = 0
-        xy0 = []
-        xy1 = []
-        for t in mf.components.keys():
-            x = x0[:,offset:offset+nov[t]]
-            y = numpy.zeros_like(x)
-            xy0.append(numpy.hstack((x,y)))
-            xy1.append(numpy.hstack((y,x)))
-            offset += nov[t]
-
-        xy0 = numpy.hstack(xy0)
-        xy1 = numpy.hstack(xy1)
-        return numpy.vstack((xy0, xy1))
+        y0 = numpy.zeros_like(x0)
+        return numpy.hstack([x0, y0])
 
 
 def get_epc_iajb_rhf(mf, reshape=False):
@@ -359,7 +350,7 @@ def get_epc_iajb_uhf(mf, reshape=False):
         n_types = mf._epc_n_types
 
     if len(n_types) == 0:
-        assert ValueError('No epc detected')
+        raise ValueError('No epc detected')
 
     iajb = {}
     iajb_int = {}
@@ -486,7 +477,8 @@ def gen_tdrhf_operation(mf):
     nov = {}
     foo = {}
     fvv = {}
-    hdiag = []
+    hdiag_top = []
+    hdiag_bot = []
 
     has_epc = False
     if isinstance(mf, neo.KS):
@@ -504,7 +496,8 @@ def gen_tdrhf_operation(mf):
         foo[t] = numpy.diag(mo_energy[t][occidx])
         fvv[t] = numpy.diag(mo_energy[t][viridx])
         _hdiag = fvv[t].diagonal() - foo[t].diagonal()[:,None]
-        hdiag.append(numpy.hstack((_hdiag.ravel(),-_hdiag.ravel())))
+        hdiag_top.append(_hdiag.ravel())
+        hdiag_bot.append(-_hdiag.ravel())
 
     vresp = mf.gen_response(hermi=0, no_epc=True)
     # TODO: Integrate EPC response calculation into _gen_neo_response
@@ -516,29 +509,32 @@ def gen_tdrhf_operation(mf):
     def vind(xys):
         xys = numpy.asarray(xys)
         nz, tot_size = xys.shape
+        xs_arr, ys_arr = numpy.array_split(xys, 2, axis=1)
         xs = {}
         ys = {}
         dms = {}
         offset = 0
         for t in mf.components.keys():
-            xy = xys[:,offset:offset+2*nov[t]]
-            offset += 2*nov[t]
-            xy = xy.reshape(-1,2,nocc[t],nvir[t])
-            xs[t], ys[t] = xy.transpose(1,0,2,3)
+            x_arr = xs_arr[:,offset:offset+nov[t]]
+            y_arr = ys_arr[:,offset:offset+nov[t]]
+            offset += nov[t]
+            xs[t] = x_arr.reshape((-1, nocc[t], nvir[t]))
+            ys[t] = y_arr.reshape((-1, nocc[t], nvir[t]))
             dms[t] = lib.einsum('xov,pv,qo->xpq', xs[t], orbv[t], orbo[t].conj())
             dms[t] += lib.einsum('xov,qv,po->xpq', ys[t], orbv[t].conj(), orbo[t])
 
             if t.startswith('e'):
                 dms[t] *= numpy.sqrt(2)
 
-        assert (offset == tot_size)
+        assert (offset == tot_size // 2)
 
         v1ao = vresp(dms)
         v1ao['e'] = v1ao['e'] * numpy.sqrt(2)
         if has_epc:
             epc = get_tdrhf_add_epc(xs, ys, iajb, iajb_int)
 
-        v1 = []
+        v1_tops = []
+        v1_bots = []
         for t in mf.components.keys():
             v1_top = lib.einsum('xpq,qo,pv->xov', v1ao[t], orbo[t], orbv[t].conj())
             v1_top += lib.einsum('xqs,sp->xqp', xs[t], fvv[t])
@@ -551,13 +547,14 @@ def gen_tdrhf_operation(mf):
                 v1_top += epc[t]
                 v1_bot += epc[t]
 
-            v1.append(numpy.hstack((v1_top.reshape(nz,-1), -v1_bot.reshape(nz,-1))))
+            v1_tops.append(v1_top.reshape(nz, -1))
+            v1_bots.append(-v1_bot.reshape(nz, -1))
 
-        hx = numpy.hstack(v1)
+        hx = numpy.hstack(v1_tops + v1_bots)
 
         return hx
 
-    return vind, numpy.hstack(hdiag)
+    return vind, numpy.hstack(hdiag_top + hdiag_bot)
 
 def gen_tduhf_operation(mf):
     mo_coeff = mf.mo_coeff
@@ -570,7 +567,8 @@ def gen_tduhf_operation(mf):
     nov = {}
     foo = {}
     fvv = {}
-    hdiag = []
+    hdiag_top = []
+    hdiag_bot = []
 
     assert isinstance(mf.components['e'], scf.uhf.UHF)
 
@@ -595,7 +593,8 @@ def gen_tduhf_operation(mf):
             fvv[t] = [numpy.diag(mo_energy[t][0][viridxa]), numpy.diag(mo_energy[t][1][viridxb])]
             for i in range(2):
                 _hdiag = fvv[t][i].diagonal() - foo[t][i].diagonal()[:,None]
-                hdiag.append(numpy.hstack((_hdiag.ravel(),-_hdiag.ravel())))
+                hdiag_top.append(_hdiag.ravel())
+                hdiag_bot.append(-_hdiag.ravel())
         else:
             occidx = numpy.where(mo_occ[t] > 0)[0]
             viridx = numpy.where(mo_occ[t] == 0)[0]
@@ -607,7 +606,8 @@ def gen_tduhf_operation(mf):
             foo[t] = numpy.diag(mo_energy[t][occidx])
             fvv[t] = numpy.diag(mo_energy[t][viridx])
             _hdiag = fvv[t].diagonal() - foo[t].diagonal()[:,None]
-            hdiag.append(numpy.hstack((_hdiag.ravel(),-_hdiag.ravel())))
+            hdiag_top.append(_hdiag.ravel())
+            hdiag_bot.append(-_hdiag.ravel())
 
     vresp = mf.gen_response(hermi=0, no_epc=True)
     # TODO: Integrate EPC response calculation into _gen_neo_response
@@ -619,18 +619,19 @@ def gen_tduhf_operation(mf):
     def vind(xys):
         xys = numpy.asarray(xys)
         nz, tot_size = xys.shape
+        xs_arr, ys_arr = numpy.array_split(xys, 2, axis=1)
         xs = {}
         ys = {}
         dms = {}
         offset = 0
         for t in mf.components.keys():
             if t.startswith('e'):
-                xy = xys[:,offset:offset+2*(nov[t][0]+nov[t][1])]
-                x, y = xy.reshape(nz,2,-1).transpose(1,0,2)
-                xa = x[:,:nov[t][0]].reshape(nz,nocc[t][0],nvir[t][0])
-                xb = x[:,nov[t][0]:].reshape(nz,nocc[t][1],nvir[t][1])
-                ya = y[:,:nov[t][0]].reshape(nz,nocc[t][0],nvir[t][0])
-                yb = y[:,nov[t][0]:].reshape(nz,nocc[t][1],nvir[t][1])
+                x_arr = xs_arr[:,offset:offset+(nov[t][0]+nov[t][1])]
+                y_arr = ys_arr[:,offset:offset+(nov[t][0]+nov[t][1])]
+                xa = x_arr[:,:nov[t][0]].reshape(nz,nocc[t][0],nvir[t][0])
+                xb = x_arr[:,nov[t][0]:].reshape(nz,nocc[t][1],nvir[t][1])
+                ya = y_arr[:,:nov[t][0]].reshape(nz,nocc[t][0],nvir[t][0])
+                yb = y_arr[:,nov[t][0]:].reshape(nz,nocc[t][1],nvir[t][1])
                 dmsa  = lib.einsum('xov,pv,qo->xpq', xa, orbv[t][0].conj(), orbo[t][0])
                 dmsb  = lib.einsum('xov,pv,qo->xpq', xb, orbv[t][1].conj(), orbo[t][1])
                 dmsa += lib.einsum('xov,qv,po->xpq', ya, orbv[t][0], orbo[t][0].conj())
@@ -638,22 +639,24 @@ def gen_tduhf_operation(mf):
                 dms[t] = numpy.asarray((dmsa, dmsb))
                 xs[t] = [xa, xb]
                 ys[t] = [ya, yb]
-                offset += 2*(nov[t][0]+nov[t][1])
+                offset += (nov[t][0]+nov[t][1])
 
             else:
-                xy = xys[:,offset:offset+2*nov[t]]
-                offset += 2*nov[t]
-                xy = xy.reshape(-1,2,nocc[t],nvir[t])
-                xs[t], ys[t] = xy.transpose(1,0,2,3)
+                x_arr = xs_arr[:,offset:offset+nov[t]]
+                y_arr = ys_arr[:,offset:offset+nov[t]]
+                offset += nov[t]
+                xs[t] = x_arr.reshape((-1, nocc[t], nvir[t]))
+                ys[t] = y_arr.reshape((-1, nocc[t], nvir[t]))
                 dms[t] = lib.einsum('xov,pv,qo->xpq', xs[t], orbv[t], orbo[t].conj())
                 dms[t] += lib.einsum('xov,qv,po->xpq', ys[t], orbv[t].conj(), orbo[t])
 
-        assert (offset == tot_size)
+        assert (offset == tot_size // 2)
         v1ao = vresp(dms)
         if has_epc:
             epc = get_tduhf_add_epc(xs, ys, iajb, iajb_int)
 
-        v1 = []
+        v1_tops = []
+        v1_bots = []
         for t in mf.components.keys():
             if t.startswith('e'):
                 v1a_top = lib.einsum('xpq,qo,pv->xov', v1ao[t][0], orbo[t][0], orbv[t][0].conj())
@@ -678,8 +681,8 @@ def gen_tduhf_operation(mf):
                     v1b_top += epc[t][1]
                     v1b_bot += epc[t][1]
 
-                v1.append(numpy.hstack((v1a_top.reshape(nz,-1), v1b_top.reshape(nz,-1),
-                                        -v1a_bot.reshape(nz,-1), -v1b_bot.reshape(nz,-1))))
+                v1_tops.append(numpy.hstack((v1a_top.reshape(nz,-1), v1b_top.reshape(nz,-1))))
+                v1_bots.append(numpy.hstack((-v1a_bot.reshape(nz,-1), -v1b_bot.reshape(nz,-1))))
 
             else:
                 v1_top = lib.einsum('xpq,qo,pv->xov', v1ao[t], orbo[t].conj(), orbv[t])
@@ -694,12 +697,13 @@ def gen_tduhf_operation(mf):
                     v1_top += epc[t]
                     v1_bot += epc[t]
 
-                v1.append(numpy.hstack((v1_top.reshape(nz,-1), -v1_bot.reshape(nz,-1))))
+                v1_tops.append(v1_top.reshape(nz, -1))
+                v1_bots.append(-v1_bot.reshape(nz, -1))
 
-        hx = numpy.hstack(v1)
+        hx = numpy.hstack(v1_tops + v1_bots)
         return hx
 
-    return vind, numpy.hstack(hdiag)
+    return vind, numpy.hstack(hdiag_top + hdiag_bot)
 
 class TDDFT(rhf.TDBase):
     '''
@@ -716,26 +720,6 @@ class TDDFT(rhf.TDBase):
     Excited State energies (eV)
     [0.62060056 0.62060056 0.69023232 1.24762233 1.33973627]
     '''
-    max_space = getattr(__config__, 'tdscf_rhf_TDA_max_space', 40)
-
-    # The default conv_tol is set to 1e-8 for nuclear excitations.
-    # This ensures that Davidson results in all test cases
-    # (test/test_tddft.py) agree with full matrix diagonalization
-    # to at least 5 decimal places.
-    # The table below shows the deviation between Davidson and
-    # full diagonalization for the HF molecule at different conv_tol
-    # values. "N/A" indicates that the NEO-TDSCF root did not converge.
-    # |conv_tol|  rhf   |  rks   |  uhf   |  uks   |epc 17-1|epc 17-2|
-    # |  1e-5  | 1.4e-5 | 1.3e-7 | 8.6e-5 | 8.6e-4 | 1.3e-6 | 1.3e-5 |
-    # |  1e-6  | 3.7e-6 | 1.3e-7 | 5.3e-7 | 6.1e-5 | 7.6e-6 | 4.4e-7 |
-    # |  1e-7  | 3.0e-7 | 1.3e-7 |  N/A   | 6.3e-6 | 7.7e-7 | 9.3e-7 |
-    # |  1e-8  | 2.4e-8 | 1.3e-7 | 1.1e-7 | 3.8e-6 | 5.9e-9 | 1.5e-7 |
-    conv_tol = getattr(__config__, 'tdscf_rhf_TDA_conv_tol', 1e-8)
-
-
-    def __init__(self, mf):
-        super().__init__(mf)
-        self._keys = self._keys.union(['max_space'])
 
     def gen_vind(self, mf=None):
         if mf is None:
@@ -774,23 +758,29 @@ class TDDFT(rhf.TDBase):
         vind, hdiag = self.gen_vind(self._scf)
         precond = self.get_precond(hdiag)
 
-        def pickeig(w, v, nroots, envs):
-            realidx = numpy.where((abs(w.imag) < rhf.REAL_EIG_THRESHOLD) &
-                                  (w.real > self.positive_eig_threshold))[0]
-            return lib.linalg_helper._eigs_cmplx2real(w, v, realidx,
-                                                      real_eigenvectors=True)
+        real_system = self._scf.mo_coeff['e'][0].dtype == numpy.double
 
-        self.converged, w, x1 = \
-                lib.davidson_nosym1(vind, x0, precond,
-                                    tol=self.conv_tol,
-                                    nroots=nstates, lindep=self.lindep,
-                                    max_cycle=self.max_cycle,
-                                    max_space=self.max_space, pick=pickeig,
-                                    verbose=log)
+        if real_system:
+            eig = real_eig
+            pickeig = None
+        else:
+            eig = lr_eig
+            # We only need positive eigenvalues
+            def pickeig(w, v, nroots, envs):
+                realidx = numpy.where((abs(w.imag) < rhf.REAL_EIG_THRESHOLD) &
+                                      (w.real > self.positive_eig_threshold))[0]
+                # If the complex eigenvalue has small imaginary part, both the
+                # real part and the imaginary part of the eigenvector can
+                # approximately be used as the "real" eigen solutions.
+                return lib.linalg_helper._eigs_cmplx2real(w, v, realidx, real_system)
 
-        self.e = w
+        self.converged, self.e, x1 = eig(
+            vind, x0, precond, tol_residual=self.conv_tol, lindep=self.lindep,
+            nroots=nstates, pick=pickeig, max_cycle=self.max_cycle,
+            max_memory=self.max_memory, verbose=log)
+
         self.xy = _normalize(x1, self._scf.mo_occ, log)
 
-        log.timer('TDDFT', *cpu0)
+        log.timer('NEO-TDDFT Davidson', *cpu0)
         self._finalize()
         return self.e, self.xy
