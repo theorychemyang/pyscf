@@ -1,11 +1,98 @@
 from pyscf.tdscf import rhf, uhf
 from pyscf import ao2mo
 from pyscf import lib
-from pyscf.neo.tddft import get_epc_iajb_rhf, get_epc_iajb_uhf, _normalize
+from pyscf.neo.tddft import get_epc_iajb_rhf, get_epc_iajb_uhf
 from pyscf.data import nist
 from pyscf.lib import logger
 from pyscf import neo, scf
 import numpy
+
+def _normalize(x1, mo_occ, log):
+    ''' Normalize the NEO-TDDFT eigenvectors
+
+    <Xe|Xe> - <Ye|Ye> + <Xp|Xp> - <Yp|Yp> = 1
+
+    Args:
+        x1: list of 1D array
+            Each 1D array is organized as: [Xe, Ye, Xn, Yn]
+        mo_occ: dict
+
+    Returns:
+        xy: list of dictionaries
+            rhf: xy = [{"e":(Xa, Ya), "n": (Xn, Yn)}]
+            uhf: xy = [{"e":((Xa, Xb), (Ya, Yb)), "n": (Xn, Yn)}]
+
+    '''
+    nocc = {}
+    nvir = {}
+    nov = {}
+    is_unrestricted = False
+    is_component_unrestricted = {}
+
+    sorted_keys = sorted(mo_occ.keys())
+    for t in sorted_keys:
+        mo_occ[t] = numpy.asarray(mo_occ[t])
+        if mo_occ[t].ndim > 1: # unrestricted
+            assert not t.startswith('n')
+            assert mo_occ[t].shape[0] == 2
+            is_unrestricted = True
+            is_component_unrestricted[t] = True
+            nocc[t] = []
+            nvir[t] = []
+            nov[t] = []
+            for i in range(2):
+                occidx = mo_occ[t][i] > 0
+                viridx = mo_occ[t][i] == 0
+                nocc[t].append(numpy.count_nonzero(occidx))
+                nvir[t].append(numpy.count_nonzero(viridx))
+            nov[t] = nvir[t][0] * nocc[t][0] + nvir[t][1] * nocc[t][1]
+        else:
+            is_component_unrestricted[t] = False
+            occidx = mo_occ[t] > 0
+            viridx = mo_occ[t] == 0
+            nocc[t] = numpy.count_nonzero(occidx)
+            nvir[t] = numpy.count_nonzero(viridx)
+            nov[t] = nvir[t] * nocc[t]
+
+    def norm_xy(z1):
+        offset = 0
+        norm = .0
+        zs = {}
+        xys = {}
+        for t in sorted_keys:
+            z = z1[offset: offset+nov[t]*2]
+            offset += nov[t] * 2
+            x, y = z.reshape(2,-1)
+            zs[t] = [x, y]
+            norm += lib.norm(x)**2 - lib.norm(y)**2
+        if norm < 0:
+            log.warn('NEO-TDDFT amplitudes |X| smaller than |Y|')
+            norm = abs(norm)
+        if is_unrestricted:
+            norm = 1/numpy.sqrt(norm)
+        else:
+            norm = numpy.sqrt(.5/norm)
+
+        for t in sorted_keys:
+            x, y = zs[t]
+            if is_component_unrestricted[t]:
+                xys[t] = ((x[:nocc[t][0]*nvir[t][0]].reshape(nocc[t][0],nvir[t][0]) * norm,  # X_alpha
+                           x[nocc[t][0]*nvir[t][0]:].reshape(nocc[t][1],nvir[t][1]) * norm), # X_beta
+                          (y[:nocc[t][0]*nvir[t][0]].reshape(nocc[t][0],nvir[t][0]) * norm,  # Y_alpha
+                           y[nocc[t][0]*nvir[t][0]:].reshape(nocc[t][1],nvir[t][1]) * norm)) # Y_beta
+            else:
+                xys[t] = (x.reshape(nocc[t],nvir[t]) * norm,
+                          y.reshape(nocc[t],nvir[t]) * norm)
+
+        if not is_unrestricted:
+            for t in sorted_keys:
+                if t.startswith('n'):
+                    xp, yp = xys[t]
+                    xys[t] = (xp * numpy.sqrt(2), yp * numpy.sqrt(2))
+
+        return xys
+
+    return [norm_xy(z) for z in x1]
 
 def eig_mat(m, nroots=None, half=True):
     """

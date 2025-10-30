@@ -34,7 +34,6 @@ class KnownValues(unittest.TestCase):
         e1 = td_mf1.kernel()[0]
 
         td_mf2 = tddft.TDDFT(mf)
-        td_mf2.nstates = 5
         e2 = td_mf2.kernel()[0]
 
         self.assertAlmostEqual(abs((e2[:len(e1)] - e1) * 27.2114).max(), 0, 5)
@@ -47,7 +46,6 @@ class KnownValues(unittest.TestCase):
         e1 = td_mf1.kernel()[0]
 
         td_mf2 = tddft.TDDFT(mf)
-        td_mf2.nstates = 5
         e2 = td_mf2.kernel()[0]
 
         self.assertAlmostEqual(abs((e2[:len(e1)] - e1) * 27.2114).max(), 0, 5)
@@ -69,12 +67,10 @@ class KnownValues(unittest.TestCase):
         mf.run()
 
         td_mf1 = tddft_slow.TDDirect(mf)
-        td_mf1.nstates = 1
         e1 = td_mf1.kernel()[0]
 
         td_mf2 = tddft.TDDFT(mf)
         td_mf2.nstates = 5
-        td_mf2.positive_eig_threshold = 0.013
         e2 = td_mf2.kernel()[0]
 
         self.assertAlmostEqual(abs((e2[:len(e1)] - e1) * 27.2114).max(), 0, 5)
