@@ -43,7 +43,7 @@ def solve_mo1(mf, mo_energy, mo_coeff, mo_occ, h1ao=None,
 
     return mo1, e1
 
-def polarizability(polobj,with_cphf=True):
+def polarizability(polobj, with_cphf=True):
     log = logger.new_logger(polobj)
     mf = polobj._scf
     with_f1 = polobj.with_f1
@@ -51,7 +51,6 @@ def polarizability(polobj,with_cphf=True):
     mo_energy = mf.mo_energy
     mo_coeff = mf.mo_coeff
     mo_occ = mf.mo_occ
-    #orbv = mo_coeff[:,~occidx]
 
     charges = mol.atom_charges()
     coords  = mol.atom_coords()
@@ -62,24 +61,24 @@ def polarizability(polobj,with_cphf=True):
         with comp.mol.with_common_orig(charge_center):
             int1e_r = comp.mol.intor_symmetric('int1e_r', comp=3)
         occidx = mo_occ[t] > 0
-        mocc = mo_coeff[t][:, occidx]
-        h1[t] = lib.einsum('xuv, ui, vj -> xij', int1e_r, mo_coeff[t], mocc) * comp.charge
+        orbo = mo_coeff[t][:, occidx]
+        h1[t] = lib.einsum('xpq, pi, qj -> xij', int1e_r, mo_coeff[t], orbo) * comp.charge
         s1[t] = numpy.zeros_like(h1[t])
     vind = polobj.gen_vind(mf, mo_coeff, mo_occ)
     if with_cphf:
-        mo1 = cphf.solve(vind, mo_energy, mo_occ, h1, s1,with_f1=with_f1,
-                         max_cycle=polobj.max_cycle_cphf,tol=polobj.conv_tol,
+        mo1 = cphf.solve(vind, mo_energy, mo_occ, h1, s1, with_f1=with_f1,
+                         max_cycle=polobj.max_cycle_cphf, tol=polobj.conv_tol,
                          verbose=log)[0]
     else:
         raise NotImplementedError('without cphf is not implemented yet')
     e2 = 0
     for t in mf.components.keys():
         if t == 'e':
-            e2 += 2*lib.einsum('xpi,ypi->xy', h1['e'], mo1['e'])  #*2 for double occupancy
+            e2 += 2*numpy.einsum('xpi,ypi->xy', h1['e'], mo1['e'])  #*2 for double occupancy
         else:
             ### if with_f1 is False, the contribution from quantum nuclei is included 
             if not with_f1 and t.startswith('n'):
-                e2 += lib.einsum('xpi,ypi->xy', h1[t], mo1[t]) 
+                e2 += numpy.einsum('xpi,ypi->xy', h1[t], mo1[t]) 
     # *-1 from the definition of dipole moment.
     e2 = (e2 + e2.T) * -1
 
@@ -238,7 +237,7 @@ class NEOwithEfield(KS):
     _keys = {'efield'}
 
     def __init__(self, mol, *args, **kwargs):
-        KS.__init__(self, mol, *args, **kwargs)
+        super().__init__(mol, *args, **kwargs)
         self.efield = numpy.array([0, 0, 0])
         self.mol = mol
         
@@ -269,10 +268,35 @@ class Polarizability(lib.StreamObject):
         self.verbose = mol.verbose
         self.stdout = mol.stdout
         self._scf = mf
-
-        self.with_f1 = True # True for CNEO, False for NEO 
+        if isinstance(mf, CDFT):
+            self.with_f1 = True
+        else:
+            self.with_f1 = False
         self.max_cycle_cphf = 100
         ### default: 1e-5 is already enough
+        """
+        >>> from pyscf import neo
+        >>> from pyscf.lib import param
+        >>> from pyscf.neo.efield import Polarizability
+        >>> mol = neo.M(atom='H 0 0 0; F 0 0 0.8', basis='ccpvtz')
+        >>> mf = neo.CDFT(mol, xc='b3lyp')
+        >>> mf.kernel()
+        converged SCF energy = -100.414287028652
+        np.float64(-100.4142870286517)
+        >>> pol = neo.Polarizability(mf)        
+        >>> pol.conv_tol = 1e-5
+        >>> pol.polarizability()*param.BOHR**3
+        array([[ 4.06325330e-01, -1.24910351e-14,  6.32660972e-16],
+            [-1.24910351e-14,  4.06325330e-01,  9.83876264e-16],
+            [ 6.32660972e-16,  9.83876264e-16,  6.49102044e-01]])
+        >>> pol.conv_tol = 1e-9
+        >>> pol.polarizability()*param.BOHR**3
+        array([[ 4.06325340e-01, -2.43939181e-14,  6.35205528e-16],
+            [-2.43939181e-14,  4.06325340e-01,  9.81337957e-16],
+            [ 6.35205528e-16,  9.81337957e-16,  6.49102043e-01]])
+        Experimental uncertainty is generally 1e-3 angstrom^3. 1e-5 and 1e-9 conv_tol 
+        differ by 1e-7 angstrom^3 for the first component, so 1e-5 of conv_tol is enough.
+        """
         self.conv_tol = 1e-5
 
         self._keys = set(self.__dict__.keys())  

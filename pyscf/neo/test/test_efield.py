@@ -52,9 +52,9 @@ class KnownValues(unittest.TestCase):
 
     def test_polarizability(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 0.9', basis='ccpvdz', quantum_nuc=['H'])
-        mf = neo.CDFT(mol, xc='b3lyp')
-        mf.run()
-        polobj = Polarizability(mf)
+        mfCNEO = neo.CDFT(mol, xc='b3lyp')
+        mfCNEO.run()
+        polobj = Polarizability(mfCNEO)
         p = polobj.polarizability()
 
         mf1 = SCFwithEfield(mol, xc='b3lyp')
@@ -67,10 +67,9 @@ class KnownValues(unittest.TestCase):
         mf2.scf()
         dipole2 = mf2.dip_moment(unit='au')
 
-        mf5 = neo.KS(mol,xc='b3lyp')
-        mf5.run()
-        polobj1 = Polarizability(mf5)
-        polobj1.with_f1 = False
+        mfNEO = neo.KS(mol,xc='b3lyp')
+        mfNEO.run()
+        polobj1 = Polarizability(mfNEO)
         p1 = polobj1.polarizability()
 
         mf3 = NEOwithEfield(mol, xc='b3lyp')
