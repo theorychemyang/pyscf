@@ -9,6 +9,7 @@ import ctypes
 import h5py
 import numpy
 import warnings
+from scipy.special import erf
 from pyscf import df, gto, lib, neo, scf
 from pyscf.data import nist
 from pyscf.lib import logger
@@ -1233,11 +1234,19 @@ class HF(scf.hf.SCF):
             mm_mol = self.mol.mm_mol
             coords = mm_mol.atom_coords()
             charges = mm_mol.atom_charges()
+            if mm_mol.charge_model == 'gaussian':
+                expnts = numpy.sqrt(mm_mol.get_zetas())
             mol_e = self.components['e'].mol
             for j in range(mol_e.natm):
                 q2, r2 = mol_e.atom_charge(j), mol_e.atom_coord(j)
                 r = lib.norm(r2-coords, axis=1)
-                nuc += q2*(charges/r).sum()
+                if mm_mol.charge_model != 'gaussian':
+                    nuc += q2*(charges/r).sum()
+                else:
+                    # * MM paritcles may be defined as a spreaded distribution. The
+                    # charge distribution may overlap to QM atoms and slightly affect
+                    # the interaction.
+                    nuc += q2*(charges*erf(expnts*r)/r).sum()
         return nuc
 
     def scf(self, dm0=None, **kwargs):

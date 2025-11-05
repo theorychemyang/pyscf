@@ -6,6 +6,7 @@ Analytic nuclear gradient for constrained nuclear-electronic orbital
 
 import numpy
 import warnings
+from scipy.special import erf
 from pyscf import df, gto, lib, neo, scf
 from pyscf.grad import rhf as rhf_grad
 from pyscf.lib import logger
@@ -305,6 +306,8 @@ def grad_hcore_mm(mf_grad, dm=None, mol=None):
 
     coords = mm_mol.atom_coords()
     charges = mm_mol.atom_charges()
+    expnts = mm_mol.get_zetas() + numpy.zeros_like(charges)
+
     g = numpy.zeros_like(coords)
     mf = mf_grad.base
     if dm is None:
@@ -314,34 +317,21 @@ def grad_hcore_mm(mf_grad, dm=None, mol=None):
     for t, comp in mf.components.items():
         mol_comp = comp.mol
         dm_comp = dm[t]
-        if mm_mol.charge_model == 'gaussian':
-            expnts = mm_mol.get_zetas()
 
-            intor = 'int3c2e_ip2'
-            nao = mol_comp.nao
-            max_memory = mol.max_memory - lib.current_memory()[0]
-            blksize = int(min(max_memory*1e6/8/nao**2/3, 200))
-            blksize = max(blksize, 1)
-            cintopt = gto.moleintor.make_cintopt(mol_comp._atm, mol_comp._bas,
-                                                 mol_comp._env, intor)
+        intor = 'int3c2e_ip2'
+        nao = mol_comp.nao
+        max_memory = mol.max_memory - lib.current_memory()[0]
+        blksize = int(min(max_memory*1e6/8/nao**2/3, 200))
+        blksize = max(blksize, 1)
+        cintopt = gto.moleintor.make_cintopt(mol_comp._atm, mol_comp._bas,
+                                             mol_comp._env, intor)
 
-            for i0, i1 in lib.prange(0, charges.size, blksize):
-                fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
-                j3c = df.incore.aux_e2(mol_comp, fakemol, intor, aosym='s1',
-                                       comp=3, cintopt=cintopt)
-                g[i0:i1] += numpy.einsum('ipqk,qp->ik', j3c * charges[i0:i1],
-                                         dm_comp).T * comp.charge
-        else:
-            # From examples/qmmm/30-force_on_mm_particles.py
-            # The interaction between electron density and MM particles
-            # d/dR <i| (1/|r-R|) |j> = <i| d/dR (1/|r-R|) |j> = <i| -d/dr (1/|r-R|) |j>
-            #   = <d/dr i| (1/|r-R|) |j> + <i| (1/|r-R|) |d/dr j>
-            for i, q in enumerate(charges):
-                with mol_comp.with_rinv_origin(coords[i]):
-                    v = mol_comp.intor('int1e_iprinv')
-                g[i] += (numpy.einsum('ij,xji->x', dm_comp, v) +
-                         numpy.einsum('ij,xij->x', dm_comp, v.conj())) \
-                        * -q * comp.charge
+        for i0, i1 in lib.prange(0, charges.size, blksize):
+            fakemol = gto.fakemol_for_charges(coords[i0:i1], expnts[i0:i1])
+            j3c = df.incore.aux_e2(mol_comp, fakemol, intor, aosym='s1',
+                                   comp=3, cintopt=cintopt)
+            g[i0:i1] += numpy.einsum('ipqk,qp->ik', j3c * charges[i0:i1],
+                                     dm_comp).T * comp.charge
     return g
 
 def grad_nuc_mm(mf_grad, mol=None):
@@ -357,13 +347,21 @@ def grad_nuc_mm(mf_grad, mol=None):
         return None
     coords = mm_mol.atom_coords()
     charges = mm_mol.atom_charges()
+    if mm_mol.charge_model == 'gaussian':
+        expnts = mm_mol.get_zetas()
+        radii = 1 / numpy.sqrt(expnts)
     g_mm = numpy.zeros_like(coords)
     mol_e = mol.components['e']
     for i in range(mol_e.natm):
         q1 = mol_e.atom_charge(i)
         r1 = mol_e.atom_coord(i)
         r = lib.norm(r1-coords, axis=1)
-        g_mm += q1 * numpy.einsum('i,ix,i->ix', charges, r1-coords, 1/r**3)
+        if mm_mol.charge_model != 'gaussian':
+            coulkern = 1/r**3
+        else:
+            coulkern = erf(r/radii)/r - 2/(numpy.sqrt(numpy.pi)*radii) * numpy.exp(-expnts*r**2)
+            coulkern = coulkern / r**2
+        g_mm += q1 * numpy.einsum('i,ix,i->ix', charges, r1-coords, coulkern)
     return g_mm
 
 def as_scanner(mf_grad):
@@ -464,8 +462,13 @@ class Gradients(rhf_grad.GradientsBase):
         if mol is None: mol = self.mol
         g_qm = self.components['e'].grad_nuc(mol.components['e'], atmlst)
         if mol.mm_mol is not None:
-            coords = mol.mm_mol.atom_coords()
-            charges = mol.mm_mol.atom_charges()
+            mm_mol = mol.mm_mol
+            coords = mm_mol.atom_coords()
+            charges = mm_mol.atom_charges()
+            if mm_mol.charge_model == 'gaussian':
+                expnts = mm_mol.get_zetas()
+                radii = 1 / numpy.sqrt(expnts)
+
             # nuclei lattice interaction
             mol_e = mol.components['e']
             g_mm = numpy.empty((mol_e.natm,3))
@@ -473,7 +476,12 @@ class Gradients(rhf_grad.GradientsBase):
                 q1 = mol_e.atom_charge(i)
                 r1 = mol_e.atom_coord(i)
                 r = lib.norm(r1-coords, axis=1)
-                g_mm[i] = -q1 * numpy.einsum('i,ix,i->x', charges, r1-coords, 1/r**3)
+                if mm_mol.charge_model != 'gaussian':
+                    coulkern = 1/r**3
+                else:
+                    coulkern = erf(r/radii)/r - 2/(numpy.sqrt(numpy.pi)*radii) * numpy.exp(-expnts*r**2)
+                    coulkern = coulkern / r**2
+                g_mm[i] = -q1 * numpy.einsum('i,ix,i->x', charges, r1-coords, coulkern)
             if atmlst is not None:
                 g_mm = g_mm[atmlst]
         else:
