@@ -510,6 +510,11 @@ def symmetry_finder(mol, verbose=logger.DEBUG1):
     # find if this is a linear molecule
     mass = mol.mass
     atom_coords = mol.atom_coords()
+    natm_mm = 0
+    if mol.mm_mol is not None:
+        natm_mm = mol.mm_mol.natm
+        atom_coords = numpy.vstack([atom_coords, mol.mm_mol.atom_coords()])
+        mass = numpy.concatenate((mass, numpy.ones(natm_mm)))
     mass_center = numpy.einsum('z,zx->x', mass, atom_coords) / mass.sum()
     atom_coords = atom_coords - mass_center
     rot_const = rotation_const(mass, atom_coords, 'GHz')
@@ -531,7 +536,8 @@ def symmetry_finder(mol, verbose=logger.DEBUG1):
             log.note('This molecule is linear, but was not put along x/y/z axis. Symmetry will be OFF.')
             return None, None
         log.debug(f'Linear molecule along {chr(axis+88)}')
-    elif mol.natm == 3: # See if they are in the same plane
+    else:
+        # see if a planar molecule in a special plane
         symm = 'PLANAR'
         if numpy.abs(atom_coords[:,0]).max() < 1e-6:
             axis = 0
@@ -540,13 +546,13 @@ def symmetry_finder(mol, verbose=logger.DEBUG1):
         elif numpy.abs(atom_coords[:,2]).max() < 1e-6:
             axis = 2
         else:
-            # if not in a plane, warn
-            log.note('This molecule is planar, but was not put in xy/yz/xz planes. Symmetry will be OFF.')
+            # if not in a special plane, warn
+            if mol.natm + natm_mm == 3:
+                log.note('This molecule is planar, but was not put in xy/yz/xz planes. Symmetry will be OFF.')
+            else:
+                log.note('Not a molecule that symmetry is easy to exploit. Symmetry will be OFF.')
             return None, None
         log.debug(f'Planar molecule perpendicular to {chr(axis+88)}')
-    else:
-        log.note('Not a molecule that symmetry is easy to exploit. Symmetry will be OFF.')
-        return None, None
     return symm, axis
 
 def FCI(mf, kernel=kernel, integrals=integrals, energy=energy, fci_verbose=logger.DEBUG1):
@@ -578,7 +584,7 @@ def FCI(mf, kernel=kernel, integrals=integrals, energy=energy, fci_verbose=logge
 
     h1, g2 = integrals(mf)
 
-    ecore = mf.mf_elec.energy_nuc()
+    ecore = mf.energy_nuc()
 
     class CISolver():
         def __init__(self):
@@ -653,7 +659,10 @@ def FCI(mf, kernel=kernel, integrals=integrals, energy=energy, fci_verbose=logge
             natorb = lib.dot(coeff, numpy.fliplr(eigvec))
             return natocc, natorb
 
-    if is_cneo and mol.natm > 1:
+    natm_mm = 0
+    if mol.mm_mol is not None:
+        natm_mm = mol.mm_mol.natm
+    if is_cneo and mol.natm + natm_mm > 1:
         r1 = [None, None]
         for i in range(mol.nuc_num):
             r1n = []
