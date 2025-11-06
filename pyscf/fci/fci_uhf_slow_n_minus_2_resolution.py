@@ -182,9 +182,13 @@ def contract_2(h1e, eri, fcivec, norb, nelec, link_index=None):
     return fcinew.reshape(fcivec.shape)
 
 def gen_des_des_str_index(orb_list, nelec):
-    norb = len(orb_list)
-    assert nelec < norb
+    if nelec < 2:
+        return None
     strs = cistring.make_strings(orb_list, nelec)
+    if isinstance(strs, cistring.OIndexList):
+        raise NotImplementedError('System with 64 orbitals or more')
+
+    norb = len(orb_list)
     return selected_ci.des_des_linkstr(strs, norb, nelec)
 
 def make_hdiag(h1e, eri, norb, nelec, opt=None):

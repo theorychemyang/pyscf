@@ -12,6 +12,97 @@ from pyscf.fci.fci_uhf_slow_n_minus_2_resolution import gen_des_des_str_index
 from pyscf.lib import logger
 from pyscf.lib import misc
 
+def gen_des_des_str_index_2(orb_list, nelec):
+    '''A temporary hack for double occupation beyond 64 orbitals'''
+    if nelec < 2:
+        return None
+    if nelec != 2:
+        raise NotImplementedError("This path is for nelec == 2")
+
+    orb_list = numpy.asarray(list(orb_list), dtype=numpy.int32)
+    norb = len(orb_list)
+
+    # No valid pairs -> empty table
+    if norb < 2:
+        return numpy.zeros((1, 0, 4), dtype=numpy.int32)
+
+    m = norb * (norb - 1) # meaningful rows
+    body = numpy.zeros((m, 4), dtype=numpy.int32)
+
+    off = 0
+    base_s = 0
+    for q in range(1, norb):
+        p = numpy.arange(q, dtype=numpy.int32) # 0..q-1
+        cnt = 2 * q
+
+        # Interleave: (q,p,-1), (p,q,+1) with s = base_s + p
+        body[off:off+cnt:2, 0] = q
+        body[off:off+cnt:2, 1] = p
+        body[off:off+cnt:2, 2] = base_s + p
+        body[off:off+cnt:2, 3] = -1
+
+        body[off+1:off+cnt:2, 0] = p
+        body[off+1:off+cnt:2, 1] = q
+        body[off+1:off+cnt:2, 2] = base_s + p
+        body[off+1:off+cnt:2, 3] = 1
+
+        off += cnt
+        base_s += q
+
+    # Pad to norb*norb
+    total = norb * norb
+    if m < total:
+        pad = numpy.zeros((total - m, 4), dtype=numpy.int32)
+        out = numpy.vstack((body, pad))
+    else:
+        out = body
+
+    return out.reshape(1, total, 4)
+
+def gen_des_str_index_2(orb_list, nelec):
+    '''A temporary hack low occupation beyond 64 orbitals'''
+    orb_list = numpy.asarray(list(orb_list), dtype=numpy.int32)
+    norb = len(orb_list)
+
+    if nelec == 1:
+        if norb < 1:
+            return numpy.zeros((0, 1, 4), dtype=numpy.int32)
+        out = numpy.zeros((norb, 1, 4), dtype=numpy.int32)
+        # column 1 stores orbital index; last column = 1
+        out[:, 0, 1] = numpy.arange(norb, dtype=numpy.int32)
+        out[:, 0, 3] = 1
+        return out
+
+    if nelec == 2:
+        if norb < 2:
+            return numpy.zeros((0, 2, 4), dtype=numpy.int32)
+
+        n_pairs = norb * (norb - 1) // 2
+        out = numpy.empty((n_pairs, 2, 4), dtype=numpy.int32)
+
+        k = 0
+        for q in range(1, norb):
+            i = numpy.arange(q, dtype=numpy.int32) # i = 0..q-1
+            rows = i.size
+
+            # [0, i, q, -1]
+            out[k:k+rows, 0, 0] = 0
+            out[k:k+rows, 0, 1] = i
+            out[k:k+rows, 0, 2] = q
+            out[k:k+rows, 0, 3] = -1
+
+            # [0, q, i, +1]
+            out[k:k+rows, 1, 0] = 0
+            out[k:k+rows, 1, 1] = q
+            out[k:k+rows, 1, 2] = i
+            out[k:k+rows, 1, 3] = 1
+
+            k += rows
+
+        return out
+
+    raise NotImplementedError("gen_des_str_index_2 supports only nelec == 1 or 2")
+
 def contract(h1, h2, fcivec, norb, nparticle, dd_index=None, d_index=None,
              r1=None):
     ndim = len(norb)
@@ -19,7 +110,14 @@ def contract(h1, h2, fcivec, norb, nparticle, dd_index=None, d_index=None,
         dd_index = []
         for i in range(ndim):
             if nparticle[i] > 1:
-                dd_index.append(gen_des_des_str_index(range(norb[i]), nparticle[i]))
+                try:
+                    dd_index_ = gen_des_des_str_index(range(norb[i]), nparticle[i])
+                except NotImplementedError:
+                    if nparticle[i] == 2:
+                        dd_index_ = gen_des_des_str_index_2(range(norb[i]), nparticle[i])
+                    else:
+                        raise NotImplementedError('64 orbitals or more and more than 2 occupation')
+                dd_index.append(dd_index_)
             else:
                 dd_index.append(None)
     if d_index is None:
@@ -29,12 +127,10 @@ def contract(h1, h2, fcivec, norb, nparticle, dd_index=None, d_index=None,
                 try:
                     d_index_ = cistring.gen_des_str_index(range(norb[i]), nparticle[i])
                 except NotImplementedError:
-                    if nparticle[i] == 1:
-                        d_index_ = numpy.zeros((norb[i], 1, 4), dtype=numpy.int32)
-                        d_index_[:,:,-1] = 1
-                        d_index_[:,:,1] = numpy.arange(norb[i], dtype=numpy.int32).reshape(-1,1)
+                    if nparticle[i] <= 2:
+                        d_index_ = gen_des_str_index_2(range(norb[i]), nparticle[i])
                     else:
-                        raise NotImplementedError('64 orbitals or more and not 1 occupation')
+                        raise NotImplementedError('64 orbitals or more and more than 2 occupation')
                 d_index.append(d_index_)
             else:
                 d_index.append(None)
