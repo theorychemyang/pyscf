@@ -3,7 +3,7 @@
 import unittest
 import numpy
 from pyscf import neo, lib, scf
-from pyscf.neo.efield import polarizability, dipole_grad, SCFwithEfield, GradwithEfield
+from pyscf.neo.efield import Polarizability, dipole_grad, SCFwithEfield, GradwithEfield, NEOwithEfield
 
 
 class KnownValues(unittest.TestCase):
@@ -51,10 +51,11 @@ class KnownValues(unittest.TestCase):
 
 
     def test_polarizability(self):
-        mol = neo.M(atom='H 0 0 0; F 0 0 0.9', basis='ccpvdz')
-        mf = neo.CDFT(mol, xc='b3lyp')
-        mf.run()
-        p = polarizability(mf)
+        mol = neo.M(atom='H 0 0 0; F 0 0 0.9', basis='ccpvdz', quantum_nuc=['H'])
+        mfCNEO = neo.CDFT(mol, xc='b3lyp')
+        mfCNEO.run()
+        polobj = Polarizability(mfCNEO)
+        p = polobj.polarizability()
 
         mf1 = SCFwithEfield(mol, xc='b3lyp')
         mf1.efield = numpy.array([0, 0, 0.001])
@@ -66,7 +67,23 @@ class KnownValues(unittest.TestCase):
         mf2.scf()
         dipole2 = mf2.dip_moment(unit='au')
 
+        mfNEO = neo.KS(mol,xc='b3lyp')
+        mfNEO.run()
+        polobj1 = Polarizability(mfNEO)
+        p1 = polobj1.polarizability()
+
+        mf3 = NEOwithEfield(mol, xc='b3lyp')
+        mf3.efield = numpy.array([0, 0, 0.001])
+        mf3.scf()
+        dipole3 = mf3.dip_moment(unit='au')
+
+        mf4 = NEOwithEfield(mol, xc='b3lyp')
+        mf4.efield = numpy.array([0, 0, -0.001])
+        mf4.scf()
+        dipole4 = mf4.dip_moment(unit='au')
+
         self.assertAlmostEqual(p[-1,-1], (dipole1[-1] - dipole2[-1]) / 0.002, 4)
+        self.assertAlmostEqual(p1[-1,-1], (dipole3[-1] - dipole4[-1]) / 0.002, 4)
 
     def test_grad_with_efield(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 0.8', basis='ccpvdz')
