@@ -81,7 +81,7 @@ class KnownValues(unittest.TestCase):
         mf4.efield = numpy.array([0, 0, -0.001])
         mf4.scf()
         dipole4 = mf4.dip_moment(unit='au')
-        
+
         self.assertAlmostEqual(p[-1,-1], (dipole1[-1] - dipole2[-1]) / 0.002, 4)
         self.assertAlmostEqual(p1[-1,-1], (dipole3[-1] - dipole4[-1]) / 0.002, 4)
 

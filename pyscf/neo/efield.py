@@ -62,7 +62,7 @@ def polarizability(polobj, with_cphf=True):
             int1e_r = comp.mol.intor_symmetric('int1e_r', comp=3)
         occidx = mo_occ[t] > 0
         orbo = mo_coeff[t][:, occidx]
-        h1[t] = lib.einsum('xpq, pi, qj -> xij', int1e_r, mo_coeff[t], orbo) * comp.charge
+        h1[t] = lib.einsum('xpq,pi,qj->xij', int1e_r, mo_coeff[t], orbo) * comp.charge
         s1[t] = numpy.zeros_like(h1[t])
     vind = polobj.gen_vind(mf, mo_coeff, mo_occ)
     if with_cphf:
@@ -76,9 +76,9 @@ def polarizability(polobj, with_cphf=True):
         if t == 'e':
             e2 += 2*numpy.einsum('xpi,ypi->xy', h1['e'], mo1['e'])  #*2 for double occupancy
         else:
-            ### if with_f1 is False, the contribution from quantum nuclei is included 
+            ### if with_f1 is False, the contribution from quantum nuclei is included
             if not with_f1 and t.startswith('n'):
-                e2 += numpy.einsum('xpi,ypi->xy', h1[t], mo1[t]) 
+                e2 += numpy.einsum('xpi,ypi->xy', h1[t], mo1[t])
     # *-1 from the definition of dipole moment.
     e2 = (e2 + e2.T) * -1
 
@@ -240,7 +240,7 @@ class NEOwithEfield(KS):
         super().__init__(mol, *args, **kwargs)
         self.efield = numpy.array([0, 0, 0])
         self.mol = mol
-        
+
     def get_hcore(self, mol=None):
         if mol is None: mol = self.mol
         hcore = {}
@@ -250,12 +250,12 @@ class NEOwithEfield(KS):
             hcore[t] += numpy.einsum('x,xij->ij', self.efield, comp.intor('int1e_r', comp=3)) * self.components[t].charge
 
         return hcore
-    
+
     def energy_nuc(self):
         enuc = self.components['e'].energy_nuc()
 
-        nuclear_charges = self.mol.components['e'].atom_charges()  
-        nuclear_coords = self.mol.atom_coords()    
+        nuclear_charges = self.mol.components['e'].atom_charges()
+        nuclear_coords = self.mol.atom_coords()
 
         E_nuc_field = -numpy.sum([Z * numpy.dot(self.efield, R) for Z, R in zip(nuclear_charges, nuclear_coords)])
 
@@ -273,33 +273,9 @@ class Polarizability(lib.StreamObject):
         else:
             self.with_f1 = False
         self.max_cycle_cphf = 100
-        ### default: 1e-5 is already enough
-        """
-        >>> from pyscf import neo
-        >>> from pyscf.lib import param
-        >>> from pyscf.neo.efield import Polarizability
-        >>> mol = neo.M(atom='H 0 0 0; F 0 0 0.8', basis='ccpvtz')
-        >>> mf = neo.CDFT(mol, xc='b3lyp')
-        >>> mf.kernel()
-        converged SCF energy = -100.414287028652
-        np.float64(-100.4142870286517)
-        >>> pol = neo.Polarizability(mf)        
-        >>> pol.conv_tol = 1e-5
-        >>> pol.polarizability()*param.BOHR**3
-        array([[ 4.06325330e-01, -1.24910351e-14,  6.32660972e-16],
-            [-1.24910351e-14,  4.06325330e-01,  9.83876264e-16],
-            [ 6.32660972e-16,  9.83876264e-16,  6.49102044e-01]])
-        >>> pol.conv_tol = 1e-9
-        >>> pol.polarizability()*param.BOHR**3
-        array([[ 4.06325340e-01, -2.43939181e-14,  6.35205528e-16],
-            [-2.43939181e-14,  4.06325340e-01,  9.81337957e-16],
-            [ 6.35205528e-16,  9.81337957e-16,  6.49102043e-01]])
-        Experimental uncertainty is generally 1e-3 angstrom^3. 1e-5 and 1e-9 conv_tol 
-        differ by 1e-7 angstrom^3 for the first component, so 1e-5 of conv_tol is enough.
-        """
-        self.conv_tol = 1e-5
+        self.conv_tol = 1e-9
 
-        self._keys = set(self.__dict__.keys())  
+        self._keys = set(self.__dict__.keys())
 
     def gen_vind(self, mf, mo_coeff, mo_occ):
         return gen_vind(mf, mo_coeff, mo_occ)
