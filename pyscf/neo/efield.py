@@ -247,7 +247,9 @@ class NEOwithEfield(KS):
         for t, comp in mol.components.items():
             hcore[t] = self.components[t].get_hcore(mol=comp)
             comp.set_common_orig([0, 0, 0])  # The gauge origin for dipole integral
-            hcore[t] += numpy.einsum('x,xij->ij', self.efield, comp.intor('int1e_r', comp=3)) * self.components[t].charge
+            hcore[t] += (numpy.einsum('x,xij->ij', self.efield,
+                                      comp.intor('int1e_r', comp=3))
+                         * self.components[t].charge)
 
         return hcore
 
