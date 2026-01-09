@@ -330,4 +330,98 @@ def orth_ao(mf_or_mol, method=ORTH_METHOD, pre_orth_ao=REF_BASIS, s=None):
             c_orth[:,i] *= -1
     return c_orth
 
+def _build_ds(mol, atmlst=None):
+    '''Overlap gradient with respect to basis center'''
+    if atmlst is None:
+        atmlst = range(mol.natm)
+    s1 = mol.intor('int1e_ipovlp', comp=3)
+    nao = mol.nao
+    aoslices = mol.aoslice_by_atom()
+    ds = numpy.zeros((len(atmlst), 3, nao, nao), dtype=s1.dtype)
+    for k, ia in enumerate(atmlst):
+        p0, p1 = aoslices[ia, 2:]
+        ds[k, :, p0:p1] -= s1[:, p0:p1]
+        ds[k, :, :, p0:p1] += s1[:, :, p0:p1]
+        ds[k] = 0.5 * (ds[k] + ds[k].conj().transpose(0,2,1))
+    return ds
+
+def _lowdin_eig(s, thresh=1e-15):
+    '''Eigensystem of lowdin'''
+    e, v = scipy.linalg.eigh(s)
+    idx = e > thresh
+    e = e[idx]
+    v = v[:, idx]
+    x = numpy.dot(v/numpy.sqrt(e), v.conj().T)
+    return x, e, v
+
+def _lowdin_grad(ds, e, v):
+    '''Lowdin coefficient gradient'''
+    _ds = reduce(numpy.dot, (v.conj().T, ds, v))
+    sqrt_e = numpy.sqrt(e)
+    _dx = -_ds / (sqrt_e[:, None] * sqrt_e[None, :] * (sqrt_e[:, None] + sqrt_e[None, :]))
+    dx = reduce(numpy.dot, (v, _dx, v.conj().T))
+    return dx
+
+def orth_ao_grad(mf_or_mol, method=ORTH_METHOD, pre_orth_ao=REF_BASIS, s=None, atmlst=None):
+    '''Lowdin and meta-Lowdin gradients'''
+    from pyscf import scf
+    from pyscf.lo import nao
+    if isinstance(mf_or_mol, gto.MoleBase):
+        mol = mf_or_mol
+        mf = None
+    else:
+        assert (isinstance(mf_or_mol, scf.hf.SCF))
+        mol = mf_or_mol.mol
+        mf = mf_or_mol
+
+    if s is None:
+        if getattr(mol, 'pbc_intor', None):  # whether mol object is a cell
+            raise NotImplementedError('PBC is not supported.')
+        else:
+            s = mol.intor_symmetric('int1e_ovlp')
+
+    if atmlst is None:
+        atmlst = range(mol.natm)
+    c_orth_grad = numpy.zeros((len(atmlst), 3, mol.nao, mol.nao), dtype=s.dtype)
+
+    if method.lower() == 'lowdin':
+        ds = _build_ds(mol, atmlst)
+        if pre_orth_ao is None:
+            c_orth, e, v = _lowdin_eig(s)
+            for k in range(len(atmlst)):
+                for x in range(3):
+                    c_orth_grad[k, x] = _lowdin_grad(ds[k, x], e, v)
+        else:
+            if not isinstance(pre_orth_ao, numpy.ndarray):
+                pre_orth_ao = restore_ao_character(mol, pre_orth_ao)
+            s1 = reduce(numpy.dot, (pre_orth_ao.conj().T, s, pre_orth_ao))
+            c_, e, v = _lowdin_eig(s1)
+            c_orth = numpy.dot(pre_orth_ao, c_)
+            for k in range(len(atmlst)):
+                for x in range(3):
+                    ds1 = reduce(numpy.dot, (pre_orth_ao.conj().T, ds[k, x], pre_orth_ao))
+                    dc = _lowdin_grad(ds1, e, v)
+                    c_orth_grad[k, x] = numpy.dot(pre_orth_ao, dc)
+
+    elif method.lower() == 'nao':
+        assert (mf is not None)
+        raise NotImplementedError('NAO gradients are not supported.')
+
+    else:
+        # meta_lowdin: partition AOs into core, valence and Rydberg sets,
+        # orthogonalizing within each set
+        if pre_orth_ao is None:
+            pre_orth_ao = numpy.eye(mol.nao)
+        elif not isinstance(pre_orth_ao, numpy.ndarray):
+            pre_orth_ao = restore_ao_character(mol, pre_orth_ao)
+        weight = numpy.ones(pre_orth_ao.shape[0])
+        c_orth, c_orth_grad = nao._nao_sub_grad(mol, weight, pre_orth_ao, s, atmlst)
+
+    # adjust phase
+    for i in range(c_orth.shape[1]):
+        if c_orth[i,i] < 0:
+            c_orth[:,i] *= -1
+            c_orth_grad[:,:,:,i] *= -1
+    return c_orth, c_orth_grad
+
 del (ORTH_METHOD)

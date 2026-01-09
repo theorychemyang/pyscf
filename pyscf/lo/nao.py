@@ -159,6 +159,101 @@ def _nao_sub(mol, pre_occ, pre_nao, s=None):
         logger.warn(mol, 'Weak orthogonality for localized orbitals %s', snorm)
     return cnao
 
+def _nao_sub_grad(mol, pre_occ, pre_nao, s=None, atmlst=None):
+    '''Gradients of _nao_sub, but only with constant pre_occ'''
+    if not numpy.allclose(pre_occ, numpy.ones(pre_nao.shape[0])):
+        raise NotImplementedError('Gradients are only available to meta-Lowdin, not NAO.')
+
+    if s is None:
+        if getattr(mol, 'pbc_intor', None):  # whether mol object is a cell
+            s = mol.pbc_intor('int1e_ovlp', hermi=1)
+        else:
+            s = mol.intor_symmetric('int1e_ovlp')
+    if atmlst is None:
+        atmlst = range(mol.natm)
+
+    core_lst, val_lst, rydbg_lst = _core_val_ryd_list(mol)
+    nao = mol.nao_nr()
+    pre_nao = pre_nao.astype(s.dtype)
+    cnao = numpy.empty((nao,nao), dtype=s.dtype)
+    cnao_grad = numpy.empty((len(atmlst),3,nao,nao), dtype=s.dtype)
+    ds = orth._build_ds(mol, atmlst)
+
+    if core_lst:
+        c = pre_nao[:,core_lst].copy()
+        s1 = reduce(lib.dot, (c.conj().T, s, c))
+        c_, e, v = orth._lowdin_eig(s1)
+        cnao[:,core_lst] = c1 = lib.dot(c, c_)
+        for k in range(len(atmlst)):
+            for x in range(3):
+                ds1 = reduce(lib.dot, (c.conj().T, ds[k,x], c))
+                dc_ = orth._lowdin_grad(ds1, e, v)
+                cnao_grad[k,x][:,core_lst] = lib.dot(c, dc_)
+        c0 = pre_nao[:,val_lst].copy()
+        c1sc0 = reduce(lib.dot, (c1.conj().T, s, c0))
+        # c_pre_proj <- c_pre - c1 c1^T s c_pre
+        c = c0 - lib.dot(c1, c1sc0)
+    else:
+        c = pre_nao[:,val_lst]
+
+    if val_lst:
+        s1 = reduce(lib.dot, (c.conj().T, s, c))
+        wt = pre_occ[val_lst]
+        s1 = wt[:,None] * s1 * wt
+        c_, e, v = orth._lowdin_eig(s1)
+        c_ = wt[:,None] * c_
+        cnao[:,val_lst] = lib.dot(c, c_)
+        for k in range(len(atmlst)):
+            for x in range(3):
+                ds1 = reduce(lib.dot, (c.conj().T, ds[k,x], c))
+                if core_lst:
+                    # val pre_nao has gradients because of the projection
+                    # c_pre_proj <- c_pre - c1 c1^T s c_pre
+                    dc1 = cnao_grad[k, x][:, core_lst]
+                    dc1sc0 = reduce(lib.dot, (dc1.conj().T, s, c0)) \
+                             + reduce(lib.dot, (c1.conj().T, ds[k, x], c0))
+                    # dc_pre_proj = - dc1 c1^T s c_pre - c1 dc1^T s c_pre - c1 c1^T ds c_pre
+                    dc = -lib.dot(dc1, c1sc0) - lib.dot(c1, dc1sc0)
+                    # derivative of val pre_nao overlap
+                    # s1 = c_pre_proj^T s c_pre_proj
+                    # ds1 = dc^T s c + c^T ds c + c^T s dc
+                    ds1 += reduce(lib.dot, (dc.conj().T, s, c)) \
+                           + reduce(lib.dot, (c.conj().T, s, dc))
+                # wt should all be one, as defined in meta-lowdin
+                ds1 = wt[:, None] * ds1 * wt
+                dc_ = orth._lowdin_grad(ds1, e, v)
+                dc_ = wt[:, None] * dc_
+                cnao_grad[k,x][:,val_lst] = lib.dot(c, dc_)
+                if core_lst:
+                    # Extra derivative due to c_pre_projected derivative
+                    cnao_grad[k,x][:,val_lst] += lib.dot(dc, c_)
+
+    if rydbg_lst:
+        cvlst = core_lst + val_lst
+        c1 = cnao[:,cvlst].copy()
+        c0 = pre_nao[:,rydbg_lst].copy()
+        c1sc0 = reduce(lib.dot, (c1.conj().T, s, c0))
+        c = c0 - lib.dot(c1, c1sc0)
+        s1 = reduce(lib.dot, (c.conj().T, s, c))
+        c_, e, v = orth._lowdin_eig(s1)
+        cnao[:,rydbg_lst] = lib.dot(c, c_)
+        for k in range(len(atmlst)):
+            for x in range(3):
+                dc1 = cnao_grad[k, x][:, cvlst]
+                dc1sc0 = reduce(lib.dot, (dc1.conj().T, s, c0)) \
+                         + reduce(lib.dot, (c1.conj().T, ds[k, x], c0))
+                dc = -lib.dot(dc1, c1sc0) - lib.dot(c1, dc1sc0)
+                ds1 = reduce(lib.dot, (c.conj().T, ds[k,x], c)) \
+                      + reduce(lib.dot, (dc.conj().T, s, c)) \
+                      + reduce(lib.dot, (c.conj().T, s, dc))
+                dc_ = orth._lowdin_grad(ds1, e, v)
+                cnao_grad[k,x][:,rydbg_lst] = lib.dot(c, dc_) + lib.dot(dc, c_)
+
+    snorm = numpy.linalg.norm(reduce(lib.dot, (cnao.conj().T, s, cnao)) - numpy.eye(nao))
+    if snorm > 1e-9:
+        logger.warn(mol, 'Weak orthogonality for localized orbitals %s', snorm)
+    return cnao, cnao_grad
+
 def _core_val_ryd_list(mol):
     from pyscf.gto.ecp import core_configuration
     count = numpy.zeros((mol.natm, 9), dtype=int)
