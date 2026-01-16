@@ -330,21 +330,6 @@ def orth_ao(mf_or_mol, method=ORTH_METHOD, pre_orth_ao=REF_BASIS, s=None):
             c_orth[:,i] *= -1
     return c_orth
 
-def _build_ds(mol, atmlst=None):
-    '''Overlap gradient with respect to basis center'''
-    if atmlst is None:
-        atmlst = range(mol.natm)
-    s1 = mol.intor('int1e_ipovlp', comp=3)
-    nao = mol.nao
-    aoslices = mol.aoslice_by_atom()
-    ds = numpy.zeros((len(atmlst), 3, nao, nao), dtype=s1.dtype)
-    for k, ia in enumerate(atmlst):
-        p0, p1 = aoslices[ia, 2:]
-        ds[k, :, p0:p1] -= s1[:, p0:p1]
-        ds[k, :, :, p0:p1] += s1[:, :, p0:p1]
-        ds[k] = 0.5 * (ds[k] + ds[k].conj().transpose(0,2,1))
-    return ds
-
 def _lowdin_eig(s, thresh=1e-15):
     '''Eigensystem of lowdin'''
     e, v = scipy.linalg.eigh(s)
@@ -362,7 +347,7 @@ def _lowdin_grad(ds, e, v):
     dx = reduce(numpy.dot, (v, _dx, v.conj().T))
     return dx
 
-def orth_ao_grad(mf_or_mol, method=ORTH_METHOD, pre_orth_ao=REF_BASIS, s=None, atmlst=None):
+def orth_ao_grad(mf_or_mol, method=ORTH_METHOD, pre_orth_ao=REF_BASIS, s=None):
     '''Lowdin and meta-Lowdin gradients'''
     from pyscf import scf
     from pyscf.lo import nao
@@ -380,28 +365,42 @@ def orth_ao_grad(mf_or_mol, method=ORTH_METHOD, pre_orth_ao=REF_BASIS, s=None, a
         else:
             s = mol.intor_symmetric('int1e_ovlp')
 
-    if atmlst is None:
-        atmlst = range(mol.natm)
-    c_orth_grad = numpy.zeros((len(atmlst), 3, mol.nao, mol.nao), dtype=s.dtype)
-
     if method.lower() == 'lowdin':
-        ds = _build_ds(mol, atmlst)
+        ipovlp = mol.intor('int1e_ipovlp', comp=3)
+        aoslices = mol.aoslice_by_atom()
+
+        def _ds_atom(ia):
+            p0, p1 = aoslices[ia, 2:]
+            ds = numpy.zeros((3, mol.nao, mol.nao), dtype=ipovlp.dtype)
+            ds[:, p0:p1] -= ipovlp[:, p0:p1]
+            ds[:, :, p0:p1] += ipovlp[:, :, p0:p1]
+            ds = 0.5 * (ds + ds.conj().transpose(0,2,1))
+            return ds
+
         if pre_orth_ao is None:
             c_orth, e, v = _lowdin_eig(s)
-            for k in range(len(atmlst)):
+
+            def c_orth_grad(ia):
+                ds = _ds_atom(ia)
+                g = numpy.empty((3, mol.nao, mol.nao), dtype=c_orth.dtype)
                 for x in range(3):
-                    c_orth_grad[k, x] = _lowdin_grad(ds[k, x], e, v)
+                    g[x] = _lowdin_grad(ds[x], e, v)
+                return g
         else:
             if not isinstance(pre_orth_ao, numpy.ndarray):
                 pre_orth_ao = restore_ao_character(mol, pre_orth_ao)
             s1 = reduce(numpy.dot, (pre_orth_ao.conj().T, s, pre_orth_ao))
             c_, e, v = _lowdin_eig(s1)
             c_orth = numpy.dot(pre_orth_ao, c_)
-            for k in range(len(atmlst)):
+
+            def c_orth_grad(ia):
+                ds = _ds_atom(ia)
+                g = numpy.empty((3, mol.nao, mol.nao), dtype=c_orth.dtype)
                 for x in range(3):
-                    ds1 = reduce(numpy.dot, (pre_orth_ao.conj().T, ds[k, x], pre_orth_ao))
+                    ds1 = reduce(numpy.dot, (pre_orth_ao.conj().T, ds[x], pre_orth_ao))
                     dc = _lowdin_grad(ds1, e, v)
-                    c_orth_grad[k, x] = numpy.dot(pre_orth_ao, dc)
+                    g[x] = numpy.dot(pre_orth_ao, dc)
+                return g
 
     elif method.lower() == 'nao':
         assert (mf is not None)
@@ -415,13 +414,21 @@ def orth_ao_grad(mf_or_mol, method=ORTH_METHOD, pre_orth_ao=REF_BASIS, s=None, a
         elif not isinstance(pre_orth_ao, numpy.ndarray):
             pre_orth_ao = restore_ao_character(mol, pre_orth_ao)
         weight = numpy.ones(pre_orth_ao.shape[0])
-        c_orth, c_orth_grad = nao._nao_sub_grad(mol, weight, pre_orth_ao, s, atmlst)
+        c_orth, c_orth_grad = nao._nao_sub_grad(mol, weight, pre_orth_ao, s)
 
     # adjust phase
+    phase = numpy.ones(c_orth.shape[1], dtype=c_orth.dtype)
     for i in range(c_orth.shape[1]):
         if c_orth[i,i] < 0:
-            c_orth[:,i] *= -1
-            c_orth_grad[:,:,:,i] *= -1
+            phase[i] = -1
+    c_orth = c_orth * phase[None, :]
+
+    _base_grad = c_orth_grad
+
+    def c_orth_grad(ia):
+        g = _base_grad(ia)
+        return g * phase[None, None, :]
+
     return c_orth, c_orth_grad
 
 del (ORTH_METHOD)
