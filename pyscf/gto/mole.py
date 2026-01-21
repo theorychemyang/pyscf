@@ -418,14 +418,7 @@ def format_atom(atoms, origin=0, axes=None,
     if axes is None:
         axes = numpy.eye(3)
 
-    if isinstance(unit, str):
-        if is_au(unit):
-            unit = 1.
-        else:
-            unit = 1./param.BOHR
-    else:
-        unit = 1./unit
-
+    unit = _length_in_au(unit)
     c = numpy.array([a[1] for a in fmt_atoms], dtype=numpy.double)
     c = numpy.einsum('ix,kx->ki', axes * unit, c - origin)
     z = [a[0] for a in fmt_atoms]
@@ -2191,6 +2184,17 @@ def is_au(unit):
     '''
     return isinstance(unit, str) and unit.upper().startswith(('B', 'AU'))
 
+def _length_in_au(unit):
+    '''Converts the input unit string into its length in A.U.'''
+    if isinstance(unit, str):
+        if is_au(unit):
+            unit = 1.
+        else:
+            unit = 1/param.BOHR
+    else:
+        unit = 1./unit
+    return unit
+
 #
 # MoleBase handles three layers of basis data: input, internal format, libcint arguments.
 # The relationship of the three layers are
@@ -3108,11 +3112,13 @@ class MoleBase(lib.StreamObject):
             mol = self.copy(deep=False)
             mol._env = mol._env.copy()
 
-        if unit is not None and self.unit != unit:
-            logger.warn(mol, 'Mole.unit (%s) is changed to %s', self.unit, unit)
-            mol.unit = unit
+        if unit is None:
+            _unit = mol.unit
         else:
-            unit = mol.unit
+            _unit = _length_in_au(unit)
+            if _unit != _length_in_au(self.unit):
+                logger.warn(mol, 'Mole.unit (%s) is changed to %s', self.unit, unit)
+                mol.unit = unit
 
         if symmetry is None:
             symmetry = mol.symmetry
@@ -3124,20 +3130,13 @@ class MoleBase(lib.StreamObject):
             mol.atom = atoms_or_coords
 
         if isinstance(atoms_or_coords, numpy.ndarray) and not symmetry:
-            if isinstance(unit, str):
-                if is_au(unit):
-                    unit = 1.
-                else:
-                    unit = 1./param.BOHR
-            else:
-                unit = 1./unit
-
+            _unit = _length_in_au(mol.unit)
             mol._atom = list(zip([x[0] for x in mol._atom],
-                                 (atoms_or_coords * unit).tolist()))
+                                 (atoms_or_coords * _unit).tolist()))
             ptr = mol._atm[:,PTR_COORD]
-            mol._env[ptr+0] = unit * atoms_or_coords[:,0]
-            mol._env[ptr+1] = unit * atoms_or_coords[:,1]
-            mol._env[ptr+2] = unit * atoms_or_coords[:,2]
+            mol._env[ptr+0] = _unit * atoms_or_coords[:,0]
+            mol._env[ptr+1] = _unit * atoms_or_coords[:,1]
+            mol._env[ptr+2] = _unit * atoms_or_coords[:,2]
             # reset nuclear energy
             mol.enuc = None
         else:
@@ -3814,7 +3813,12 @@ class Mole(MoleBase):
                 break
         else:
             if 'TD' in key[:3]:
-                if key in ('TDHF', 'TDA'):
+                if 'TDA' in key:
+                    if key == 'dTDA':
+                        mf_method = dft.KS
+                    else:
+                        mf_method = 'SCF_TO_BE_DETERMINED'
+                elif 'TDHF' in key:
                     mf_method = scf.HF
                 else:
                     mf_method = dft.KS
@@ -3822,6 +3826,8 @@ class Mole(MoleBase):
                     if xc in dft.XC:
                         mf_xc = xc
                         key = 'TDDFT'
+                    elif 'TDDFT' not in key:
+                        raise AttributeError(f'method {key} not supported')
             elif 'CI' in key or 'CC' in key or 'CAS' in key or 'MP' in key:
                 mf_method = scf.HF
             else:
@@ -3842,11 +3848,17 @@ class Mole(MoleBase):
                     mf_kw[k] = v
                 else:
                     remaining_kw[k] = v
-            mf = mf_method(self, **mf_kw)
+            if mf_method == 'SCF_TO_BE_DETERMINED':
+                if 'xc' in mf_kw:
+                    mf = dft.KS(self, **mf_kw)
+                else:
+                    mf = scf.HF(self, **mf_kw)
+            else:
+                mf = mf_method(self, **mf_kw)
 
             if post_mf_key is None:
                 if args:
-                    raise RuntimeError(
+                    raise AttributeError(
                         f'mol.{attr_name} function does not support positional arguments')
                 return mf.set(**remaining_kw)
 
@@ -3953,6 +3965,10 @@ class Mole(MoleBase):
         cell.dimension = dimension
         cell.build(False, False)
         return cell
+
+    def to_gpu(self):
+        from gpu4pyscf.gto.mole import Mole
+        return Mole.from_cpu(self)
 
 def _parse_default_basis(basis, uniq_atoms):
     if isinstance(basis, (str, tuple, list)):
@@ -4310,7 +4326,7 @@ def bse_predefined_ecp(basis_name, elements):
     pyscf_basis_alias = basis._format_basis_name(basis_name).lower()
     basis_meta = BSE_META.get(pyscf_basis_alias)
     if basis_meta:
-        if isinstance(elements, str):
+        if isinstance(elements, (str, int)):
             elements = [elements]
         ecp_elements = basis_meta[1]
         if ecp_elements:
