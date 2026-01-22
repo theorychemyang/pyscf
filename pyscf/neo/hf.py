@@ -387,6 +387,7 @@ class ComponentSCF(Component):
                 nmo = mo_energy.size
                 nocc = 1 # singly occupied nuclear orbital
                 mo_occ[e_idx[self.nuc_occ_state]] = self.mol.nnuc # 1 or fractional
+                assert nocc <= nmo
                 if self.verbose >= logger.INFO and nocc < nmo:
                     if e_sort[nocc-1]+1e-3 > e_sort[nocc]:
                         logger.warn(self, 'CNEO NUC HOMO %.15g == LUMO %.15g',
@@ -423,6 +424,9 @@ class ComponentSCF(Component):
                     mo_occ[1,e_idx_b[:n_b - 1]] = 1
                     mo_occ[1,e_idx_b[n_b - 1]] = self.mol.nhomo
                     mo_occ[0,e_idx_a[:n_a]] = 1
+                if n_a > nmo or n_b > nmo:
+                    raise RuntimeError('Failed to assign mo_occ. '
+                                       f'nelec ({n_a}, {n_b}) > Nmo ({nmo})')
                 if self.verbose >= logger.INFO and n_a < nmo and n_b > 0 and n_b < nmo:
                     if e_sort_a[n_a-1]+1e-3 > e_sort_a[n_a]:
                         logger.warn(self, 'alpha nocc = %d  HOMO %.15g >= LUMO %.15g',
@@ -867,6 +871,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             scf_conv = mf.check_convergence(locals())
         elif abs(e_tot-last_hf_e) < conv_tol and norm_gorb['e'] < conv_tol_grad:
             scf_conv = True
+        else:
+            scf_conv = False
 
         if dump_chk and mf.chkfile:
             mf.dump_chk(locals())

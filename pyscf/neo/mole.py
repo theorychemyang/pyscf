@@ -11,7 +11,7 @@ import re
 import sys
 import warnings
 from pyscf import gto
-from pyscf.gto.mole import DUMPINPUT, ARGPARSE
+from pyscf.gto.mole import DUMPINPUT, ARGPARSE, _length_in_au
 from pyscf.data import nist
 from pyscf.lib import logger, param
 from pyscf.lib.exceptions import PointGroupSymmetryError
@@ -723,9 +723,12 @@ class Mole(gto.Mole):
         # then set_geom_ for the base mole
         # copied from gto.mole.Mole.set_geom_
         if unit is None:
-            unit = mol.unit
+            _unit = mol.unit
         else:
-            mol.unit = unit
+            _unit = _length_in_au(unit)
+            if _unit != _length_in_au(self.unit):
+                logger.warn(mol, 'Mole.unit (%s) is changed to %s', self.unit, unit)
+                mol.unit = unit
         if symmetry is None:
             symmetry = mol.symmetry
 
@@ -736,20 +739,13 @@ class Mole(gto.Mole):
             mol.atom = atoms_or_coords
 
         if isinstance(atoms_or_coords, numpy.ndarray) and not symmetry:
-            if isinstance(unit, str):
-                if gto.mole.is_au(unit):
-                    unit = 1.
-                else:
-                    unit = 1./param.BOHR
-            else:
-                unit = 1./unit
-
+            _unit = _length_in_au(mol.unit)
             mol._atom = list(zip([x[0] for x in mol._atom],
-                                 (atoms_or_coords * unit).tolist()))
+                                 (atoms_or_coords * _unit).tolist()))
             ptr = mol._atm[:, gto.PTR_COORD]
-            mol._env[ptr+0] = unit * atoms_or_coords[:,0]
-            mol._env[ptr+1] = unit * atoms_or_coords[:,1]
-            mol._env[ptr+2] = unit * atoms_or_coords[:,2]
+            mol._env[ptr+0] = _unit * atoms_or_coords[:,0]
+            mol._env[ptr+1] = _unit * atoms_or_coords[:,1]
+            mol._env[ptr+2] = _unit * atoms_or_coords[:,2]
         else:
             mol.symmetry = False
             gto.Mole.build(mol, dump_input=False, parse_arg=False)
@@ -764,6 +760,6 @@ class Mole(gto.Mole):
                 coordb = tuple([x for x in atom[1]])
                 coords = coorda + coordb
                 logger.info(mol, ' %3d %-4s %16.12f %16.12f %16.12f AA  '
-                            '%16.12f %16.12f %16.12f Bohr\n',
+                            '%16.12f %16.12f %16.12f Bohr',
                             ia+1, mol.atom_symbol(ia), *coords)
         return mol
