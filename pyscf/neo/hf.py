@@ -4,7 +4,6 @@
 Nuclear Electronic Orbital Hartree-Fock (NEO-HF)
 '''
 
-import copy
 import ctypes
 import h5py
 import numpy
@@ -228,6 +227,7 @@ def general_scf(method, charge=1, mass=1, is_nucleus=False, nuc_occ_state=0):
         method.mass = mass
         method.is_nucleus = is_nucleus
         method.nuc_occ_state = nuc_occ_state
+        method._vint = None
         return method
     return lib.set_class(ComponentSCF(method, charge, mass, is_nucleus, nuc_occ_state),
                          (ComponentSCF, method.__class__))
@@ -1501,6 +1501,26 @@ class HF(scf.hf.SCF):
         raise NotImplementedError
 
     as_scanner = as_scanner
+
+    def copy(self):
+        '''Shallow copy but special treatment for array/dict that may get in-place mutations'''
+        new = super().copy() # shallow copy
+
+        # Rebind attributes that will get in-place mutations
+        if hasattr(self, 'f') and self.f is not None:
+            new.f = numpy.array(self.f, copy=True)
+
+        new.components = {}
+        for t, comp in self.components.items():
+            new.components[t] = general_scf(comp.undo_component().copy(),
+                                            charge=comp.charge,
+                                            mass=comp.mass,
+                                            is_nucleus=comp.is_nucleus,
+                                            nuc_occ_state=comp.nuc_occ_state)
+
+        new.interactions = generate_interactions(new.components, InteractionCoulomb,
+                                                 new.max_memory)
+        return new
 
     def reset(self, mol=None):
         '''Reset mol and relevant attributes associated to the old mol object'''

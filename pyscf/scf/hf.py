@@ -2231,6 +2231,13 @@ This is the Gaussian fit version as described in doi:10.1063/5.0004046.''')
 
     as_scanner = as_scanner
 
+    def copy(self):
+        '''Avoid sharing scf_summary across copied objects'''
+        new = super().copy()
+        if hasattr(self, 'scf_summary') and isinstance(self.scf_summary, dict):
+            new.scf_summary = dict(self.scf_summary)
+        return new
+
     def reset(self, mol=None):
         '''Reset mol and relevant attributes associated to the old mol object'''
         if mol is not None:

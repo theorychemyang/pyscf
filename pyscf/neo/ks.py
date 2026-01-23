@@ -4,7 +4,6 @@
 Non-relativistic Kohn-Sham for NEO-DFT
 '''
 
-import copy
 import numpy
 import warnings
 from pyscf import dft, lib, scf
@@ -170,6 +169,7 @@ class InteractionCorrelation(hf.InteractionCoulomb):
         '''Unoptimized implementation that has duplicated electronic part
         calculations if multiple protons are present. The grids are screened
         only for this particular nucleus.'''
+        import copy
         vj = super().get_vint(dm, *args, **kwargs)
         # For nuclear initial guess, use Coulomb only
         if no_epc or \
@@ -401,6 +401,7 @@ class KS(hf.HF):
 
     def get_vint_fast(self, mol=None, dm=None):
         '''Inter-type Coulomb and possible epc'''
+        import copy
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()
 
@@ -557,18 +558,50 @@ class KS(hf.HF):
 
     get_vint = get_vint_fast
 
+    def copy(self):
+        '''Shallow copy but special treatment for array/dict that may get in-place mutations'''
+        new = scf.hf.SCF.copy(self) # shallow copy. Do not call neo.HF.copy
+
+        # Rebind attributes that will get in-place mutations
+        if hasattr(self, 'f') and self.f is not None:
+            new.f = numpy.array(self.f, copy=True)
+
+        new.components = {}
+        for t, comp in self.components.items():
+            new.components[t] = hf.general_scf(comp.undo_component().copy(),
+                                               charge=comp.charge,
+                                               mass=comp.mass,
+                                               is_nucleus=comp.is_nucleus,
+                                               nuc_occ_state=comp.nuc_occ_state)
+
+        new.interactions = hf.generate_interactions(new.components, InteractionCorrelation,
+                                                    new.max_memory, epc=new.epc)
+        # properly link to the new one
+        if isinstance(new.components['e'], scf.hf.KohnShamDFT):
+            new._numint = new.components['e']._numint
+        else:
+            new._numint = None
+        return new
+
     def reset(self, mol=None):
         '''Reset mol and relevant attributes associated to the old mol object'''
-        old_keys = sorted(self.components.keys())
-        super().reset(mol=mol)
-        if old_keys == sorted(self.components.keys()):
-            # reset grids in interactions
+        if mol is not None:
+            self.mol = mol
+        scf.hf.SCF.reset(self, mol=mol) # do not call neo.HF.reset
+        if sorted(self.components.keys()) == sorted(self.mol.components.keys()):
+            # quantum nuc is the same, reset each component
+            for t, comp in self.components.items():
+                comp.reset(self.mol.components[t])
+                comp._vint = None
             for t, comp in self.interactions.items():
+                comp._eri = None
+                # reset grids in interactions
                 comp.grids = None
                 comp._elec_grids_hash = None
                 comp._skip_epc = False
         else:
             # quantum nuc is different, need to rebuild
+            self.components.clear()
             for t, comp in self.mol.components.items():
                 if t.startswith('n'):
                     if self.epc is None:
