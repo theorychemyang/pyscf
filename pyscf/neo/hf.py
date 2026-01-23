@@ -247,6 +247,7 @@ class ComponentSCF(Component):
 
     def undo_component(self):
         obj = lib.view(self, lib.drop_class(self.__class__, Component))
+        del obj.charge, obj.mass, obj.is_nucleus, obj.nuc_occ_state, obj._vint
         return obj
 
     def get_hcore(self, mol=None):
