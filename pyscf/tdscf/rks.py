@@ -34,10 +34,11 @@ from pyscf import __config__
 class TDA(rhf.TDA):
     def Gradients(self):
         if getattr(self._scf, 'with_df', None):
-            logger.warn(self, 'TDDFT Gradients with DF approximation is not available. '
-                        'TDDFT Gradients are computed using exact integrals')
-        from pyscf.grad import tdrks
-        return tdrks.Gradients(self)
+            from pyscf.df.grad import tdrks
+            return tdrks.Gradients(self)
+        else:
+            from pyscf.grad import tdrks
+            return tdrks.Gradients(self)
 
 class TDDFT(rhf.TDHF):
     Gradients = TDA.Gradients

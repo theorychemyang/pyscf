@@ -177,6 +177,30 @@ class KnownValues(unittest.TestCase):
         g1 = mc.nuc_grad_method ().kernel (state=1)
         self.assertAlmostEqual(abs(gref - g1).max(), 0, 4)
 
+    def test_tdrhf_grad(self):
+        mf = mol.RHF.run()
+        tdmf = mf.TDHF()
+        tdmf.kernel()
+        gref = tdmf.Gradients().kernel()
+
+        mf = mol.RHF.density_fit().run()
+        tdmf = mf.TDHF()
+        tdmf.kernel()
+        g1 = tdmf.Gradients().kernel()
+        self.assertAlmostEqual(abs(gref-g1).max(), 0, 4)
+
+    def test_tdrks_grad(self):
+        mf = mol.RKS.run(xc='b3lyp5')
+        tdmf = mf.TDDFT()
+        tdmf.kernel()
+        gref = tdmf.Gradients().kernel()
+
+        mf = mol.RKS.density_fit().run(xc='b3lyp5')
+        tdmf = mf.TDDFT()
+        tdmf.kernel()
+        g1 = tdmf.Gradients().kernel()
+        self.assertAlmostEqual(abs(gref-g1).max(), 0, 4)
+
 if __name__ == "__main__":
     print("Full Tests for df.grad")
     unittest.main()

@@ -160,6 +160,13 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
     if ni.libxc.is_hybrid_xc(mf.xc):
         dm = (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T, dmxmy-dmxmy.T)
         vj, vk = td_grad.get_jk(mol, dm)
+
+        if getattr(td_grad.base._scf, 'with_df', None):
+        # Create local variables for density fitting gradient
+            if not singlet:
+                raise NotImplementedError
+            vhf_aux = vj.aux - vk.aux * 0.5 * hyb
+
         vk *= hyb
         if omega != 0:
             vk += td_grad.get_k(mol, dm, omega=omega) * (alpha-hyb)
@@ -172,6 +179,13 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
             veff1[:2] += vj[:2] * 2
     else:
         vj = td_grad.get_j(mol, (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T))
+
+        if getattr(td_grad.base._scf, 'with_df', None):
+        # Create local variables for density fitting gradient
+            if not singlet:
+                raise NotImplementedError
+            vhf_aux = vj.aux
+
         vj = vj.reshape(-1,3,nao,nao)
         veff1 = numpy.zeros((4,3,nao,nao))
         if singlet:

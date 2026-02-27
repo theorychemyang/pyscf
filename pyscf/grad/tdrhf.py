@@ -128,6 +128,13 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
     oo0 = reduce(numpy.dot, (orbo, orbo.T))
     vj, vk = td_grad.get_jk(mol, (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T,
                                   dmxmy-dmxmy.T))
+
+    if getattr(td_grad.base._scf, 'with_df', None):
+        # Create local variables for density fitting gradient
+        if not singlet:
+            raise NotImplementedError
+        vhf_aux = vj.aux - vk.aux * 0.5
+
     vj = vj.reshape(-1,3,nao,nao)
     vk = vk.reshape(-1,3,nao,nao)
     vhf1 = -vk
@@ -258,8 +265,6 @@ class Gradients(rhf_grad.GradientsBase):
         self.atmlst = None
         self.de = None
 
-        if getattr(td._scf, 'with_df', None):
-            raise NotImplementedError('Nuclear Gradients for DF-TDDFT')
 
     def dump_flags(self, verbose=None):
         log = logger.new_logger(self, verbose)
