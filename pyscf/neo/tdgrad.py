@@ -254,6 +254,12 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
     if mf.xc_e.upper() == 'HF':
         vj, vk = td_grad_e.get_jk(mol_e, (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T,
                                   dmxmy-dmxmy.T))
+        if getattr(mf_e, 'with_df', None):
+            # Create local variables for density fitting gradient
+            if not singlet:
+                raise NotImplementedError
+            vhf_aux = vj.aux - vk.aux * 0.5
+
         vj = vj.reshape(-1,3,nao_e,nao_e)
         vk = vk.reshape(-1,3,nao_e,nao_e)
         veff1 = -vk
@@ -267,6 +273,13 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
         if ni.libxc.is_hybrid_xc(mf_e.xc):
             dm = (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T, dmxmy-dmxmy.T)
             vj, vk = td_grad_e.get_jk(mol_e, dm)
+
+            if getattr(mf_e, 'with_df', None):
+            # Create local variables for density fitting gradient
+                if not singlet:
+                    raise NotImplementedError
+                vhf_aux = vj.aux - vk.aux * 0.5 * hyb
+
             vk *= hyb
             if omega != 0:
                 vk += td_grad_e.get_k(mol_e, dm, omega=omega) * (alpha-hyb)
@@ -279,6 +292,13 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
                 veff1[:2] += vj[:2] * 2
         else:
             vj = td_grad_e.get_j(mol_e, (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T))
+
+            if getattr(mf_e, 'with_df', None):
+            # Create local variables for density fitting gradient
+                if not singlet:
+                    raise NotImplementedError
+                vhf_aux = vj.aux
+
             vj = vj.reshape(-1,3,nao_e,nao_e)
             veff1 = numpy.zeros((4,3,nao_e,nao_e))
             if singlet:
@@ -676,7 +696,7 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
 
     if mf.xc_e.upper() == 'HF':
         vj, vk = td_grad_e.get_jk(mol, (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
-                                  oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T))
+                                oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T))
         vj = vj.reshape(2,4,3,nao_e,nao_e)
         vk = vk.reshape(2,4,3,nao_e,nao_e)
         veff1a, veff1b = vj[0] + vj[1] - vk
@@ -890,4 +910,4 @@ class Gradients(tdrhf.Gradients):
     as_scanner = as_scanner
 
 Grad = Gradients
-neo.ctddft.CTDDirect.Gradients = neo.ctddft.CTDDFT.Gradients = lib.class_as_method(Gradients)
+# neo.ctddft.CTDDirect.Gradients = neo.ctddft.CTDDFT.Gradients = lib.class_as_method(Gradients)

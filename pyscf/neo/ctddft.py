@@ -1,7 +1,7 @@
 '''Cneo TDDFT with frozen orbital assumption'''
 
 from pyscf.neo import tddft_slow
-from pyscf import neo, lib, tdscf
+from pyscf import neo, lib, tdscf, scf
 from pyscf.tdscf._lr_eig import eig as lr_eig, real_eig
 from pyscf.tdscf import rhf, TDDFT
 from pyscf.lib import logger
@@ -105,9 +105,15 @@ class CTDDirect(rhf.TDBase):
 
         return self.e, self.xy
 
-    def nuc_grad_method(self):
-        from pyscf.neo import tdgrad
-        return tdgrad.Gradients(self)
+    def Gradients(self):
+        if getattr(self._scf.components['e'], 'with_df', None):
+            if isinstance(self._scf.components['e'], scf.uhf.UHF):
+                raise NotImplementedError('Gradient of unrestricted density fitting CNEO-TDDFT')
+            from pyscf.neo import df_tdgrad
+            return df_tdgrad.Gradients(self)
+        else:
+            from pyscf.neo import tdgrad
+            return tdgrad.Gradients(self)
 
 
 class CTDDFT(CTDDirect):

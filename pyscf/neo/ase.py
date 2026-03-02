@@ -228,13 +228,13 @@ class Pyscf_TDNEO(Pyscf_NEO):
     def create_tdmf(self, mol):
         mf = self.create_mf(mol)
         if self.is_davidson:
-            td_mf = ctddft.CTDDFT(mf)
+            td_mf = mf.TDDFT()
             td_mf.nstates = self.nstates
         else:
-            td_mf = ctddft.CTDDirect(mf)
+            td_mf = mf.TDDirect()
             td_mf.nstates = self.nstates
 
-        td_grad = tdgrad.Gradients(td_mf)
+        td_grad = td_mf.Gradients()
         td_grad.state = self.state
 
         return td_mf, td_grad
