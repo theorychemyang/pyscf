@@ -338,6 +338,11 @@ class DFE(df.DF):
             log.timer_debug1('Generate density fitting integrals', *t0)
         return self
 
+    def reset(self, mol=None):
+        super().reset(mol)
+        self._low = None # clear _low to avoid reusing wrong _low in rsh_df
+        return self
+
 class _DFNEO:
     __name_mixin__ = 'DF'
 

@@ -10,6 +10,12 @@ class KnownValues(unittest.TestCase):
         mf = neo.KS(mol, xc='b3lyp5', epc='17-2').density_fit(auxbasis='cc-pVTZ-JKFIT')
         self.assertAlmostEqual(mf.scf(), -93.3670499232414, 4)
 
+    def test_scf_rsh(self):
+        mol = neo.M(atom='''H 0 0 0; C 0 0 1.064; N 0 0 2.220''', basis='ccpvdz',
+                    quantum_nuc=[0])
+        mf = neo.KS(mol, xc='camb3lyp').density_fit(auxbasis='cc-pVTZ-JKFIT')
+        self.assertAlmostEqual(mf.scf(), -93.34261097393602, 4)
+
     def test_grad_cdft(self):
         mol = neo.M(atom='''H 0 0 0; F 0 0 0.94''', basis='ccpvdz',
                     quantum_nuc=[0])
