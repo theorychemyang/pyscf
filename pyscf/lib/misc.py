@@ -91,7 +91,7 @@ c_double_p = ctypes.POINTER(ctypes.c_double)
 c_int_p = ctypes.POINTER(ctypes.c_int)
 c_null_ptr = ctypes.POINTER(ctypes.c_void_p)
 
-@functools.lru_cache
+@functools.lru_cache(128)
 def load_library(libname):
     try:
         _loaderpath = os.path.dirname(__file__)
@@ -1216,8 +1216,9 @@ class H5TmpFile(H5FileWrap):
     >>> ftmp = lib.H5TmpFile()
     '''
     def __init__(self, filename=None, mode='a', prefix='', suffix='',
-                 dir=param.TMPDIR, *args, **kwargs):
+                 dir=None, *args, **kwargs):
         self.delete_on_close = False
+        dir = dir or param.TMPDIR
         if filename is None:
             filename = H5TmpFile._gen_unique_name(dir, pre=prefix, suf=suffix)
             self.delete_on_close = True
@@ -1542,22 +1543,18 @@ def to_gpu(method, out=None):
 
         from importlib import import_module
         mod = import_module(method.__module__.replace('pyscf', 'gpu4pyscf'))
-        try:
-            cls = getattr(mod, method.__class__.__name__)
-        except AttributeError:
-            if hasattr(cls, 'from_cpu'):
-                # the customized to_gpu function can be accessed at module
-                # levelin gpu4pyscf.
-                return cls.from_cpu(method)
-            raise
-
-        # Allow gpu4pyscf to customize the to_gpu method for PySCF classes.
         if hasattr(mod, 'from_cpu'):
+            # the customized to_gpu function can be accessed at module
+            # levelin gpu4pyscf.
             return mod.from_cpu(method)
 
         # A temporary GPU instance. This ensures to initialize private
         # attributes that are only available for GPU code.
         cls = getattr(mod, method.__class__.__name__)
+        # Allow gpu4pyscf to customize the to_gpu method for PySCF classes.
+        if hasattr(cls, 'from_cpu'):
+            return cls.from_cpu(method)
+
         out = method.view(cls)
 
     elif hasattr(out, 'from_cpu'):

@@ -12,7 +12,7 @@ import sys
 import warnings
 from pyscf import gto
 from pyscf.gto.mole import DUMPINPUT, ARGPARSE, _length_in_au
-from pyscf.data import nist
+from pyscf.data import nist, elements
 from pyscf.lib import logger, param
 from pyscf.lib.exceptions import PointGroupSymmetryError
 
@@ -318,7 +318,7 @@ class Mole(gto.Mole):
         '''Initialize nuclear masses including special isotopes'''
         if self.mass is None:
             # Use the most common isotope mass, not isotope_avg mass for quantum nuclei
-            mass_commom = self.atom_mass_list(common=True)
+            mass_commom = self.atom_mass_list(mass_table=elements.COMMON_ISOTOPE_MASSES)
             self.mass = self.atom_mass_list(isotope_avg=True)
             for i in range(self.natm):
                 if 'H+' in self.atom_symbol(i): # Deuterium (from Wikipedia)

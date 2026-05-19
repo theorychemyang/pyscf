@@ -846,10 +846,11 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, vint=None, dm=None, cycle=-1,
 
 def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
            dump_chk=True, dm0=None, callback=None, conv_check=True, **kwargs):
-    cput0 = (logger.process_clock(), logger.perf_counter())
+    log = logger.new_logger(mf)
+    cput0 = log.init_timer()
     if conv_tol_grad is None:
         conv_tol_grad = numpy.sqrt(conv_tol)
-        logger.info(mf, 'Set gradient conv threshold to %g', conv_tol_grad)
+        log.info('Set gradient conv threshold to %g', conv_tol_grad)
 
     mol = mf.mol
     s1e = mf.get_ovlp(mol)
@@ -863,7 +864,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     vint = mf.get_vint(mol, dm)
     vhf = mf.get_veff(mol, dm)
     e_tot = mf.energy_tot(dm, h1e, vhf, vint)
-    logger.info(mf, 'init E= %.15g', e_tot)
+    log.info('init E= %.15g', e_tot)
+    x_orth = mf.check_linear_dependency(s1e, log)
 
     scf_conv = False
     mo_energy = mo_coeff = mo_occ = None
@@ -871,7 +873,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     # Skip SCF iterations. Compute only the total energy of the initial density
     if mf.max_cycle <= 0:
         fock = mf.get_fock(h1e, s1e, vhf, vint, dm)  # = h1e + vhf + vint, no DIIS
-        mo_energy, mo_coeff = mf.eig(fock, s1e)
+        mo_energy, mo_coeff = mf.eig(fock, s1e, overwrite=True, x=x_orth)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         return scf_conv, e_tot, mo_energy, mo_coeff, mo_occ
 
@@ -883,12 +885,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mf_diis.space = mf.diis_space
         mf_diis.rollback = mf.diis_space_rollback
         mf_diis.damp = mf.diis_damp
-
-        # We get the used orthonormalized AO basis from any old eigendecomposition.
-        # Since the ingredients for the Fock matrix has already been built, we can
-        # just go ahead and use it to determine the orthonormal basis vectors.
-        fock = mf.get_fock(h1e, s1e, vhf, vint, dm)
-        _, mf_diis.Corth = mf.eig(fock, s1e)
+        mf_diis.Corth = x_orth
     else:
         mf_diis = None
 
@@ -906,14 +903,14 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     mf.pre_kernel(locals())
 
     fock_last = None
-    cput1 = logger.timer(mf, 'initialize scf', *cput0)
+    cput1 = log.timer('initialize scf', *cput0)
     mf.cycles = 0
     for cycle in range(mf.max_cycle):
         dm_last = dm
         last_hf_e = e_tot
 
         fock = mf.get_fock(h1e, s1e, vhf, vint, dm, cycle, mf_diis, fock_last=fock_last)
-        mo_energy, mo_coeff = mf.eig(fock, s1e)
+        mo_energy, mo_coeff = mf.eig(fock, s1e, x=x_orth)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         dm = mf.make_rdm1(mo_coeff, mo_occ)
         vint = mf.get_vint(mol, dm)
@@ -934,12 +931,11 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         norm_ddm = {}
         for t in dm.keys():
             norm_ddm[t] = numpy.linalg.norm(dm[t]-dm_last[t])
-        logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g',
-                    cycle+1, e_tot, e_tot-last_hf_e, norm_gorb['e'], norm_ddm['e'])
+        log.info('cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g',
+                 cycle+1, e_tot, e_tot-last_hf_e, norm_gorb['e'], norm_ddm['e'])
         for t in grad.keys():
             if not t.startswith('e'):
-                logger.info(mf, f'    |g_{t}|= %4.3g  |ddm_{t}|= %4.3g',
-                            norm_gorb[t], norm_ddm[t])
+                log.info(f'    |g_{t}|= %4.3g  |ddm_{t}|= %4.3g', norm_gorb[t], norm_ddm[t])
 
         if callable(mf.check_convergence):
             scf_conv = mf.check_convergence(locals())
@@ -954,7 +950,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         if callable(callback):
             callback(locals())
 
-        cput1 = logger.timer(mf, 'cycle= %d'%(cycle+1), *cput1)
+        cput1 = log.timer('cycle= %d'%(cycle+1), *cput1)
 
         if scf_conv:
             break
@@ -963,7 +959,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     if scf_conv and conv_check:
         # An extra diagonalization, to remove level shift
         #fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf
-        mo_energy, mo_coeff = mf.eig(fock, s1e)
+        mo_energy, mo_coeff = mf.eig(fock, s1e, x=x_orth)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         dm, dm_last = mf.make_rdm1(mo_coeff, mo_occ), dm
         vint = mf.get_vint(mol, dm)
@@ -987,16 +983,15 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             scf_conv = mf.check_convergence(locals())
         elif abs(e_tot-last_hf_e) < conv_tol or norm_gorb['e'] < conv_tol_grad:
             scf_conv = True
-        logger.info(mf, 'Extra cycle  E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g',
-                    e_tot, e_tot-last_hf_e, norm_gorb['e'], norm_ddm['e'])
+        log.info('Extra cycle  E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g',
+                 e_tot, e_tot-last_hf_e, norm_gorb['e'], norm_ddm['e'])
         for t in grad.keys():
             if not t.startswith('e'):
-                logger.info(mf, f'    |g_{t}|= %4.3g  |ddm_{t}|= %4.3g',
-                            norm_gorb[t], norm_ddm[t])
+                log.info(f'    |g_{t}|= %4.3g  |ddm_{t}|= %4.3g', norm_gorb[t], norm_ddm[t])
         if dump_chk and mf.chkfile:
             mf.dump_chk(locals())
 
-    logger.timer(mf, 'scf_cycle', *cput0)
+    log.timer('scf_cycle', *cput0)
     # A post-processing hook before return
     mf.post_kernel(locals())
     return scf_conv, e_tot, mo_energy, mo_coeff, mo_occ
@@ -1155,6 +1150,12 @@ class HF(scf.hf.SCF):
                     logger.debug(self, '%.9g    %s', z, coords[i])
         return self
 
+    def check_linear_dependency(self, s, verbose=None):
+        x = {}
+        for t, comp in self.components.items():
+            x[t] = comp.check_linear_dependency(s[t], verbose)
+        return x
+
     def check_sanity(self):
         return self.components['e'].check_sanity()
 
@@ -1162,11 +1163,11 @@ class HF(scf.hf.SCF):
         if mol is None: mol = self.mol
         return self.components['e'].build(mol=mol.components['e'])
 
-    def eig(self, h, s):
+    def eig(self, h, s, overwrite=False, x=None):
         e = {}
         c = {}
         for t, comp in self.components.items():
-            e[t], c[t] = comp.eig(h[t], s[t])
+            e[t], c[t] = comp.eig(h[t], s[t], overwrite=overwrite, x=x[t])
         return e, c
 
     def get_hcore(self, mol=None):
