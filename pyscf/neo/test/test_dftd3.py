@@ -5,7 +5,7 @@ import unittest
 from pyscf import neo, gto, dft, lib
 try:
     from pyscf.dispersion import dftd3
-except ImportError:
+except (ImportError, OSError):
     dftd3 = None
 
 class KnownValues(unittest.TestCase):
