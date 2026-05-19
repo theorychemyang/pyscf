@@ -330,7 +330,7 @@ class TDDirect(lib.StreamObject):
     >>> mf.scf()
     >>> td_mf = tddft_slow.TDDirect(mf)
     >>> td_mf.kernel(nstates=5)
-    Excited State energies (eV)
+    Excitation energies (eV)
     [0.62060056 0.62060056 0.69023232 1.24762232 1.33973627]
     '''
 
@@ -377,5 +377,5 @@ class TDDirect(lib.StreamObject):
         self.xy = _normalize(x1.T, self._scf.mo_occ, log)
 
         log.timer('NEO-TDDFT full diagonalization', *cpu0)
-        logger.note(self, 'Excited State energies (eV)\n%s', self.e * nist.HARTREE2EV)
+        logger.note(self, 'Excitation energies (eV)\n%s', self.e * nist.HARTREE2EV)
         return self.e, self.xy

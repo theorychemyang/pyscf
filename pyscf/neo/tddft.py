@@ -717,7 +717,7 @@ class TDDFT(rhf.TDBase):
     >>> mf.scf()
     >>> td_mf = tddft.TDDFT(mf)
     >>> td_mf.kernel(nstates=5)
-    Excited State energies (eV)
+    Excitation energies (eV)
     [0.62060056 0.62060056 0.69023232 1.24762233 1.33973627]
     '''
 
@@ -741,7 +741,7 @@ class TDDFT(rhf.TDBase):
         if not all(self.converged):
             logger.note(self, 'NEO-TDDFT states %s not converged.',
                         [i for i, x in enumerate(self.converged) if not x])
-        logger.note(self, 'Excited State energies (eV)\n%s', self.e * nist.HARTREE2EV)
+        logger.note(self, 'Excitation energies (eV)\n%s', self.e * nist.HARTREE2EV)
         return self
 
     def kernel(self, x0=None, nstates=None):

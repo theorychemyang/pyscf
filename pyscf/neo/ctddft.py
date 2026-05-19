@@ -67,7 +67,7 @@ class CTDDirect(rhf.TDBase):
     >>> mf.scf()
     >>> td_mf = ctddft.CTDDirect(mf)
     >>> td_mf.kernel(nstates=5)
-    Excited State energies (eV)
+    Excitation energies (eV)
     [ 6.82308887  7.68777851  7.68777851 10.05706016 10.05706016]
     '''
 
@@ -122,7 +122,7 @@ class CTDDFT(CTDDirect):
     >>> mf.scf()
     >>> td_mf = ctddft.CTDDFT(mf)
     >>> td_mf.kernel(nstates=5)
-    Excited State energies (eV)
+    Excitation energies (eV)
     [ 6.82308887  7.68777851  7.68777851 10.05706016 10.05706016]
     '''
 
