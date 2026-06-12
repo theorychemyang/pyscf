@@ -284,48 +284,33 @@ class ComponentSCF(Component):
         else:
             if abs(self.charge) != 1.:
                 raise NotImplementedError('General charge J/K with tag_array')
-            if hasattr(vhf_last, 'vhf'):
-                veff = super().get_veff(mol, dm, dm_last, vhf_last.vhf, hermi)
+            if hasattr(vhf_last, 'vhf_self'):
+                veff = super().get_veff(mol, dm, dm_last, vhf_last.vhf_self,
+                                        hermi)
             else:
                 veff = super().get_veff(mol, dm, dm_last, vhf_last, hermi)
 
-        # Cached Coulomb/epc interaction from other components
-        if self._vint is not None:
-            vhf = veff.view(numpy.ndarray).copy()
+        # Cached Coulomb/epc interaction from other components.  Component-level
+        # stability analysis and response code call get_veff directly.
+        if self._vint is None:
+            if hasattr(mol, 'super_mol'):
+                raise RuntimeError(
+                    'ComponentSCF.get_veff cannot build the multicomponent '
+                    'effective potential without the inter-component cache. '
+                    'Call the parent NEO get_veff first, or pass a complete '
+                    'multicomponent vhf from the parent object.')
+        else:
+            # Save the self-type potential before adding inter-component terms.
+            # Native SCF incremental J/K should see this object as vhf_last,
+            # not the full NEO potential with _vint included.
+            vhf_self = veff.view(numpy.ndarray).copy()
             if hasattr(veff, '__dict__'):
-                vhf = lib.tag_array(vhf, **veff.__dict__)
-
-            if hasattr(veff, 'vj'): # KS
-                exc = veff.exc
-                if hasattr(self._vint, 'vj'): # epc is ON
-                    vj = self._vint.vj
-                    assert hasattr(self._vint, 'exc') and hasattr(veff, 'exc')
-                    exc += self._vint.exc # pass epc correlation energy to exc
-                else: # epc is OFF
-                    vj = self._vint
-
-                # update ecoul
-                if hasattr(veff, 'ecoul') and veff.ecoul is not None:
-                    ecoul = veff.ecoul
-                    if isinstance(self, scf.uhf.UHF):
-                        if not isinstance(dm, numpy.ndarray):
-                            dm = numpy.asarray(dm)
-                        if dm.ndim == 2:  # RHF DM
-                            dm = numpy.repeat(dm[None]*.5, 2, axis=0)
-                        ground_state = (dm.ndim == 3 and dm.shape[0] == 2)
-                        if ground_state:
-                            ecoul += numpy.einsum('ij,ji', dm[0]+dm[1], vj).real * .5
-                    else:
-                        ground_state = (isinstance(dm, numpy.ndarray) and dm.ndim == 2)
-                        if ground_state:
-                            ecoul += numpy.einsum('ij,ji', dm, vj).real * .5
-                # Update overall veff, note that veff is a tag_array!
-                # The update of vj is a bit useless, because ecoul has already been evaluated.
-                veff = lib.tag_array(veff + self._vint, ecoul=ecoul, exc=exc,
-                                     vj=veff.vj+vj, vk=veff.vk, vhf=vhf)
-            else: # HF
-                assert not hasattr(self._vint, 'vj') # Must be KS when epc is enabled
-                veff = lib.tag_array(veff + self._vint, vhf=vhf)
+                vhf_self = lib.tag_array(vhf_self, **veff.__dict__)
+                veff = lib.tag_array(veff + self._vint, **veff.__dict__,
+                                     vhf_self=vhf_self, vint=self._vint)
+            else:
+                veff = lib.tag_array(veff + self._vint, vhf_self=vhf_self,
+                                     vint=self._vint)
         return veff
 
     def get_occ(self, mo_energy=None, mo_coeff=None):
@@ -583,6 +568,8 @@ def _combine_dm(dm1, nao1, dm2, nao2):
 class InteractionCoulomb:
     '''Inter-component Coulomb interactions'''
     def __init__(self, mf1_type, mf1, mf2_type, mf2, max_memory, direct_scf_tol):
+        if isinstance(mf1, scf.rohf.ROHF) or isinstance(mf2, scf.rohf.ROHF):
+            raise NotImplementedError
         self.mf1_type = mf1_type
         self.mf1 = mf1
         self.mf1_unrestricted = isinstance(self.mf1, scf.uhf.UHF)
@@ -615,6 +602,12 @@ class InteractionCoulomb:
         self._vhfopt.set_dm(dms, mol._atm, mol._bas, mol._env)
         self._vhfopt._dmcondname = None # avoid set_dm in get_jk
 
+    def _is_direct_vint(self):
+        mol = self.mol
+        return (self._eri is None and
+                (mol.direct_vee or
+                 not (mol.incore_anyway or self._is_mem_enough())))
+
     def get_vint(self, dm):
         '''Obtain vj for both components'''
         assert isinstance(dm, dict)
@@ -634,8 +627,7 @@ class InteractionCoulomb:
         mol = mol1.super_mol
         assert mol == mol2.super_mol
         vj = {}
-        if (not mol.direct_vee and
-            (self._eri is not None or mol.incore_anyway or self._is_mem_enough())):
+        if not self._is_direct_vint():
             if self._eri is None:
                 if mol.verbose >= logger.DEBUG:
                     cput0 = (logger.process_clock(), logger.perf_counter())
@@ -688,6 +680,101 @@ class InteractionCoulomb:
             vj[self.mf2_type] *= charge_product
         return vj
 
+def _init_vint_full_delta(components, vhf_last=0,
+                          include_last_vint_delta=False):
+    '''Initialize inter-type potential accumulators.
+
+    vint_full stores contributions built from a full density.  vint_delta
+    stores contributions built from a density difference.  The final potential
+    is their sum, but only vint_delta is cached in the vint_inc tag for later
+    incremental updates.  When this cycle adds a density-difference
+    contribution, include_last_vint_delta carries over the previous vint_inc
+    cache before adding the new delta.
+
+    Args:
+        components : iterable of str
+            Component labels to initialize.
+        vhf_last : dict or 0
+            Previous effective potentials.  When requested, the vint_inc tag
+            on each entry is used to initialize vint_delta.
+        include_last_vint_delta : bool
+            Whether to carry over previous vint_inc values into vint_delta.
+
+    Returns:
+        vint_full : dict
+            Zero-initialized full-density inter-type potential accumulators.
+        vint_delta : dict
+            Delta-density inter-type potential accumulators, either initialized
+            from previous vint_inc tags or zero.
+    '''
+    vint_full = {}
+    vint_delta = {}
+    for t in components:
+        vint_full[t] = 0
+        if (include_last_vint_delta and
+                isinstance(vhf_last, dict) and t in vhf_last):
+            vint_delta[t] = getattr(vhf_last[t], 'vint_inc', 0)
+        else:
+            vint_delta[t] = 0
+    return vint_full, vint_delta
+
+def _accumulate_vint(vint_full, vint_delta, v, components,
+                     contribution_is_delta=False, attr=None):
+    '''Add an inter-type potential contribution to full/delta accumulators.
+
+    Args:
+        vint_full : dict
+            Full-density inter-type potential accumulators to be updated
+            in-place.
+        vint_delta : dict
+            Delta-density inter-type potential accumulators to be updated
+            in-place.
+        v : dict
+            Potential contribution for each component.
+        components : iterable of str
+            Component labels to accumulate.
+        contribution_is_delta : bool
+            Whether the contribution was built from a density difference.
+            If False, the contribution is treated as a full-density potential.
+        attr : str or None
+            Optional attribute name to read from each v[t].  This is used when
+            the inter-type contribution is stored as a tag on another potential,
+            such as vj.vint.
+
+    Returns:
+        None
+            The accumulators are modified in-place.
+    '''
+    for t in components:
+        value = getattr(v[t], attr, 0) if attr is not None else v[t]
+        if contribution_is_delta:
+            vint_delta[t] += value
+        else:
+            vint_full[t] += value
+
+def _tag_vint_full_delta(vint_full, vint_delta, components):
+    '''Return full vint arrays tagged with their delta-density part.
+
+    Args:
+        vint_full : dict
+            Full-density inter-type potential accumulators.
+        vint_delta : dict
+            Delta-density inter-type potential accumulators to store in the
+            vint_inc tag.
+        components : iterable of str
+            Component labels to finalize.
+
+    Returns:
+        dict
+            Inter-type potentials for each component.  Each entry is the sum of
+            vint_full and vint_delta, tagged with vint_inc=vint_delta.
+    '''
+    out = {}
+    for t in components:
+        out[t] = lib.tag_array(vint_full[t] + vint_delta[t],
+                               vint_inc=vint_delta[t])
+    return out
+
 def generate_interactions(components, interaction_class, max_memory,
                           direct_scf_tol, **kwagrs):
     keys = sorted(components.keys())
@@ -705,18 +792,15 @@ def generate_interactions(components, interaction_class, max_memory,
 
     return interactions
 
-def get_fock(mf, h1e=None, s1e=None, vhf=None, vint=None, dm=None, cycle=-1,
+def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
              diis=None, diis_start_cycle=None, level_shift_factor=None,
              damp_factor=None, fock_last=None, diis_pos='both', diis_type=3):
     if h1e is None: h1e = mf.get_hcore()
     if dm is None: dm = mf.make_rdm1()
-    if vint is None:
-        vint = mf.get_vint(mf.mol, dm)
-        vhf = mf.get_veff(mf.mol, dm) # update vhf because vhf relies on _vint
     if vhf is None: vhf = mf.get_veff(mf.mol, dm)
     f = {}
     for t, comp in mf.components.items():
-        f[t] = numpy.asarray(h1e[t]) + vhf[t] + numpy.asarray(vint[t])
+        f[t] = numpy.asarray(h1e[t]) + vhf[t]
         if not t.startswith('n') and isinstance(comp, scf.uhf.UHF) and f[t].ndim == 2:
             f[t] = numpy.asarray((f[t],) * 2)
 
@@ -861,9 +945,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         dm = mf.get_init_guess(mol, dm0, **kwargs)
 
     h1e = mf.get_hcore(mol)
-    vint = mf.get_vint(mol, dm)
     vhf = mf.get_veff(mol, dm)
-    e_tot = mf.energy_tot(dm, h1e, vhf, vint)
+    e_tot = mf.energy_tot(dm, h1e, vhf)
     log.info('init E= %.15g', e_tot)
     x_orth = mf.check_linear_dependency(s1e, log)
 
@@ -872,7 +955,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
 
     # Skip SCF iterations. Compute only the total energy of the initial density
     if mf.max_cycle <= 0:
-        fock = mf.get_fock(h1e, s1e, vhf, vint, dm)  # = h1e + vhf + vint, no DIIS
+        fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf, no DIIS
         mo_energy, mo_coeff = mf.eig(fock, s1e, overwrite=True, x=x_orth)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         return scf_conv, e_tot, mo_energy, mo_coeff, mo_occ
@@ -909,19 +992,18 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         dm_last = dm
         last_hf_e = e_tot
 
-        fock = mf.get_fock(h1e, s1e, vhf, vint, dm, cycle, mf_diis, fock_last=fock_last)
+        fock = mf.get_fock(h1e, s1e, vhf, dm, cycle, mf_diis, fock_last=fock_last)
         mo_energy, mo_coeff = mf.eig(fock, s1e, x=x_orth)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         dm = mf.make_rdm1(mo_coeff, mo_occ)
-        vint = mf.get_vint(mol, dm)
         vhf = mf.get_veff(mol, dm, dm_last, vhf)
-        e_tot = mf.energy_tot(dm, h1e, vhf, vint)
+        e_tot = mf.energy_tot(dm, h1e, vhf)
 
-        # Here Fock matrix is h1e + vhf + vint, without DIIS.  Calling get_fock
+        # Here Fock matrix is h1e + vhf, without DIIS.  Calling get_fock
         # instead of the statement "fock = h1e + vhf" because Fock matrix may
         # be modified in some methods.
         fock_last = fock
-        fock = mf.get_fock(h1e, s1e, vhf, vint, dm)  # = h1e + vhf + vint, no DIIS
+        fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf, no DIIS
         grad = mf.get_grad(mo_coeff, mo_occ, fock)
         norm_gorb = {}
         for t in grad.keys():
@@ -962,11 +1044,10 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mo_energy, mo_coeff = mf.eig(fock, s1e, x=x_orth)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         dm, dm_last = mf.make_rdm1(mo_coeff, mo_occ), dm
-        vint = mf.get_vint(mol, dm)
         vhf = mf.get_veff(mol, dm, dm_last, vhf)
-        e_tot, last_hf_e = mf.energy_tot(dm, h1e, vhf, vint), e_tot
+        e_tot, last_hf_e = mf.energy_tot(dm, h1e, vhf), e_tot
 
-        fock = mf.get_fock(h1e, s1e, vhf, vint, dm)
+        fock = mf.get_fock(h1e, s1e, vhf, dm)
         grad = mf.get_grad(mo_coeff, mo_occ, fock)
         norm_gorb = {}
         for t in grad.keys():
@@ -1030,6 +1111,7 @@ class HF(scf.hf.SCF):
                         mf = scf.UHF(comp)
                     else:
                         mf = scf.RHF(comp)
+                    # TODO: ROHF?
                 charge = 1.
                 if t.startswith('p'):
                     charge = -1.
@@ -1277,12 +1359,9 @@ class HF(scf.hf.SCF):
             dm2[t] = comp.make_rdm2(coeff, occ, **kwargs)
         return dm2
 
-    def energy_elec(self, dm=None, h1e=None, vhf=None, vint=None):
+    def energy_elec(self, dm=None, h1e=None, vhf=None):
         if dm is None: dm = self.make_rdm1()
         if h1e is None: h1e = self.get_hcore()
-        if vint is None:
-            vint = self.get_vint(self.mol, dm) # call this to update _vint in vhf
-            vhf = self.get_veff(self.mol, dm)
         if vhf is None: vhf = self.get_veff(self.mol, dm)
         self.scf_summary['e1'] = 0
         self.scf_summary['e2'] = 0
@@ -1298,11 +1377,11 @@ class HF(scf.hf.SCF):
             self.scf_summary['e2'] += comp.scf_summary['e2']
         return e_elec, e_coul
 
-    def energy_tot(self, dm=None, h1e=None, vhf=None, vint=None):
+    def energy_tot(self, dm=None, h1e=None, vhf=None):
         nuc = self.energy_nuc()
         self.scf_summary['nuc'] = nuc.real
 
-        e_tot = self.energy_elec(dm, h1e, vhf, vint)[0] + nuc
+        e_tot = self.energy_elec(dm, h1e, vhf)[0] + nuc
         if self.disp is not None:
             self.components['e'].disp = self.disp
         if self.components['e'].do_disp():
@@ -1454,29 +1533,79 @@ class HF(scf.hf.SCF):
         '''Self-type JK'''
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()
+        vint = self._get_vint(mol, dm, dm_last, vhf_last)
         vhf = {}
         for t, comp in self.components.items():
-            dm_last_t = dm_last.get(t, 0) if isinstance(dm_last, dict) else 0
-            vhf_last_t = vhf_last.get(t, 0) if isinstance(vhf_last, dict) else 0
-            vhf[t] = comp.get_veff(mol.components[t], dm[t], dm_last_t, vhf_last_t, hermi)
+            dm_last_t = dm_last[t] if isinstance(dm_last, dict) else 0
+            vhf_last_t = vhf_last[t] if isinstance(vhf_last, dict) else 0
+            vint_coul = vint[t].vj if hasattr(vint[t], 'vj') else vint[t]
+            vint_exc = vint[t].exc if hasattr(vint[t], 'exc') else 0
+            vint_inc = getattr(vint[t], 'vint_inc', 0)
+            comp._vint = numpy.asarray(vint[t])
+            vhf[t] = comp.get_veff(mol.components[t], dm[t], dm_last_t,
+                                   vhf_last_t, hermi)
+            if hasattr(vhf[t], 'vj'):
+                vhf_self = vhf[t].vhf_self
+                # pass epc correlation energy to exc
+                exc = vhf_self.exc + vint_exc
+                ecoul = vhf_self.ecoul
+                # update ecoul
+                if ecoul is not None:
+                    dm_t = dm[t]
+                    if isinstance(comp, scf.uhf.UHF):
+                        if not isinstance(dm_t, numpy.ndarray):
+                            dm_t = numpy.asarray(dm_t)
+                        if dm_t.ndim == 2:  # RHF DM
+                            dm_t = numpy.repeat(dm_t[None]*.5, 2, axis=0)
+                        ground_state = (dm_t.ndim == 3 and dm_t.shape[0] == 2)
+                        if ground_state:
+                            ecoul += numpy.einsum('ij,ji', dm_t[0]+dm_t[1],
+                                                  vint_coul).real * .5
+                    else:
+                        ground_state = (isinstance(dm_t, numpy.ndarray) and
+                                        dm_t.ndim == 2)
+                        if ground_state:
+                            ecoul += numpy.einsum('ij,ji', dm_t,
+                                                  vint_coul).real * .5
+                # Update overall veff tags. The update of vj is a bit useless,
+                # because ecoul has already been evaluated.
+                vhf[t] = lib.tag_array(vhf[t], ecoul=ecoul, exc=exc,
+                                       vj=vhf_self.vj+vint_coul,
+                                       vk=vhf_self.vk,
+                                       vhf_self=vhf_self, vint=comp._vint,
+                                       vint_inc=vint_inc)
+            else:
+                tags = vhf[t].__dict__.copy()
+                tags['vint_inc'] = vint_inc
+                vhf[t] = lib.tag_array(vhf[t], **tags)
         return vhf
 
-    def get_vint(self, mol=None, dm=None, **kwargs):
+    def _get_vint(self, mol=None, dm=None, dm_last=0, vhf_last=0, **kwargs):
         '''Inter-type Coulomb'''
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()
-        vint = {}
-        for t in self.components.keys():
-            vint[t] = 0
+        incremental_j = (
+            self.direct_scf and
+            isinstance(dm_last, dict) and isinstance(vhf_last, dict) and
+            all(t in vhf_last and hasattr(vhf_last[t], 'vint_inc')
+                for t in self.components))
+        vint_full, vint_delta = _init_vint_full_delta(self.components,
+                                                      vhf_last,
+                                                      incremental_j)
+        if incremental_j:
+            ddm = {}
+            for t, dm_ in dm.items():
+                dm_ = numpy.asarray(dm_)
+                dm_last_ = numpy.asarray(dm_last[t])
+                assert dm_last_.ndim == 0 or dm_last_.ndim == dm_.ndim
+                ddm[t] = dm_ - dm_last_
         for t_pair, interaction in self.interactions.items():
-            v = interaction.get_vint(dm, **kwargs)
-            for t in t_pair:
-                vint[t] += v[t]
-        # Transfer vj to vint cache
-        for t in self.components.keys():
-            self.components[t]._vint = vint[t]
-            vint[t] = 0
-        return vint
+            incremental_vint = interaction._is_direct_vint()
+            v = interaction.get_vint(ddm if incremental_vint and incremental_j
+                                     else dm, **kwargs)
+            _accumulate_vint(vint_full, vint_delta, v, t_pair,
+                             incremental_vint)
+        return _tag_vint_full_delta(vint_full, vint_delta, self.components)
 
     def mulliken_pop(self, mol=None, dm=None, s=None, verbose=logger.DEBUG):
         # Electronic only

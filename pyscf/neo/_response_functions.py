@@ -47,7 +47,7 @@ def _gen_neo_response(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=None, 
         # Process each interaction
         for (t1, t2), interaction in mf.interactions.items():
             if isinstance(mf, neo.KS):
-                vint = interaction.get_vint(dm1, no_epc=no_epc)
+                vint = interaction.get_vint(dm1, coulomb_only=no_epc)
             else:
                 vint = interaction.get_vint(dm1)
             v1[t1] = v1.get(t1, 0) + vint[t1]

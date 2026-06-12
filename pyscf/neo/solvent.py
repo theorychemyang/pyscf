@@ -181,7 +181,7 @@ def _for_scf_neo(mf, solvent_obj, dm=None):
         # SCF.get_hcore may lead error.
 
         # Same signature as in neo.hf
-        def get_fock(self, h1e=None, s1e=None, vhf=None, vint=None, dm=None, cycle=-1,
+        def get_fock(self, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
                      diis=None, diis_start_cycle=None, level_shift_factor=None,
                      damp_factor=None, fock_last=None, diis_pos='both', diis_type=3):
             # DIIS was called inside oldMF.get_fock. v_solvent, as a function of
@@ -198,14 +198,14 @@ def _for_scf_neo(mf, solvent_obj, dm=None):
                 ia = self.mol.nuc[i].atom_index
                 vhf_copy[f'n{ia}'] -= vpcm[i+1]
 
-            return oldMF.get_fock(self, h1e, s1e, vhf_copy, vint, dm, cycle, diis,
+            return oldMF.get_fock(self, h1e, s1e, vhf_copy, dm, cycle, diis,
                                   diis_start_cycle, level_shift_factor, damp_factor,
                                   fock_last, diis_pos, diis_type)
 
 
-        def energy_tot(self, dm=None, h1e=None, vhf=None, vint=None):
+        def energy_tot(self, dm=None, h1e=None, vhf=None):
             'add solvation energy to total energy'
-            return self.e_solvent + oldMF.energy_tot(self, dm, h1e, vhf, vint)
+            return self.e_solvent + oldMF.energy_tot(self, dm, h1e, vhf)
 
         def nuc_grad_method(self):
             grad_method = oldMF.nuc_grad_method(self)

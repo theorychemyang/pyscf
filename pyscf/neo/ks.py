@@ -165,14 +165,14 @@ class InteractionCorrelation(hf.InteractionCoulomb):
                         return True
         return False
 
-    def get_vint(self, dm, *args, no_epc=False, **kwargs):
+    def get_vint(self, dm, *args, coulomb_only=False, **kwargs):
         '''Unoptimized implementation that has duplicated electronic part
         calculations if multiple protons are present. The grids are screened
         only for this particular nucleus.'''
         import copy
         vj = super().get_vint(dm, *args, **kwargs)
         # For nuclear initial guess, use Coulomb only
-        if no_epc or \
+        if coulomb_only or \
                 not (self.mf1_type in dm and self.mf2_type in dm and self._need_epc()):
             return vj
 
@@ -275,6 +275,143 @@ class InteractionCorrelation(hf.InteractionCoulomb):
         vxc[n_type] = lib.tag_array(vj[n_type] + vxc_n, exc=0, vj=vj[n_type])
         return vxc
 
+def _get_epc_vmat(mf, dm):
+    '''Build EPC potential matrices.'''
+    import copy
+    def no_epc():
+        return {t: 0 for t in mf.components}
+
+    if mf.epc is None:
+        return no_epc()
+
+    mf_e = mf.components['e']
+    grids_e = mf_e.grids
+    grids_changed = (mf._elec_grids_hash != _hash_grids(grids_e))
+    if grids_changed and mf._epc_n_types is not None:
+        if len(mf._epc_n_types) > 0:
+            mf._skip_epc = False
+    if mf._skip_epc:
+        return no_epc()
+
+    if mf._epc_n_types is None:
+        n_types = []
+        for t_pair, interaction in mf.interactions.items():
+            if interaction._need_epc():
+                if t_pair[0].startswith('n'):
+                    n_type  = t_pair[0]
+                else:
+                    n_type  = t_pair[1]
+                n_types.append(n_type)
+        mf._epc_n_types = n_types
+    else:
+        n_types = mf._epc_n_types
+
+    if len(n_types) == 0:
+        mf._skip_epc = True
+        return no_epc()
+
+    mol_e = mf_e.mol
+    ni = mf._numint
+
+    if mf.grids is None or grids_changed:
+        if grids_e.coords is None:
+            grids_e.build(with_non0tab=True)
+        mf._elec_grids_hash = _hash_grids(grids_e)
+        total_mask = numpy.zeros(((len(grids_e.coords)+BLKSIZE-1)//BLKSIZE, 1),
+                                 dtype=numpy.uint8)
+        for n_type in n_types:
+            mol_n = mf.components[n_type].mol
+            non0tab_n = ni.make_mask(mol_n, grids_e.coords)
+            total_mask |= numpy.any(non0tab_n > 0, axis=1).reshape(-1,1)
+
+        blk_index = numpy.where(numpy.any(total_mask > 0, axis=1))[0]
+        if len(blk_index) == 0:
+            mf._skip_epc = True
+            return no_epc()
+
+        starts = blk_index[:, None] * BLKSIZE + numpy.arange(BLKSIZE)
+        mask = starts < len(grids_e.coords)
+        valid_indices = starts[mask]
+
+        mf.grids = copy.copy(grids_e)
+        mf.grids.coords = grids_e.coords[valid_indices]
+        mf.grids.weights = grids_e.weights[valid_indices]
+        mf.grids.non0tab = ni.make_mask(mol_e, mf.grids.coords)
+        mf.grids.screen_index = mf.grids.non0tab
+
+    grids = mf.grids
+
+    dm_e = dm['e']
+    if isinstance(mf_e, scf.uhf.UHF):
+        assert dm_e.ndim > 2 and dm_e.shape[0] == 2
+        dm_e = dm_e[0] + dm_e[1]
+
+    cutoff = grids.cutoff * 1e2
+    nbins = NBINS * 2 - int(NBINS * numpy.log(cutoff) / numpy.log(grids.cutoff))
+    pair_mask_e = mol_e.get_overlap_cond() < -numpy.log(ni.cutoff)
+
+    exc_sum = 0
+    nao_e = mol_e.nao
+    vxc_e = numpy.zeros((nao_e, nao_e))
+    ao_loc_e = mol_e.ao_loc_nr()
+
+    mol_n = {}
+    non0tab_n = {}
+    vxc_n = {}
+    ao_loc_n = {}
+    for n_type in n_types:
+        mol_n_t = mf.components[n_type].mol
+        mol_n[n_type] = mol_n_t
+        non0tab_n[n_type] = ni.make_mask(mol_n_t, grids.coords)
+        nao_n = mol_n_t.nao
+        vxc_n[n_type] = numpy.zeros((nao_n, nao_n))
+        ao_loc_n[n_type] = mol_n_t.ao_loc_nr()
+
+    p1 = 0
+    for ao_e, mask_e, weight, coords in ni.block_loop(mol_e, grids, nao_e):
+        p0, p1 = p1, p1 + weight.size
+        rho_e = eval_rho(mol_e, ao_e, dm_e, mask_e)
+        rho_e[rho_e < 0] = 0
+        common = precompute_epc_electron(mf.epc, rho_e)
+
+        vxc_e_grid = 0
+        for n_type in n_types:
+            mask_n = non0tab_n[n_type][p0//BLKSIZE:p1//BLKSIZE+1]
+            if numpy.all(mask_n == 0):
+                continue
+            mol_n_t = mol_n[n_type]
+            ao_n = eval_ao(mol_n_t, coords, non0tab=mask_n)
+            rho_n = eval_rho(mol_n_t, ao_n, dm[n_type])
+            rho_n[rho_n < 0] = 0
+
+            exc, vxc_n_grid, vxc_e_grid_t = eval_epc(common, rho_n)
+            vxc_e_grid += vxc_e_grid_t
+
+            den = rho_n * weight
+            exc_sum += numpy.dot(den, exc)
+
+            aow = _scale_ao(ao_n, 0.5 * weight * vxc_n_grid)
+            vxc_n[n_type] += _dot_ao_ao(mol_n_t, ao_n, aow, mask_n,
+                                        (0, mol_n_t.nbas), ao_loc_n[n_type])
+
+        _dot_ao_ao_sparse(ao_e, ao_e, 0.5 * weight * vxc_e_grid,
+                          nbins, mask_e, pair_mask_e, ao_loc_e, 1, vxc_e)
+
+    vxc_e = vxc_e + vxc_e.conj().T
+    for n_type in n_types:
+        vxc_n[n_type] = vxc_n[n_type] + vxc_n[n_type].conj().T
+
+    epc = {}
+    epc['e'] = lib.tag_array(vxc_e, exc=exc_sum)
+    for t in mf.components:
+        if t == 'e':
+            continue
+        if t in n_types:
+            epc[t] = lib.tag_array(vxc_n[t], exc=0)
+        else:
+            epc[t] = 0
+    return epc
+
 class KS(hf.HF):
     '''
     Examples::
@@ -341,12 +478,9 @@ class KS(hf.HF):
         self.grids = None
         self._elec_grids_hash = None
 
-    def energy_elec(self, dm=None, h1e=None, vhf=None, vint=None):
+    def energy_elec(self, dm=None, h1e=None, vhf=None):
         if dm is None: dm = self.make_rdm1()
         if h1e is None: h1e = self.get_hcore()
-        if vint is None:
-            vint = self.get_vint(self.mol, dm)
-            vhf = self.get_veff(self.mol, dm)
         if vhf is None: vhf = self.get_veff(self.mol, dm)
         self.scf_summary['e1'] = 0
         self.scf_summary['coul'] = 0
@@ -366,7 +500,7 @@ class KS(hf.HF):
                 self.scf_summary['coul'] += comp.scf_summary['e2']
         return e_elec, e2
 
-    def get_vint_slow(self, mol=None, dm=None):
+    def _get_vint_slow(self, mol=None, dm=None):
         '''Inter-type Coulomb and possible epc, slow version'''
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()
@@ -394,13 +528,9 @@ class KS(hf.HF):
                         vint[t] = lib.tag_array(vint[t] + v[t], exc=vint[t].exc, vj=vint[t].vj + v[t])
                     else:
                         vint[t] += v[t]
-        # Transfer vint to cache
-        for t in self.components.keys():
-            self.components[t]._vint = vint[t]
-            vint[t] = 0
         return vint
 
-    def get_vint_fast(self, mol=None, dm=None):
+    def _get_vint_fast(self, mol=None, dm=None, dm_last=0, vhf_last=0):
         '''Inter-type Coulomb and possible epc'''
         import copy
         if mol is None: mol = self.mol
@@ -409,155 +539,24 @@ class KS(hf.HF):
         # For better performance, avoid duplicated elec calculations for multiple protons
 
         # First get Vj
-        # NOTE: super().get_vint just uses that function form. This does not mean
+        # NOTE: super()._get_vint just uses that function form. This does not mean
         # pure Coulomb will be used. The interaction class is still the Correlation one.
         # Therefore, we need to be able to get Coulomb within the Correlation class.
-        vj = super().get_vint(mol, dm, no_epc=True)
-        if self.epc is None:
-            return vj
+        vint = super()._get_vint(mol, dm, dm_last, vhf_last,
+                                 coulomb_only=True)
+        epc = _get_epc_vmat(self, dm)
+        for t in vint:
+            vint_inc = getattr(vint[t], 'vint_inc', 0)
+            coul_vint = numpy.asarray(vint[t])
+            if hasattr(epc[t], 'exc'):
+                vint[t] = lib.tag_array(coul_vint + epc[t], exc=epc[t].exc,
+                                        vj=coul_vint, vint_inc=vint_inc)
+            else:
+                vint[t] = lib.tag_array(coul_vint + epc[t],
+                                        vint_inc=vint_inc)
+        return vint
 
-        mf_e = self.components['e']
-        grids_e = mf_e.grids
-        grids_changed = (self._elec_grids_hash != _hash_grids(grids_e))
-        if grids_changed and self._epc_n_types is not None:
-            if len(self._epc_n_types) > 0:
-                self._skip_epc = False
-        if self._skip_epc:
-            return vj
-
-        if self._epc_n_types is None:
-            n_types = []
-
-            for t_pair, interaction in self.interactions.items():
-                if interaction._need_epc():
-                    if t_pair[0].startswith('n'):
-                        n_type  = t_pair[0]
-                    else:
-                        n_type  = t_pair[1]
-                    n_types.append(n_type)
-            self._epc_n_types = n_types
-        else:
-            n_types = self._epc_n_types
-
-        if len(n_types) == 0:
-            # No EPC needed
-            self._skip_epc = True
-            return vj
-
-        mol_e = mf_e.mol
-        ni = self._numint
-
-        # Build epc grids. Based on elec grids, and blocks with no nuclear basis are pruned.
-        if self.grids is None or grids_changed:
-            if grids_e.coords is None:
-                grids_e.build(with_non0tab=True)
-            self._elec_grids_hash = _hash_grids(grids_e)
-            total_mask = numpy.zeros(((len(grids_e.coords)+BLKSIZE-1)//BLKSIZE, 1),
-                                     dtype=numpy.uint8)
-            # Find all blocks where any nucleus has non-zero basis
-            for n_type in n_types:
-                mol_n = self.components[n_type].mol
-                non0tab_n = ni.make_mask(mol_n, grids_e.coords)
-                total_mask |= numpy.any(non0tab_n > 0, axis=1).reshape(-1,1)
-
-            # Get blocks where nuclear basis functions exist
-            blk_index = numpy.where(numpy.any(total_mask > 0, axis=1))[0]
-            if len(blk_index) == 0:
-                self._skip_epc = True # No basis overlap, skip epc
-                return vj
-
-            starts = blk_index[:, None] * BLKSIZE + numpy.arange(BLKSIZE)
-            mask = starts < len(grids_e.coords)
-            valid_indices = starts[mask]
-
-            # Copy grids object but reset screened data-related attributes
-            self.grids = copy.copy(grids_e)
-            self.grids.coords = grids_e.coords[valid_indices]
-            self.grids.weights = grids_e.weights[valid_indices]
-            self.grids.non0tab = ni.make_mask(mol_e, self.grids.coords)
-            self.grids.screen_index = self.grids.non0tab
-
-        grids = self.grids
-
-        dm_e = dm['e']
-        if isinstance(mf_e, scf.uhf.UHF):
-            assert dm_e.ndim > 2 and dm_e.shape[0] == 2
-            dm_e = dm_e[0] + dm_e[1]
-
-        cutoff = grids.cutoff * 1e2
-        nbins = NBINS * 2 - int(NBINS * numpy.log(cutoff) / numpy.log(grids.cutoff))
-        pair_mask_e = mol_e.get_overlap_cond() < -numpy.log(ni.cutoff)
-
-        exc_sum = 0
-        nao_e = mol_e.nao
-        vxc_e = numpy.zeros((nao_e, nao_e))
-        ao_loc_e = mol_e.ao_loc_nr()
-
-        mol_n = {}
-        non0tab_n = {}
-        vxc_n = {}
-        ao_loc_n = {}
-        for n_type in n_types:
-            mol_n_t = self.components[n_type].mol
-            mol_n[n_type] = mol_n_t
-            non0tab_n[n_type] = ni.make_mask(mol_n_t, grids.coords)
-            nao_n = mol_n_t.nao
-            vxc_n[n_type] = numpy.zeros((nao_n, nao_n))
-            ao_loc_n[n_type] = mol_n_t.ao_loc_nr()
-
-        # Loop over the screened grid only once to obtain electronic part quantities
-        # even when there are multiple protons
-        p1 = 0
-        for ao_e, mask_e, weight, coords in ni.block_loop(mol_e, grids, nao_e):
-            p0, p1 = p1, p1 + weight.size
-            rho_e = eval_rho(mol_e, ao_e, dm_e, mask_e)
-            rho_e[rho_e < 0] = 0  # Ensure non-negative density
-            common = precompute_epc_electron(self.epc, rho_e)
-
-            vxc_e_grid = 0
-            for n_type in n_types:
-                mask_n = non0tab_n[n_type][p0//BLKSIZE:p1//BLKSIZE+1]
-                if numpy.all(mask_n == 0):
-                    continue
-                mol_n_t = mol_n[n_type]
-                ao_n = eval_ao(mol_n_t, coords, non0tab=mask_n)
-                rho_n = eval_rho(mol_n_t, ao_n, dm[n_type])
-                rho_n[rho_n < 0] = 0  # Ensure non-negative density
-
-                exc, vxc_n_grid, vxc_e_grid_t = eval_epc(common, rho_n)
-                vxc_e_grid += vxc_e_grid_t
-
-                den = rho_n * weight
-                exc_sum += numpy.dot(den, exc)
-
-                # x0.5 for vmat + vmat.T
-                aow = _scale_ao(ao_n, 0.5 * weight * vxc_n_grid)
-                vxc_n[n_type] += _dot_ao_ao(mol_n_t, ao_n, aow, mask_n,
-                                            (0, mol_n_t.nbas), ao_loc_n[n_type])
-
-            _dot_ao_ao_sparse(ao_e, ao_e, 0.5 * weight * vxc_e_grid,
-                              nbins, mask_e, pair_mask_e, ao_loc_e, 1, vxc_e)
-
-        vxc_e = vxc_e + vxc_e.conj().T
-        for n_type in n_types:
-            vxc_n[n_type] = vxc_n[n_type] + vxc_n[n_type].conj().T
-
-        vxc = vj
-        # Assign epc correlation energy to electrons
-        # vj is dummy (all zero). Actual vj is already transferred to _vint
-        vxc['e'] = lib.tag_array(self.components['e']._vint + vxc_e,
-                                 exc=exc_sum, vj=self.components['e']._vint)
-        for n_type in n_types:
-            vxc[n_type] = lib.tag_array(self.components[n_type]._vint + vxc_n[n_type],
-                                        exc=0, vj=self.components[n_type]._vint)
-
-        # Transfer vxc to vint cache
-        for t in self.components.keys():
-            self.components[t]._vint = vxc[t]
-            vxc[t] = 0
-        return vxc
-
-    get_vint = get_vint_fast
+    _get_vint = _get_vint_fast
 
     def copy(self):
         '''Shallow copy but special treatment for array/dict that may get in-place mutations'''
