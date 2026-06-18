@@ -26,38 +26,43 @@ class KnownValues(unittest.TestCase):
         for t, comp in mf.components.items():
             self.assertEqual(with_df._charges[t], comp.charge)
             self.assertEqual(with_df._unrestricted[t], False)
-        self.assertAlmostEqual(mf.scf(), -98.5290875039644, 8)
+        self.assertAlmostEqual(mf.scf(), -98.52306824045718, 8)
         with self.assertRaises(TypeError):
             neo.HF(mol).density_fit(with_df=object(), df_ne=True)
 
     def test_df_j_on_the_fly(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
                     quantum_nuc=[0], verbose=0)
-        mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True)
-        dm = mf.get_init_guess()
+        for scheme in ('electron', 'global'):
+            mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
+                                         df_ne_scheme=scheme)
+            dm = mf.get_init_guess()
 
-        vj = mf.with_df.get_j(dm)
-        self.assertIsNone(mf.with_df._cderi)
+            vj = mf.with_df.get_j(dm)
+            self.assertIsNone(mf.with_df._cderi)
 
-        mf_ref = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True)
-        mf_ref.with_df.build()
-        vj_ref, vk_ref = mf_ref.with_df.get_jk(dm, with_k=False)
-        self.assertIsNotNone(mf_ref.with_df._cderi)
-        self.assertTrue(numpy.allclose(vk_ref, 0))
+            mf_ref = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
+                                             df_ne_scheme=scheme)
+            mf_ref.with_df.build()
+            vj_ref, vk_ref = mf_ref.with_df.get_jk(dm, with_k=False)
+            self.assertIsNotNone(mf_ref.with_df._cderi)
+            self.assertTrue(numpy.allclose(vk_ref, 0))
 
-        for t in dm:
-            self.assertAlmostEqual(abs(vj[t] - vj_ref[t]).max(), 0, 9)
-            self.assertAlmostEqual(abs(vj[t].vint - vj_ref[t].vint).max(), 0, 9)
+            for t in dm:
+                self.assertAlmostEqual(abs(vj[t] - vj_ref[t]).max(), 0, 9)
+                self.assertAlmostEqual(abs(vj[t].vint - vj_ref[t].vint).max(), 0, 9)
 
     def test_df_j_outcore_loop(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
                     quantum_nuc=[0], verbose=0)
-        mf_ref = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True)
+        mf_ref = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
+                                         df_ne_scheme='electron')
         dm = mf_ref.get_init_guess()
         mf_ref.with_df.build()
         vj_ref, vk_ref = mf_ref.with_df.get_jk(dm, with_k=False)
 
-        mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True)
+        mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
+                                     df_ne_scheme='electron')
         mf.with_df.max_memory = 1e-4
         mf.with_df.build()
         self.assertIsNotNone(mf.with_df._cderi)
@@ -117,23 +122,52 @@ class KnownValues(unittest.TestCase):
     def test_scf(self):
         mol = neo.M(atom='''H 0 0 0; F 0 0 1''', basis='aug-ccpvdz', quantum_nuc=[0])
         mf = neo.CDFT(mol, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
-        self.assertAlmostEqual(mf.scf(), -100.41889510781353, 6)
+        self.assertAlmostEqual(mf.scf(), -100.4195436624414, 6)
 
     def test_scf_rsh(self):
         mol = neo.M(atom='''H 0 0 0; C 0 0 1.064; N 0 0 2.220''',
                     basis='ccpvdz', quantum_nuc=[0])
         mf = neo.KS(mol, xc='camb3lyp').density_fit(auxbasis='cc-pVTZ-JKFIT',
                                                     df_ne=True)
-        self.assertAlmostEqual(mf.scf(), -93.34234282539869, 4)
+        self.assertAlmostEqual(mf.scf(), -93.34259794767802, 4)
 
     def test_scf_multi_proton(self):
         mol = neo.M(atom='''H 0 0 0; H 0 0 1''', basis='aug-ccpvdz', quantum_nuc=['H'])
         mf = neo.CDFT(mol, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
-        self.assertAlmostEqual(mf.scf(), -1.078857621403627, 6)
+        self.assertAlmostEqual(mf.scf(), -1.0790336414836041, 6)
+
+    def test_global_df_ne_metric(self):
+        mol = neo.M(atom='H 0 0 0; H 0 0 1', basis='sto-3g',
+                    quantum_nuc=[0, 1], verbose=0)
+        mf_ee_df = neo.CDFT(mol, xc='LDA,VWN').density_fit(
+            auxbasis='weigend', df_ne=False)
+        mf_ne_df = neo.CDFT(mol, xc='LDA,VWN').density_fit(
+            auxbasis='weigend', df_ne=True, df_ne_scheme='electron')
+        mf_ne_df_global = neo.CDFT(mol, xc='LDA,VWN').density_fit(
+            auxbasis='weigend', df_ne=True)
+
+        e_ee_df = mf_ee_df.kernel()
+        err_electron = abs(mf_ne_df.kernel() - e_ee_df)
+        err_global = abs(mf_ne_df_global.kernel() - e_ee_df)
+        self.assertLess(err_global, err_electron)
+
+    def test_nuc_auxbasis_name(self):
+        mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
+                    quantum_nuc=[0], verbose=0)
+        aux_pb4d = df._make_nuc_auxmol(mol.components['n0'], 'pb4d')
+        aux_weigend = df._make_nuc_auxmol(mol.components['n0'], 'weigend')
+        aux_aug_etb = df._make_nuc_auxmol(mol.components['n0'], 'aug_etb')
+        aux_aug_etb_dense = df._make_nuc_auxmol(mol.components['n0'], 'aug_etb',
+                                                nuc_auxbasis_beta=1.7)
+        self.assertEqual(aux_pb4d.nao, mol.components['n0'].nao)
+        self.assertNotEqual(aux_pb4d.nao, aux_weigend.nao)
+        self.assertNotEqual(aux_pb4d.nao, aux_aug_etb.nao)
+        self.assertGreater(aux_aug_etb_dense.nao, aux_aug_etb.nao)
 
     def test_grad(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='aug-ccpvdz')
-        mf = neo.CDFT(mol, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
+        mf = neo.CDFT(mol, xc='b3lypg').density_fit(
+            auxbasis='aug-cc-pvdz-jkfit', df_ne=True, df_ne_scheme='global')
         mf.scf()
         de = mf.Gradients().kernel()
 
@@ -146,7 +180,8 @@ class KnownValues(unittest.TestCase):
     def test_hf_grad(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
                     quantum_nuc=[0])
-        mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True)
+        mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
+                                     df_ne_scheme='global')
         mf.conv_tol = 1e-10
         mf.scf()
         de = mf.Gradients().kernel()
@@ -174,7 +209,8 @@ class KnownValues(unittest.TestCase):
 
     def test_grad_full_q(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='aug-ccpvdz', quantum_nuc=[0,1])
-        mf = neo.CDFT(mol, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
+        mf = neo.CDFT(mol, xc='b3lypg').density_fit(
+            auxbasis='aug-cc-pvdz-jkfit', df_ne=True, df_ne_scheme='global')
         mf.scf()
         de = mf.Gradients().kernel()
 

@@ -1680,10 +1680,15 @@ class HF(scf.hf.SCF):
     def _is_mem_enough(self):
         raise NotImplementedError
 
-    def density_fit(self, auxbasis=None, with_df=None, ee_only_dfj=False, df_ne=False):
+    def density_fit(self, auxbasis=None, with_df=None, ee_only_dfj=False,
+                    df_ne=False, df_ne_scheme='global',
+                    nuc_auxbasis=None, nuc_auxbasis_beta=2.0):
         import pyscf.neo.df
         return pyscf.neo.df.density_fit(self, auxbasis=auxbasis, with_df=with_df,
-                                        ee_only_dfj=ee_only_dfj, df_ne=df_ne)
+                                        ee_only_dfj=ee_only_dfj, df_ne=df_ne,
+                                        df_ne_scheme=df_ne_scheme,
+                                        nuc_auxbasis=nuc_auxbasis,
+                                        nuc_auxbasis_beta=nuc_auxbasis_beta)
 
     def sfx2c1e(self):
         raise NotImplementedError

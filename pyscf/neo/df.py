@@ -1,11 +1,16 @@
 import tempfile
 import contextlib
 import ctypes
+import os
+import copy as cp
+import re
 import numpy
 import scipy.linalg
 import h5py
 from pyscf import lib, gto, scf, neo
+from pyscf.neo import mole as neo_mole
 from pyscf.lib import logger
+from pyscf.lib.exceptions import BasisNotFoundError
 from pyscf.df import addons, df, df_jk
 from pyscf.df.incore import aux_e2, _eig_decompose
 from pyscf.ao2mo.outcore import _load_from_h5g
@@ -109,6 +114,80 @@ def cholesky_eri_incore(mol, auxbasis='weigend+etb', auxmol=None,
 
     log.timer('cholesky_eri', *t0)
     return cderi
+
+def _combine_auxbasis(mol, auxmols):
+    '''Build a component-unified auxmol with parent atom indexing.'''
+    fake_mol = mol.components['e'].copy(deep=False)
+    basis = {}
+    atoms = []
+    for ia, atom in enumerate(fake_mol._atom):
+        symb = fake_mol.atom_symbol(ia)
+        label = f'{symb}{ia}'
+        atoms.append((label, atom[1]))
+        basis[label] = []
+        for auxmol in auxmols:
+            if auxmol.natm != mol.natm:
+                raise RuntimeError('DF auxiliary molecule is inconsistent with NEO molecule')
+            aux_symb = auxmol.atom_symbol(ia)
+            basis[label].extend(cp.deepcopy(auxmol._basis.get(aux_symb, ())))
+    fake_mol._atom = atoms
+    return addons.make_auxmol(fake_mol, basis)
+
+def _make_single_nuc_mol(mol_n):
+    ia = mol_n.atom_index
+    label = mol_n.atom_symbol(ia)
+    fake_mol = gto.Mole()
+    fake_mol.build(atom=[(label, mol_n.atom_coord(ia))],
+                   basis={label: mol_n._basis[label]},
+                   unit='Bohr', charge=gto.charge(label), spin=0,
+                   dump_input=False, parse_arg=False, verbose=0)
+    return fake_mol
+
+def _make_nuc_aug_etb(fake_mol, beta):
+    with lib.temporary_env(addons, USE_VERSION_26_AUXBASIS=False):
+        return addons.aug_etb(fake_mol, beta=beta)
+
+def _make_nuc_auxbasis(mol_n, nuc_auxbasis, nuc_auxbasis_beta=2.0):
+    ia = mol_n.atom_index
+    label = mol_n.atom_symbol(ia)
+
+    fake_mol = _make_single_nuc_mol(mol_n)
+    if nuc_auxbasis is None or nuc_auxbasis == 'aug_etb':
+        return _make_nuc_aug_etb(fake_mol, nuc_auxbasis_beta)
+    if nuc_auxbasis == 'autoaux':
+        return addons.autoaux(fake_mol)
+    if nuc_auxbasis == 'autoabs':
+        raise NotImplementedError('autoabs requires a named orbital basis; '
+                                  'NEO nuclear bases are formatted primitives')
+
+    if isinstance(nuc_auxbasis, str) and re.fullmatch(r'\d+s\d+p\d+d(\d+f)?',
+                                                      nuc_auxbasis):
+        return {label: neo_mole.make_even_tempered_nuclear_basis(
+            mol_n.super_mol, ia, nuc_auxbasis, alpha_scale=2.0)}
+
+    if isinstance(nuc_auxbasis, str):
+        with open(os.devnull, 'w') as devnull:
+            with contextlib.redirect_stdout(devnull), \
+                 contextlib.redirect_stderr(devnull):
+                try:
+                    auxmol = addons.make_auxmol(fake_mol, nuc_auxbasis)
+                    return {label: auxmol._basis[label]}
+                except BasisNotFoundError:
+                    pass
+        return {label: neo_mole.make_nuclear_basis(mol_n.super_mol, ia,
+                                                   nuc_auxbasis)}
+    if isinstance(nuc_auxbasis, (list, tuple)):
+        return {label: nuc_auxbasis}
+    if isinstance(nuc_auxbasis, dict):
+        return nuc_auxbasis
+    raise TypeError('nuc_auxbasis must be None, a string, a basis list, '
+                    'or a basis dictionary')
+
+def _make_nuc_auxmol(mol_n, nuc_auxbasis=None, nuc_auxbasis_beta=2.0):
+    auxbasis = _make_nuc_auxbasis(mol_n, nuc_auxbasis, nuc_auxbasis_beta)
+    with open(os.devnull, 'w') as devnull:
+        with contextlib.redirect_stderr(devnull):
+            return addons.make_auxmol(mol_n, auxbasis)
 
 def cholesky_eri_b_outcore(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
                            int3c='int3c2e', aosym='s2ij', int2c='int2c2e', comp=1,
@@ -225,11 +304,64 @@ def cholesky_eri_b_outcore(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
 
 class DF(df.DF):
     '''build all e-e and e-n cderi'''
-    def __init__(self, mol, auxbasis=None):
+    _keys = df.DF._keys.union(['df_ne_scheme', 'nuc_auxbasis',
+                               'nuc_auxbasis_beta'])
+
+    def __init__(self, mol, auxbasis=None, df_ne_scheme='global',
+                 nuc_auxbasis=None, nuc_auxbasis_beta=2.0):
         super().__init__(mol, auxbasis)
         self._cderi_names = list(self.mol.components.keys())
         self._charges = {}
         self._unrestricted = {}
+        self.df_ne_scheme = df_ne_scheme
+        self.nuc_auxbasis = nuc_auxbasis
+        self.nuc_auxbasis_beta = nuc_auxbasis_beta
+
+    def _check_df_ne_scheme(self):
+        if self.df_ne_scheme not in ('electron', 'global'):
+            raise ValueError(f'Unsupported df_ne_scheme {self.df_ne_scheme}')
+
+    def make_auxmol(self):
+        auxmol = addons.make_auxmol(self.mol.components['e'], self.auxbasis)
+        if self.df_ne_scheme != 'global':
+            return auxmol
+
+        # Global DF-NE metric.
+        #
+        # The motivation is related to the multicomponent Cholesky-decomposition
+        # idea in J. Chem. Theory Comput. 2023, 19, 6255-6262
+        # (DOI: 10.1021/acs.jctc.3c00686), but this implementation is not a
+        # literal reproduction of that paper.  They use a larger metric for the
+        # electron-proton interaction in an indistinguishable-proton NEO-DFT
+        # setting, and their algorithm is formulated as CD rather than PySCF's
+        # RI-style auxiliary-basis density fitting.
+        #
+        # For distinguishable NEO nuclei there are several natural RI choices:
+        #   1. Use the conventional e-e auxiliary metric for e-e, and separate
+        #      pair-specific auxiliary metrics for each e-n pair.
+        #   2. Use the conventional e-e metric for e-e, and one global mixed
+        #      e/n auxiliary metric for all e-n pairs.  This is closest in
+        #      spirit to the JCTC paper, aside from RI vs CD and distinguishable
+        #      nuclei.
+        #   3. Use one global mixed e/n auxiliary metric for both e-e and e-n.
+        #
+        # This code chooses option 3.  The main reason is efficiency, not a
+        # claim that option 3 is universally the most accurate RI objective:
+        # all components share one auxiliary metric and one set of transformed
+        # three-center tensors, so the SCF J build can reuse the same D*L
+        # contractions for e-e and e-n.  Option 2 still uses one e-n metric and
+        # one e-e metric, so it loses some sharing.  Option 1 is more expensive
+        # for multiple quantum nuclei because each pair-specific e-n metric
+        # requires its own density projection and back transformation.  These
+        # tradeoffs may be revisited if accuracy or robustness cases justify
+        # the extra cost.
+        auxmols = [auxmol]
+        for t, mol_n in self.mol.components.items():
+            if t == 'e':
+                continue
+            auxmols.append(_make_nuc_auxmol(mol_n, self.nuc_auxbasis,
+                                            self.nuc_auxbasis_beta))
+        return _combine_auxbasis(self.mol, auxmols)
 
     __getstate__, __setstate__ = lib.generate_pickle_methods(
             excludes=('_cderi_to_save', '_cderi', '_cderi_names', '_vjopt', '_rsh_df'),
@@ -239,6 +371,7 @@ class DF(df.DF):
         t0 = (logger.process_clock(), logger.perf_counter())
         log = logger.Logger(self.stdout, self.verbose)
 
+        self._check_df_ne_scheme()
         self.check_sanity()
         self.dump_flags()
         if self._cderi is not None and self.auxmol is None:
@@ -246,7 +379,7 @@ class DF(df.DF):
             return self
 
         mol = self.mol
-        auxmol = self.auxmol = addons.make_auxmol(self.mol.components['e'], self.auxbasis)
+        auxmol = self.auxmol = self.make_auxmol()
         naux = auxmol.nao_nr()
         nao_pair = 0
         for t, comp in mol.components.items():
@@ -691,13 +824,14 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
     '''vj returned is already combined for alpha and beta spins'''
     from pyscf.scf import _vhf
     from pyscf.scf import jk
-    from pyscf.df import addons
     t0 = t1 = (logger.process_clock(), logger.perf_counter())
 
     mol = dfobj.mol
     if dfobj._vjopt is None:
         opt = {}
-        dfobj.auxmol = auxmol = addons.make_auxmol(mol.components['e'], dfobj.auxbasis)
+        if dfobj.auxmol is None:
+            dfobj.auxmol = dfobj.make_auxmol()
+        auxmol = dfobj.auxmol
 
         j2c = auxmol.intor('int2c2e', hermi=1)
         j2c_diag = numpy.sqrt(abs(j2c.diagonal()))
@@ -838,13 +972,52 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
     logger.timer(dfobj, 'df-vj', *t0)
     return vj
 
-def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False, df_ne=False):
-    '''with_df is df.DF if not df_ne, and DF class in this file if df_ne'''
+def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
+                df_ne=False, df_ne_scheme='global', nuc_auxbasis=None,
+                nuc_auxbasis_beta=2.0):
+    '''Apply density fitting to NEO SCF objects.
+
+    If ``df_ne`` is false, only the electronic e-e Coulomb build is density
+    fitted and ``with_df`` is the normal :class:`pyscf.df.DF` object.  If
+    ``df_ne`` is true, ``with_df`` is :class:`pyscf.neo.df.DF` and the DF
+    tensor also covers electron-nuclear Coulomb interactions.
+
+    ``df_ne_scheme='electron'`` uses the electronic auxiliary basis for the
+    e-n fit.  It is kept for comparison and backward compatibility, but it can
+    have large e-n fitting errors because the electronic auxiliary basis is not
+    designed for compact nuclear densities.
+
+    ``df_ne_scheme='global'`` is the default.  It builds one mixed auxiliary
+    metric for the electronic and nuclear auxiliary functions and uses the same
+    transformed tensor for e-e and e-n Coulomb builds.  The default nuclear
+    auxiliary basis is generated by PySCF's ``aug_etb`` recipe with the
+    exponent-sum range, which targets AO-product densities rather than AO
+    functions.
+
+    ``nuc_auxbasis`` controls only the nuclear auxiliary functions in the
+    global scheme.  Named nuclear bases such as ``'pb4d'`` can be used, but
+    they are generally not recommended as fitting bases because they were
+    designed for nuclear orbitals instead of nuclear density products.
+    Explicit even-tempered strings such as ``'8s8p8d'`` are also accepted; for
+    these manual nuclear auxiliary bases the starting exponent is doubled
+    relative to the NEO AO basis generator to match the equal-exponent product
+    scale.  ``nuc_auxbasis_beta`` controls the spacing of the default
+    ``aug_etb`` nuclear auxiliary basis.
+    '''
     assert isinstance(mf, neo.HF)
     assert 'e' in mf.components
     assert isinstance(mf.components['e'], scf.hf.SCF)
     if 'p' in mf.components:
         raise NotImplementedError
+
+    if df_ne:
+        logger.warn(mf, 'NEO density fitting for electron-nuclear Coulomb '
+                    'interactions is an experimental feature. Features and '
+                    'APIs may be changed in the future.')
+        if df_ne_scheme == 'electron':
+            logger.warn(mf, 'df_ne_scheme="electron" uses the electronic '
+                        'auxiliary basis for electron-nuclear fitting and can '
+                        'have large electron-nuclear fitting errors.')
 
     if with_df is None and df_ne:
         mol = mf.mol
@@ -862,7 +1035,9 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False, df_ne=False)
             else:
                 auxbasis = addons.predefined_auxbasis(mol_e, mol_e.basis, xc)
         # e-e and e-n with_df
-        with_df = DF(mol, auxbasis)
+        with_df = DF(mol, auxbasis, df_ne_scheme=df_ne_scheme,
+                     nuc_auxbasis=nuc_auxbasis,
+                     nuc_auxbasis_beta=nuc_auxbasis_beta)
 
     if with_df is not None and df_ne:
         if not isinstance(with_df, DF):
@@ -871,6 +1046,9 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False, df_ne=False)
             if with_df._cderi is not None:
                 raise ValueError('A built with_df object cannot be reused for a different NEO mol')
             with_df.reset(mf.mol)
+        with_df.df_ne_scheme = df_ne_scheme
+        with_df.nuc_auxbasis = nuc_auxbasis
+        with_df.nuc_auxbasis_beta = nuc_auxbasis_beta
         with_df.max_memory = mf.max_memory
         with_df.stdout = mf.stdout
         with_df.verbose = mf.verbose
@@ -1026,6 +1204,16 @@ class _DFNEO:
                 target[t] += v[t]
         return nn_vint_full, nn_vint_delta
 
+    def _attach_global_elec_df(self):
+        # The global DF-NE tensor replaces the electronic component DF tensor
+        # when component-level electronic DF code is called, e.g. gradients.
+        if self.with_df is not None and self.with_df.df_ne_scheme == 'global':
+            if self.with_df._cderi is None:
+                self.with_df.build()
+            mf_e = self.components['e']
+            mf_e.with_df.auxmol = self.with_df.auxmol
+            mf_e.with_df._cderi = self.with_df._cderi['e']
+
     def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
         if not self.with_df or not self.df_ne:
             return super().get_veff(mol, dm, dm_last, vhf_last, hermi)
@@ -1034,6 +1222,7 @@ class _DFNEO:
 
         mol_e = mol.components['e']
         mf_e = self.components['e']
+        self._attach_global_elec_df()
         if isinstance(mf_e, scf.rohf.ROHF) or isinstance(mf_e, scf.ghf.GHF):
             raise NotImplementedError
         e_unrestricted = False
@@ -1272,3 +1461,65 @@ class _DFNEO:
 
     def Hessian(self):
         raise NotImplementedError
+
+
+if __name__ == '__main__':
+    def run_df_ne_error_case(name, mf_factory, auxbasis, ee_only_dfj=False):
+        cases = [
+            ('Exact ERI', mf_factory()),
+            ('DF ee only',
+             mf_factory().density_fit(auxbasis=auxbasis, df_ne=False,
+                                      ee_only_dfj=ee_only_dfj)),
+            ('DF ee+en e-aux',
+             mf_factory().density_fit(auxbasis=auxbasis, df_ne=True,
+                                      df_ne_scheme='electron',
+                                      ee_only_dfj=ee_only_dfj)),
+            ('DF ee+en global aug_etb',
+             mf_factory().density_fit(auxbasis=auxbasis, df_ne=True,
+                                      df_ne_scheme='global',
+                                      ee_only_dfj=ee_only_dfj)),
+        ]
+
+        for label, mf in cases:
+            mf.conv_tol = 1e-10
+
+        results = [(label, mf.kernel()) for label, mf in cases]
+        e_ref = results[0][1]
+
+        print(f'\n{name}')
+        print(f'  {"method":25s} {"energy":>18s} {"dE":>12s}')
+        for label, energy in results:
+            if label == 'Exact ERI':
+                print(f'  {label:25s} {energy:18.12f} {"--":>12s}')
+            else:
+                print(f'  {label:25s} {energy:18.12f} {energy - e_ref:12.4e}')
+
+    run_df_ne_error_case(
+        'HF/NEO-HF/def2SVP/weigend, ee_only_dfj=False',
+        lambda: neo.HF(neo.M(atom='H 0 0 0; F 0 0 1',
+                             basis='def2svp', quantum_nuc=[0], verbose=0)),
+        'weigend')
+
+    run_df_ne_error_case(
+        'HF/NEO-HF/def2SVP/weigend, ee_only_dfj=True',
+        lambda: neo.HF(neo.M(atom='H 0 0 0; F 0 0 1',
+                             basis='def2svp', quantum_nuc=[0], verbose=0)),
+        'weigend', ee_only_dfj=True)
+
+    h3p_atom = '''H 0.000 0.000 0.000;
+                  H 0.000 0.000 0.900;
+                  H 0.779 0.000 0.450'''
+
+    run_df_ne_error_case(
+        'H3+/CNEO-CAM-B3LYP/cc-pvdz/cc-pvdz-jkfit, ee_only_dfj=False',
+        lambda: neo.KS(neo.M(atom=h3p_atom, basis='ccpvdz', charge=1,
+                             quantum_nuc=['H'], verbose=0),
+                       xc='camb3lyp'),
+        'cc-pvdz-jkfit')
+
+    run_df_ne_error_case(
+        'H3+/CNEO-CAM-B3LYP/occ-pvdz/cc-pvdz-jkfit, ee_only_dfj=True',
+        lambda: neo.KS(neo.M(atom=h3p_atom, basis='ccpvdz', charge=1,
+                             quantum_nuc=['H'], verbose=0),
+                       xc='camb3lyp'),
+        'cc-pvdz-jkfit', ee_only_dfj=True)

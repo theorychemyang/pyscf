@@ -233,7 +233,10 @@ def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         t0 = (logger.process_clock(), logger.perf_counter())
         auxmol_e = mf.with_df.auxmol
         if auxmol_e is None:
-            auxmol_e = addons.make_auxmol(mol_e, mf.with_df.auxbasis)
+            if hasattr(mf.with_df, 'make_auxmol'):
+                auxmol_e = mf.with_df.make_auxmol()
+            else:
+                auxmol_e = addons.make_auxmol(mol_e, mf.with_df.auxbasis)
             mf.with_df.auxmol = auxmol_e
 
         de += get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n,
@@ -256,5 +259,13 @@ class Gradients(grad.Gradients):
 
     auxbasis_response = True
     grad_int = grad_int
+
+    def kernel(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
+        # The electronic component gradient is evaluated before grad_int, so
+        # attach the global electronic DF tensor before the parent kernel enters
+        # component-level gradient code.
+        if hasattr(self.base, '_attach_global_elec_df'):
+            self.base._attach_global_elec_df()
+        return super().kernel(mo_energy, mo_coeff, mo_occ, atmlst)
 
 Grad = Gradients

@@ -45,6 +45,47 @@ def copy(mol, deep=True):
 
     return newmol
 
+def make_even_tempered_nuclear_basis(mol, atom_id, nuclear_basis=None,
+                                     alpha_scale=1.0):
+    '''Build the even-tempered basis used for a quantum nuclear component.'''
+    if mol.atom_pure_symbol(atom_id) == 'H':
+        if 'H+' in mol.atom_symbol(atom_id):
+            alpha = 4.0
+        else:
+            alpha = 2 * numpy.sqrt(2)
+        beta = numpy.sqrt(2)
+        n = -1
+    else:
+        # Probably should have been sqrt(mass) but this is in the paper
+        alpha = 2 * numpy.sqrt(2) * mol.mass[atom_id]
+        beta = numpy.sqrt(3)
+        n = 12
+
+    if nuclear_basis is None:
+        nuclear_basis = mol.nuclear_basis
+    alpha *= alpha_scale
+    m = re.search(r"(\d+)s(\d+)p(\d+)d(\d+)?f?", nuclear_basis)
+    if m:
+        if m.group(4) is None:
+            return gto.expand_etbs([(0, int(m.group(1)), alpha, beta),
+                                    (1, int(m.group(2)), alpha, beta),
+                                    (2, int(m.group(3)), alpha, beta)])
+        else:
+            return gto.expand_etbs([(0, int(m.group(1)), alpha, beta),
+                                    (1, int(m.group(2)), alpha, beta),
+                                    (2, int(m.group(3)), alpha, beta),
+                                    (3, int(m.group(4)), alpha, beta)])
+    elif n > 0:
+        return gto.expand_etbs([(0, n, alpha, beta),
+                                (1, n, alpha, beta),
+                                (2, n, alpha, beta)])
+    else:
+        raise ValueError(f'Unsupported nuclear basis {nuclear_basis}')
+
+def make_nuclear_basis(mol, atom_id, nuclear_basis=None):
+    '''Resolve a named or generated nuclear basis for one quantum nucleus.'''
+    return mol._get_nuclear_basis(atom_id, nuclear_basis)
+
 # Patch the verbose attribute because many like to change it after the initialization,
 # though the correct way is something like neo.M(atom=atom, verbose=5)
 gto.Mole.verbose = property(
@@ -517,7 +558,7 @@ class Mole(gto.Mole):
         n_mol._keys.update(['super_mol', 'atom_index', 'nnuc'])
         return n_mol
 
-    def _get_nuclear_basis(self, atom_id):
+    def _get_nuclear_basis(self, atom_id, nuclear_basis=None):
         '''Get basis set for quantum nucleus
 
         Nuclear basis:
@@ -526,22 +567,25 @@ class Mole(gto.Mole):
         D: scaled PB4-D
         other atoms: 12s12p12d, alpha=2*sqrt(2)*mass, beta=sqrt(3)
         '''
+        if nuclear_basis is None:
+            nuclear_basis = self.nuclear_basis
+
         # For hydrogen and its isotopes, try reading from basis file
         if self.atom_pure_symbol(atom_id) == 'H':
             dirnow = os.path.realpath(os.path.join(__file__, '..'))
-            basis = self._try_read_nuclear_basis(dirnow, atom_id)
+            basis = self._try_read_nuclear_basis(dirnow, atom_id, nuclear_basis)
             if basis is not None:
                 return basis
 
         # If basis not found for hydrogen, and for heavier elements,
         # generate even-tempered basis
-        return self._build_even_tempered_nuclear_basis(atom_id)
+        return self._build_even_tempered_nuclear_basis(atom_id, nuclear_basis)
 
-    def _try_read_nuclear_basis(self, dirnow, atom_id):
+    def _try_read_nuclear_basis(self, dirnow, atom_id, nuclear_basis):
         '''Try reading nuclear basis from file with proper isotope scaling'''
         # Try original basis name
         try:
-            basis = self._read_basis_file(dirnow, self.nuclear_basis, atom_id)
+            basis = self._read_basis_file(dirnow, nuclear_basis, atom_id)
             if basis is not None:
                 return basis
         except FileNotFoundError:
@@ -549,7 +593,7 @@ class Mole(gto.Mole):
 
         # Try lower case basis name
         try:
-            basis = self._read_basis_file(dirnow, self.nuclear_basis.lower(), atom_id)
+            basis = self._read_basis_file(dirnow, nuclear_basis.lower(), atom_id)
             if basis is not None:
                 return basis
         except FileNotFoundError:
@@ -557,7 +601,7 @@ class Mole(gto.Mole):
 
         # Try basis name without dashes/underscores
         try:
-            clean_name = self.nuclear_basis.replace('-','').replace('_','')
+            clean_name = nuclear_basis.replace('-','').replace('_','')
             basis = self._read_basis_file(dirnow, clean_name, atom_id)
             if basis is not None:
                 return basis
@@ -566,7 +610,7 @@ class Mole(gto.Mole):
 
         # Try lower case basis name without dashes/underscores
         try:
-            clean_name = self.nuclear_basis.lower().replace('-','').replace('_','')
+            clean_name = nuclear_basis.lower().replace('-','').replace('_','')
             basis = self._read_basis_file(dirnow, clean_name, atom_id)
             if basis is not None:
                 return basis
@@ -591,38 +635,9 @@ class Mole(gto.Mole):
                     x[1][0] *= ratio
             return basis
 
-    def _build_even_tempered_nuclear_basis(self, atom_id):
+    def _build_even_tempered_nuclear_basis(self, atom_id, nuclear_basis=None):
         '''Build default even-tempered basis for nucleus'''
-        if self.atom_pure_symbol(atom_id) == 'H':
-            if 'H+' in self.atom_symbol(atom_id):
-                alpha = 4.0
-            else:
-                alpha = 2 * numpy.sqrt(2)
-            beta = numpy.sqrt(2)
-            n = -1
-        else:
-            # Probably should have been sqrt(mass) but this is in the paper
-            alpha = 2 * numpy.sqrt(2) * self.mass[atom_id]
-            beta = numpy.sqrt(3)
-            n = 12
-        m = re.search(r"(\d+)s(\d+)p(\d+)d(\d+)?f?", self.nuclear_basis)
-        if m:
-            if m.group(4) is None:
-                basis = gto.expand_etbs([(0, int(m.group(1)), alpha, beta),
-                                         (1, int(m.group(2)), alpha, beta),
-                                         (2, int(m.group(3)), alpha, beta)])
-            else:
-                basis = gto.expand_etbs([(0, int(m.group(1)), alpha, beta),
-                                         (1, int(m.group(2)), alpha, beta),
-                                         (2, int(m.group(3)), alpha, beta),
-                                         (3, int(m.group(4)), alpha, beta)])
-            return basis
-        elif n > 0:
-            return gto.expand_etbs([(0, n, alpha, beta),
-                                    (1, n, alpha, beta),
-                                    (2, n, alpha, beta)])
-        else:
-            raise ValueError(f'Unsupported nuclear basis {self.nuclear_basis}')
+        return make_even_tempered_nuclear_basis(self, atom_id, nuclear_basis)
 
     copy = copy
 
