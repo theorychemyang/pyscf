@@ -1,283 +1,239 @@
-#!/usr/bin/env python
-
-'''
-Density-fitting for interaction Coulomb in (C)NEO
-'''
-
 import tempfile
+import contextlib
+import ctypes
 import numpy
-import scipy
-from pyscf import gto, lib, scf, df, neo
-from pyscf.df import df_jk
-from pyscf.neo import hf, ks
+import scipy.linalg
+import h5py
+from pyscf import lib, gto, scf, neo
 from pyscf.lib import logger
-from pyscf.df.incore import MAX_MEMORY, LINEAR_DEP_THR, aux_e2, _eig_decompose
+from pyscf.df import addons, df, df_jk
+from pyscf.df.incore import aux_e2, _eig_decompose
+from pyscf.ao2mo.outcore import _load_from_h5g
+from pyscf.ao2mo import _ao2mo
+from pyscf import __config__
 
 
-def cholesky_eri(mol, auxbasis='weigend+etb', auxmol=None,
-                 int3c='int3c2e', aosym='s2ij', int2c='int2c2e', comp=1,
-                 max_memory=MAX_MEMORY, decompose_j2c='cd',
-                 lindep=LINEAR_DEP_THR, verbose=0, fauxe2=aux_e2, low=None):
-    '''
-    Modified from pyscf.df.incore, add low as additional return
-    Returns:
-        2D array of (naux,nao*(nao+1)/2) in C-contiguous
-        Lower triangular matrix from decompostion
-    '''
+MAX_MEMORY = getattr(__config__, 'df_outcore_max_memory', 2000)  # 2GB
+# LINEAR_DEP_THR cannot be below 1e-7,
+# see qchem default setting in https://manual.q-chem.com/5.4/sec_Basis_Customization.html
+LINEAR_DEP_THR = getattr(__config__, 'df_df_DF_lindep', 1e-7)
+
+def cholesky_eri_incore(mol, auxbasis='weigend+etb', auxmol=None,
+                        int3c='int3c2e', aosym='s2ij', int2c='int2c2e', comp=1,
+                        max_memory=MAX_MEMORY, decompose_j2c='cd',
+                        lindep=LINEAR_DEP_THR, verbose=0, fauxe2=aux_e2):
     from pyscf.df.outcore import _guess_shell_ranges
     assert (comp == 1)
     t0 = (logger.process_clock(), logger.perf_counter())
     log = logger.new_logger(mol, verbose)
     if auxmol is None:
-        auxmol = df.addons.make_auxmol(mol, auxbasis)
+        auxmol = addons.make_auxmol(mol.components['e'], auxbasis)
 
-    if low is None:
-        j2c = auxmol.intor(int2c, hermi=1)
-        if decompose_j2c == 'eig':
+    if not mol.cart and auxmol.cart:
+        raise NotImplementedError('Interface for int3c2e_ssc')
+    elif mol.cart and not auxmol.cart:
+        raise RuntimeError('Cartesian orbitals for mol and spherical orbitals for auxmol not supported')
+
+    j2c = auxmol.intor(int2c, hermi=1)
+    if decompose_j2c == 'eig':
+        low = _eig_decompose(mol, j2c, lindep)
+    else:
+        try:
+            low = scipy.linalg.cholesky(j2c, lower=True)
+            decompose_j2c = 'cd'
+        except scipy.linalg.LinAlgError:
             low = _eig_decompose(mol, j2c, lindep)
-        else:
-            try:
-                low = scipy.linalg.cholesky(j2c, lower=True)
-                decompose_j2c = 'cd'
-            except scipy.linalg.LinAlgError:
-                low = _eig_decompose(mol, j2c, lindep)
-                decompose_j2c = 'eig'
-        j2c = None
-
+            decompose_j2c = 'eig'
+    j2c = None
     naux, naoaux = low.shape
     log.debug('size of aux basis %d', naux)
     log.timer_debug1('2c2e', *t0)
 
-    int3c = gto.moleintor.ascint3(mol._add_suffix(int3c))
-    atm, bas, env = gto.mole.conc_env(mol._atm, mol._bas, mol._env,
-                                      auxmol._atm, auxmol._bas, auxmol._env)
-    ao_loc = gto.moleintor.make_loc(bas, int3c)
-    nao = int(ao_loc[mol.nbas])
+    max_words = max_memory*.98e6/8 - low.size
+    cderi = {}
+    for t, mol_ in mol.components.items():
+        int3c = gto.moleintor.ascint3(mol_._add_suffix(int3c))
+        atm, bas, env = gto.mole.conc_env(mol_._atm, mol_._bas, mol_._env,
+                                          auxmol._atm, auxmol._bas, auxmol._env)
+        ao_loc = gto.moleintor.make_loc(bas, int3c)
+        nao = int(ao_loc[mol_.nbas])
 
-    if aosym == 's1':
-        nao_pair = nao * nao
-    else:
-        nao_pair = nao * (nao+1) // 2
-
-    cderi = numpy.empty((naux, nao_pair))
-
-    max_words = max_memory*.98e6/8 - low.size - cderi.size
-    # Divide by 3 because scipy.linalg.solve may create a temporary copy for
-    # ints and return another copy for results
-    buflen = min(max(int(max_words/naoaux/comp/3), 8), nao_pair)
-    shranges = _guess_shell_ranges(mol, buflen, aosym)
-    log.debug1('shranges = %s', shranges)
-
-    cintopt = gto.moleintor.make_cintopt(atm, bas, env, int3c)
-    bufs1 = numpy.empty((comp*max([x[2] for x in shranges]),naoaux))
-    bufs2 = numpy.empty_like(bufs1)
-
-    p1 = 0
-    for istep, sh_range in enumerate(shranges):
-        log.debug('int3c2e [%d/%d], AO [%d:%d], nrow = %d',
-                  istep+1, len(shranges), *sh_range)
-        bstart, bend, nrow = sh_range
-        shls_slice = (bstart, bend, 0, mol.nbas, mol.nbas, mol.nbas+auxmol.nbas)
-        ints = gto.moleintor.getints3c(int3c, atm, bas, env, shls_slice, comp,
-                                       aosym, ao_loc, cintopt, out=bufs1)
-
-        if ints.ndim == 3 and ints.flags.f_contiguous:
-            ints = lib.transpose(ints.T, axes=(0,2,1), out=bufs2).reshape(naoaux,-1)
-            bufs1, bufs2 = bufs2, bufs1
+        if aosym == 's1':
+            nao_pair = nao * nao
         else:
-            ints = ints.reshape((-1,naoaux)).T
+            nao_pair = nao * (nao+1) // 2
 
-        p0, p1 = p1, p1 + nrow
-        if decompose_j2c == 'cd':
-            if ints.flags.c_contiguous:
-                trsm, = scipy.linalg.get_blas_funcs(('trsm',), (low, ints))
-                dat = trsm(1.0, low, ints.T, lower=True, trans_a = 1,
-                           side = 1, overwrite_b=True).T
+        cderi[t] = numpy.empty((naux, nao_pair))
+
+        max_words -= cderi[t].size
+        # Divide by 3 because scipy.linalg.solve may create a temporary copy for
+        # ints and return another copy for results
+        buflen = min(max(int(max_words/naoaux/comp/3), 8), nao_pair)
+        shranges = _guess_shell_ranges(mol_, buflen, aosym)
+        log.debug1('shranges = %s', shranges)
+
+        cintopt = gto.moleintor.make_cintopt(atm, bas, env, int3c)
+        bufs1 = numpy.empty((comp*max([x[2] for x in shranges]),naoaux))
+        bufs2 = numpy.empty_like(bufs1)
+
+        p1 = 0
+        for istep, sh_range in enumerate(shranges):
+            log.debug('int3c2e for %s [%d/%d], AO [%d:%d], nrow = %d',
+                      t, istep+1, len(shranges), *sh_range)
+            bstart, bend, nrow = sh_range
+            shls_slice = (bstart, bend, 0, mol_.nbas, mol_.nbas, mol_.nbas+auxmol.nbas)
+            ints = gto.moleintor.getints3c(int3c, atm, bas, env, shls_slice, comp,
+                                           aosym, ao_loc, cintopt, out=bufs1)
+
+            if ints.ndim == 3 and ints.flags.f_contiguous:
+                ints = lib.transpose(ints.T, axes=(0,2,1), out=bufs2).reshape(naoaux,-1)
+                bufs1, bufs2 = bufs2, bufs1
             else:
-                dat = scipy.linalg.solve_triangular(low, ints, lower=True,
-                                                    overwrite_b=True,
-                                                    check_finite=False)
-            if dat.flags.f_contiguous:
-                dat = lib.transpose(dat.T, out=bufs2)
-            cderi[:,p0:p1] = dat
-        else:
-            dat = numpy.ndarray((naux, ints.shape[1]), buffer=bufs2)
-            cderi[:,p0:p1] = lib.dot(low, ints, c=dat)
-        dat = ints = None
+                ints = ints.reshape((-1,naoaux)).T
+
+            p0, p1 = p1, p1 + nrow
+            if decompose_j2c == 'cd':
+                if ints.flags.c_contiguous:
+                    trsm, = scipy.linalg.get_blas_funcs(('trsm',), (low, ints))
+                    dat = trsm(1.0, low, ints.T, lower=True, trans_a = 1, side = 1, overwrite_b=True).T
+                else:
+                    dat = scipy.linalg.solve_triangular(low, ints, lower=True,
+                                                       overwrite_b=True, check_finite=False)
+                if dat.flags.f_contiguous:
+                    dat = lib.transpose(dat.T, out=bufs2)
+                cderi[t][:,p0:p1] = dat
+            else:
+                dat = numpy.ndarray((naux, ints.shape[1]), buffer=bufs2)
+                cderi[t][:,p0:p1] = lib.dot(low, ints, c=dat)
+            dat = ints = None
 
     log.timer('cholesky_eri', *t0)
-    return cderi, low
+    return cderi
 
-def dot_cderi_dm(eri1, eri2, dm1, dm2_len):
-    dms1 = numpy.asarray(dm1)
-    dm_shape1 = dms1.shape
-    nao1 = dm_shape1[-1]
-    dms1 = dms1.reshape(-1,nao1,nao1)
+def cholesky_eri_b_outcore(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
+                           int3c='int3c2e', aosym='s2ij', int2c='int2c2e', comp=1,
+                           max_memory=MAX_MEMORY, auxmol=None, decompose_j2c='CD',
+                           lindep=LINEAR_DEP_THR, verbose=logger.NOTE):
+    from pyscf.df.outcore import _guess_shell_ranges, _create_h5file
+    assert (aosym in ('s1', 's2ij'))
+    log = logger.new_logger(mol, verbose)
+    time0 = (logger.process_clock(), logger.perf_counter())
 
-    idx = numpy.arange(nao1)
-    dmtril = lib.pack_tril(dms1 + dms1.conj().transpose(0,2,1))
-    dmtril[:,idx*(idx+1)//2+idx] *= .5
-    vj = dmtril.dot(eri1.T).dot(eri2)
-    if len(dm_shape1) == 2:
-        return lib.unpack_tril(vj, 1).reshape((dm2_len, dm2_len))
-    # To support multiple dm1
-    return lib.unpack_tril(vj, 1).reshape((-1, dm2_len, dm2_len))
+    if auxmol is None:
+        auxmol = addons.make_auxmol(mol.components['e'], auxbasis)
 
-def _build_cderi(mf_e, mf_n, cart, max_memory, verbose=0):
-    auxmol_e = mf_e.with_df.auxmol
-    low = mf_e.with_df._low
+    if not mol.cart and auxmol.cart:
+        raise NotImplementedError('Interface for int3c2e_ssc')
+    elif mol.cart and not auxmol.cart:
+        raise RuntimeError('Cartesian orbitals for mol and spherical orbitals for auxmol not supported')
 
-    if auxmol_e is None:
-        auxmol_e = df.addons.make_auxmol(mf_e.mol, mf_e.with_df.auxbasis)
-        mf_e.with_df.auxmol = auxmol_e
-
-    naux_e = auxmol_e.nao_nr()
-    mol_n = mf_n.mol
-    nao_n = mol_n.nao_nr()
-    nao_n_pair = nao_n*(nao_n+1)//2
-
-    max_memory = max_memory - lib.current_memory()[0]
-
-    if cart:
-        int3c = 'int3c2e_cart'
-        int2c = 'int2c2e_cart'
+    j2c = auxmol.intor(int2c, hermi=1)
+    log.debug('size of aux basis %d', j2c.shape[0])
+    time1 = log.timer('2c2e', *time0)
+    decompose_j2c = decompose_j2c.upper()
+    if decompose_j2c != 'CD':
+        low = _eig_decompose(mol, j2c, lindep)
     else:
-        int3c = 'int3c2e_sph'
-        int2c = 'int2c2e_sph'
+        try:
+            low = scipy.linalg.cholesky(j2c, lower=True)
+            decompose_j2c = 'CD'
+        except scipy.linalg.LinAlgError:
+            low = _eig_decompose(mol, j2c, lindep)
+            decompose_j2c = 'ED'
+    j2c = None
+    naoaux, naux = low.shape
+    time1 = log.timer('Cholesky 2c2e', *time1)
 
-    if nao_n_pair*naux_e*8/1e6 < .9*max_memory:
-        return cholesky_eri(mol_n, auxmol=auxmol_e,
-                            int3c=int3c, int2c=int2c,
-                            max_memory=max_memory, verbose=verbose,
-                            low=low)
-    else:
-        raise NotImplementedError('outcore df_ne not implemented')
-
-def density_fit_e(mf, auxbasis=None, with_df=None, only_dfj=False):
-    '''Modified from pyscf.df.df_jk to use DFE class instead of df.DF as with_df'''
-    assert (isinstance(mf, scf.hf.SCF))
-
-    if with_df is None:
-        with_df = DFE(mf.mol)
-        with_df.max_memory = mf.max_memory
-        with_df.stdout = mf.stdout
-        with_df.verbose = mf.verbose
-        with_df.auxbasis = auxbasis
-
-    if isinstance(mf, df_jk._DFHF):
-        if mf.with_df is None:
-            mf.with_df = with_df
-        elif getattr(mf.with_df, 'auxbasis', None) != auxbasis:
-            #logger.warn(mf, 'DF might have been initialized twice.')
-            mf = mf.copy()
-            mf.with_df = with_df
-            mf.only_dfj = only_dfj
-        return mf
-
-    dfmf = df_jk._DFHF(mf, with_df, only_dfj)
-    return lib.set_class(dfmf, (df_jk._DFHF, mf.__class__))
-
-def density_fit(mf, auxbasis=None, ee_only_dfj=False, df_ne=False):
-    assert isinstance(mf, neo.HF)
-
-    if not isinstance(mf.components['e'], df_jk._DFHF):
-        mf.components['e'] = density_fit_e(mf.components['e'],
-                                           auxbasis=auxbasis,
-                                           only_dfj=ee_only_dfj)
-
-    if isinstance(mf, _DFNEO):
-        return mf
-
-    dfmf = _DFNEO(mf, auxbasis, ee_only_dfj, df_ne)
-    if df_ne:
-        name = _DFNEO.__name_mixin__ + '-EE&NE-' + mf.__class__.__name__
-    else:
-        name = _DFNEO.__name_mixin__ + '-EE-' + mf.__class__.__name__
-    return lib.set_class(dfmf, (_DFNEO, mf.__class__), name)
-
-class DFInteractionCoulomb(hf.InteractionCoulomb):
-    def __init__(self, *args, df_ne=False, auxbasis=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.df_ne = df_ne
-        self.auxbasis = auxbasis
-        self._cderi = None
-        self._low = None
-
-    def get_vint(self, dm):
-        if not self.df_ne or not \
-           ((self.mf1_type.startswith('n') and self.mf2_type.startswith('e')) or
-            (self.mf1_type.startswith('e') and self.mf2_type.startswith('n'))):
-            return super().get_vint(dm)
-
-        assert isinstance(dm, dict)
-        assert self.mf1_type in dm or self.mf2_type in dm
-        # Spin-insensitive interactions: sum over spin in dm first
-        dm1 = dm.get(self.mf1_type)
-        dm2 = dm.get(self.mf2_type)
-
-        # Get total densities if the dm has two spin channels
-        if dm1 is not None and self.mf1_unrestricted:
-            assert dm1.ndim > 2 and dm1.shape[0] == 2
-            dm1 = dm1[0] + dm1[1]
-
-        if dm2 is not None and self.mf2_unrestricted:
-            assert dm2.ndim > 2 and dm2.shape[0] == 2
-            dm2 = dm2[0] + dm2[1]
-
-        mol1 = self.mf1.mol
-        mol2 = self.mf2.mol
-        mol = mol1.super_mol
-        assert mol == mol2.super_mol
-
-        vj = {}
-        if self.mf1_type == 'e':
-            mf_e = self.mf1
-            dm_e = dm1
-            mf_n = self.mf2
-            dm_n = dm2
-            t_n = self.mf2_type
+    def transform(b):
+        if b.ndim == 3 and b.flags.f_contiguous:
+            b = lib.transpose(b.T, axes=(0,2,1)).reshape(naoaux,-1)
         else:
-            mf_e = self.mf2
-            dm_e = dm2
-            mf_n = self.mf1
-            dm_n = dm1
-            t_n = self.mf1_type
+            b = b.reshape((-1,naoaux)).T
+        if decompose_j2c != 'CD':
+            return lib.dot(low, b)
 
-        assert isinstance(mf_e, df_jk._DFHF)
+        if b.flags.c_contiguous:
+            trsm, = scipy.linalg.get_blas_funcs(('trsm',), (low, b))
+            return trsm(1.0, low, b.T, lower=True, trans_a = 1, side = 1,
+                     overwrite_b=True).T
+        else:
+            return scipy.linalg.solve_triangular(low, b, lower=True,
+                                             overwrite_b=True, check_finite=False)
 
-        if self._cderi is None:
-            self._cderi, self._low = _build_cderi(mf_e, mf_n, mol.cart,
-                                                  self.max_memory, mol.verbose)
-            if mf_e.with_df._low is None:
-                mf_e.with_df._low = self._low
+    for t, mol_ in mol.components.items():
+        int3c = gto.moleintor.ascint3(mol_._add_suffix(int3c))
+        atm, bas, env = gto.mole.conc_env(mol_._atm, mol_._bas, mol_._env,
+                                          auxmol._atm, auxmol._bas, auxmol._env)
+        ao_loc = gto.moleintor.make_loc(bas, int3c)
+        nao = int(ao_loc[mol_.nbas])
+        naoaux = int(ao_loc[-1] - nao)
+        if aosym == 's1':
+            nao_pair = nao * nao
+            buflen = min(max(int(max_memory*.24e6/8/naoaux/comp), 1), nao_pair)
+            shranges = _guess_shell_ranges(mol_, buflen, 's1')
+        else:
+            nao_pair = nao * (nao+1) // 2
+            buflen = min(max(int(max_memory*.24e6/8/naoaux/comp), 1), nao_pair)
+            shranges = _guess_shell_ranges(mol_, buflen, 's2ij')
+        log.debug('erifile %.8g MB, IO buf size %.8g MB',
+                  naoaux*nao_pair*8/1e6, comp*buflen*naoaux*8/1e6)
+        log.debug1('shranges = %s', shranges)
+        # TODO: Libcint-3.14 and newer version support to compute int3c2e without
+        # the opt for the 3rd index.
+        #if '3c2e' in int3c:
+        #    cintopt = gto.moleintor.make_cintopt(atm, mol._bas, env, int3c)
+        #else:
+        #    cintopt = gto.moleintor.make_cintopt(atm, bas, env, int3c)
+        cintopt = gto.moleintor.make_cintopt(atm, bas, env, int3c)
+        bufs1 = numpy.empty((comp*max([x[2] for x in shranges]),naoaux))
+        bufs2 = numpy.empty_like(bufs1)
 
-        if dm_e is not None:
-            vj[t_n] = dot_cderi_dm(mf_e._cderi, self._cderi, dm_e, mf_n.mol.nao_nr())
+        def process(sh_range):
+            nonlocal bufs1, bufs2
+            bufs2, bufs1 = bufs1, bufs2
+            bstart, bend, nrow = sh_range
+            shls_slice = (bstart, bend, 0, mol_.nbas, mol_.nbas, mol_.nbas+auxmol.nbas)
+            ints = gto.moleintor.getints3c(int3c, atm, bas, env, shls_slice, comp,
+                                           aosym, ao_loc, cintopt, out=bufs1)
+            if comp == 1:
+                dat = transform(ints)
+            else:
+                dat = [transform(x) for x in ints]
+            return dat
 
-        if dm_n is not None:
-            vj['e'] = dot_cderi_dm(self._cderi, mf_e._cderi, dm_n, mf_e.mol.nao_nr())
+        feri = _create_h5file(erifile, f'{dataname}/{t}')
 
-        charge_product = self.mf1.charge * self.mf2.charge
+        for istep, dat in enumerate(lib.map_with_prefetch(process, shranges)):
+            sh_range = shranges[istep]
+            label = f'{dataname}/{t}/{istep}'
+            if comp == 1:
+                feri[label] = dat
+            else:
+                shape = (len(dat),) + dat[0].shape
+                fdat = feri.create_dataset(label, shape, dat[0].dtype.char)
+                for i, b in enumerate(dat):
+                    fdat[i] = b
+            dat = None
+            log.debug('int3c2e for %s [%d/%d], AO [%d:%d], nrow = %d',
+                      t, istep+1, len(shranges), *sh_range)
+            time1 = log.timer('gen CD eri for %s [%d/%d]' % (t,istep+1,len(shranges)), *time1)
+        bufs1 = None
+        bufs2 = None
+    feri.flush()
+    feri.close()
+    return erifile
 
-        if self.mf1_type in vj:
-            vj[self.mf1_type] *= charge_product
-
-        if self.mf2_type in vj:
-            vj[self.mf2_type] *= charge_product
-
-        return vj
-
-class DFInteractionCorrelation(ks.InteractionCorrelation, DFInteractionCoulomb):
-    def __init__(self, *args, df_ne=False, auxbasis=None, epc=None, **kwargs):
-        super().__init__(*args, epc=epc, **kwargs)
-        DFInteractionCoulomb.__init__(self, *args, df_ne=df_ne,
-                                      auxbasis=auxbasis, **kwargs)
-
-class DFE(df.DF):
-    '''Modfied from pyscf.df to also hold int2c2e deocomposition low'''
+class DF(df.DF):
+    '''build all e-e and e-n cderi'''
     def __init__(self, mol, auxbasis=None):
         super().__init__(mol, auxbasis)
-        self._low = None # chelosky decomposition of int2c2e
+        self._cderi_names = list(self.mol.components.keys())
+        self._charges = {}
+        self._unrestricted = {}
+
+    __getstate__, __setstate__ = lib.generate_pickle_methods(
+            excludes=('_cderi_to_save', '_cderi', '_cderi_names', '_vjopt', '_rsh_df'),
+            reset_state=True)
 
     def build(self):
         t0 = (logger.process_clock(), logger.perf_counter())
@@ -290,22 +246,23 @@ class DFE(df.DF):
             return self
 
         mol = self.mol
-        auxmol = self.auxmol = df.addons.make_auxmol(self.mol, self.auxbasis)
-        nao = mol.nao_nr()
+        auxmol = self.auxmol = addons.make_auxmol(self.mol.components['e'], self.auxbasis)
         naux = auxmol.nao_nr()
-        nao_pair = nao*(nao+1)//2
+        nao_pair = 0
+        for t, comp in mol.components.items():
+            nao = comp.nao_nr()
+            nao_pair += nao*(nao+1)//2
 
         is_custom_storage = isinstance(self._cderi_to_save, str)
         max_memory = self.max_memory - lib.current_memory()[0]
         int3c = mol._add_suffix('int3c2e')
         int2c = mol._add_suffix('int2c2e')
-
         if (nao_pair*naux*8/1e6 < .9*max_memory and not is_custom_storage):
-            self._cderi, self._low = cholesky_eri(
-                mol, int3c=int3c, int2c=int2c,
-                auxmol=auxmol, max_memory=max_memory,
-                verbose=log, low=self._low) # NOTE: only difference from df.DF
+            self._cderi = cholesky_eri_incore(mol, int3c=int3c, int2c=int2c,
+                                              auxmol=auxmol,
+                                              max_memory=max_memory, verbose=log)
         else:
+            log.warn(f'Low memory: {max_memory=}. Outcore DF integrals.')
             if self._cderi_to_save is None:
                 self._cderi_to_save = tempfile.NamedTemporaryFile(dir=lib.param.TMPDIR)
             cderi = self._cderi_to_save
@@ -322,51 +279,990 @@ class DFE(df.DF):
                          'saved in file %s .', cderi_name)
 
             if self._compatible_format:
-                df.outcore.cholesky_eri(
-                    mol, cderi, dataname=self._dataname,
-                    int3c=int3c, int2c=int2c, auxmol=auxmol,
-                    max_memory=max_memory, verbose=log)
+                raise NotImplementedError
             else:
                 # Store DF tensor in blocks. This is to reduce the
                 # initialization overhead
-                df.outcore.cholesky_eri_b(
-                    mol, cderi, dataname=self._dataname,
-                    int3c=int3c, int2c=int2c, auxmol=auxmol,
-                    max_memory=max_memory, verbose=log)
-
+                cholesky_eri_b_outcore(mol, cderi, dataname=self._dataname,
+                                       int3c=int3c, int2c=int2c, auxmol=auxmol,
+                                       max_memory=max_memory, verbose=log)
             self._cderi = cderi
             log.timer_debug1('Generate density fitting integrals', *t0)
         return self
 
     def reset(self, mol=None):
-        super().reset(mol)
-        self._low = None # clear _low to avoid reusing wrong _low in rsh_df
+        '''Reset mol and clean up relevant attributes for scanner mode'''
+        if mol is not None:
+            self.mol = mol
+            self.auxmol = None
+        self._cderi = None
+        self._cderi_names = list(self.mol.components.keys())
+        self._vjopt = None
+        self._rsh_df = {}
         return self
+
+    def loop(self, blksize=None):
+        if self._cderi is None:
+            self.build()
+        if blksize is None:
+            blksize = self.blockdim
+
+        names = self._cderi_names
+
+        if isinstance(self._cderi, dict):
+            cderi = self._cderi
+            naoaux = cderi[names[0]].shape[0]
+
+            for name in names:
+                v = cderi.get(name, None)
+                if v is None:
+                    raise RuntimeError(f'Missing incore cderi entry {name}')
+                if v.shape[0] != naoaux:
+                    raise RuntimeError(f'Inconsistent naoaux: cderi[{name}].shape[0]={v.shape[0]} != {naoaux}')
+
+            for b0, b1 in self.prange(0, naoaux, blksize):
+                out = {}
+                for name in names:
+                    out[name] = numpy.asarray(cderi[name][b0:b1], order='C')
+                yield out
+        else:
+            with addons.load(self._cderi, None) as root:
+                loaders = []
+                naoaux = None
+                for name in names:
+                    path = f'{self._dataname}/{name}'
+                    if path not in root:
+                        raise RuntimeError(f'Cannot find outcore entry "{path}" in cderi container')
+
+                    feri = root[path]
+                    if isinstance(feri, h5py.Group):
+                        # starting from pyscf-1.7, DF tensor may be stored in
+                        # block format
+                        naoaux_ = feri['0'].shape[0]
+                        def load(aux_slice, feri=feri):
+                            b0, b1 = aux_slice
+                            return _load_from_h5g(feri, b0, b1)
+                    else:
+                        naoaux_ = feri.shape[0]
+                        def load(aux_slice, feri=feri):
+                            b0, b1 = aux_slice
+                            return numpy.asarray(feri[b0:b1])
+
+                    if naoaux is None:
+                        naoaux = naoaux_
+                    elif naoaux_ != naoaux:
+                        raise RuntimeError(f'Inconsistent naoaux: entry "{path}" has {naoaux_}, expected {naoaux}')
+
+                    loaders.append((name, load))
+
+                def load_all(aux_slice):
+                    out = {}
+                    for name, fn in loaders:
+                        out[name] = fn(aux_slice)
+                    return out
+
+                for dat in lib.map_with_prefetch(load_all, self.prange(0, naoaux, blksize)):
+                    yield dat
+                    dat = None
+
+    def get_naoaux(self):
+        # determine naoaux with self._cderi, because DF object may be used as CD
+        # object when self._cderi is provided.
+        if self._cderi is None:
+            self.build()
+        names = self._cderi_names
+        if isinstance(self._cderi, dict):
+            return self._cderi[names[0]].shape[0]
+        else:
+            with addons.load(self._cderi, f'{self._dataname}/{names[0]}') as feri:
+                if isinstance(feri, h5py.Group):
+                    return feri['0'].shape[0]
+                else:
+                    return feri.shape[0]
+
+    def get_jk(self, dm, hermi=1, with_j=True, with_k=True,
+               direct_scf_tol=getattr(__config__, 'scf_hf_SCF_direct_scf_tol', 1e-13),
+               omega=None):
+        if omega is not None:
+            raise ValueError('RSH-DF is supposed to be handled by elec component.')
+
+        return get_jk(self, dm, hermi, with_j, with_k, direct_scf_tol)
+
+    def get_j(self, dm, hermi=1, omega=None):
+        return self.get_jk(dm, hermi, with_k=False, omega=omega)[0]
+
+    def get_eri(self):
+        raise NotImplementedError
+
+    def ao2mo(self, mo_coeffs,
+              compact=getattr(__config__, 'df_df_DF_ao2mo_compact', True)):
+        raise NotImplementedError
+
+    def range_coulomb(self, omega):
+        raise ValueError
+
+def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
+    '''vj returned is already combined for alpha and beta spins'''
+    assert (with_j or with_k)
+    if (not with_k and not dfobj.mol.incore_anyway and
+        # 3-center integral tensor is not initialized
+        dfobj._cderi is None):
+        return get_j(dfobj, dm, hermi, direct_scf_tol), None
+
+    t0 = t1 = (logger.process_clock(), logger.perf_counter())
+    log = logger.Logger(dfobj.stdout, dfobj.verbose)
+    fmmm = _ao2mo.libao2mo.AO2MOmmm_bra_nr_s2
+    fdrv = _ao2mo.libao2mo.AO2MOnr_e2_drv
+    ftrans = _ao2mo.libao2mo.AO2MOtranse2_nr_s2
+    null = lib.c_null_ptr()
+
+    dms = {}
+    dm_shape = {}
+    dm_e = None # 'e' total density for unrestricted case
+    dm_shape_e = None # 'e' total density matrix shape
+    vj = {}
+    vj_inter = {}
+    nao_e = None
+    nao_max = 0
+    for t, dm_ in dm.items():
+        dms[t] = numpy.asarray(dm_)
+        dm_shape[t] = dms[t].shape
+        nao = dm_shape[t][-1]
+        if t == 'e':
+            nao_e = nao
+        elif nao > nao_max:
+            nao_max = nao
+        if t == 'e' and dfobj._unrestricted[t]:
+            # TODO: what if dm[0] + dm[1] is passed to get_jk with with_k=False?
+            assert dms['e'].shape[0] == 2
+            # get total density for vj
+            dm_e = dms['e'][0] + dms['e'][1]
+            dm_shape_e = dm_e.shape
+            dm_e = dm_e.reshape(-1,nao,nao)
+        dms[t] = dms[t].reshape(-1,nao,nao)
+        if t == 'e' and not dfobj._unrestricted[t]:
+            # restricted, simply a mapping. TODO: ROHF?
+            dm_e = dms['e']
+            dm_shape_e = dm_shape['e']
+        vj[t] = 0
+        vj_inter[t] = 0
+    assert nao_max > 0 # max of nuc nao
+    vk = numpy.zeros_like(dms['e'])
+    nset = dms['e'].shape[0]
+    if dfobj._unrestricted['e']:
+        expected_nset = nset // 2
+    else:
+        expected_nset = nset
+    # make sure nset is consistent across all dm
+    for t, dm_ in dm.items():
+        if t == 'e':
+            continue
+        if not t.startswith('n'):
+            raise NotImplementedError
+        if dms[t].shape[0] != expected_nset:
+            raise ValueError(f'Density matrix of {t} has nset={dms[t].shape[0]}, expected {expected_nset}.')
+
+    if numpy.iscomplexobj(dms['e']):
+        if with_j:
+            assert numpy.iscomplexobj(dm_e)
+            vj['e'] = numpy.zeros_like(dm_e)
+            vj_inter['e'] = numpy.zeros_like(dm_e)
+            for t, dm_ in dms.items():
+                if t == 'e':
+                    continue
+                # in this case, nuc dm and vj should also be complex
+                vj[t] = numpy.zeros_like(dm_, dtype=dm_e.dtype)
+                vj_inter[t] = numpy.zeros_like(dm_, dtype=dm_e.dtype)
+
+        max_memory = dfobj.max_memory - lib.current_memory()[0]
+        total_nao_square = nao_e**2
+        if with_j:
+            for t, dm_shape_ in dm_shape.items():
+                if t == 'e':
+                    continue
+                total_nao_square += dm_shape_[-1]**2
+        blksize = max(4, int(min(dfobj.blockdim, max_memory*.22e6/8/total_nao_square)))
+        nao = nao_e
+        buf = numpy.empty((blksize,nao,nao))
+        buf1 = numpy.empty((nao,blksize,nao))
+        buf_n = numpy.empty((blksize,nao_max,nao_max))
+        for eri1 in dfobj.loop(blksize):
+            eri1_e = eri1['e']
+            naux, nao_pair = eri1_e.shape
+            eri1_e = lib.unpack_tril(eri1_e, out=buf)
+            if with_j:
+                eri_e_dm_real = numpy.einsum('pij,nji->pn', eri1_e, dm_e.real)
+                eri_e_dm_imag = numpy.einsum('pij,nji->pn', eri1_e, dm_e.imag)
+                eri_n_dm_real = 0
+                eri_n_dm_imag = 0
+                for t, dm_ in dms.items():
+                    if t == 'e':
+                        continue
+                    eri1_n = eri1[t]
+                    eri1_n = lib.unpack_tril(eri1_n, out=buf_n)
+                    vj_t_real = numpy.einsum('pn,pij->nij', eri_e_dm_real, eri1_n) * dfobj._charges[t]
+                    vj_t_imag = numpy.einsum('pn,pij->nij', eri_e_dm_imag, eri1_n) * dfobj._charges[t]
+                    vj[t].real += vj_t_real
+                    vj[t].imag += vj_t_imag
+                    vj_inter[t].real += vj_t_real
+                    vj_inter[t].imag += vj_t_imag
+                    eri_n_dm_real += numpy.einsum('pij,nji->pn', eri1_n, dm_.real) * dfobj._charges[t]
+                    eri_n_dm_imag += numpy.einsum('pij,nji->pn', eri1_n, dm_.imag) * dfobj._charges[t]
+                vj['e'].real += numpy.einsum('pn,pij->nij', eri_e_dm_real + eri_n_dm_real, eri1_e)
+                vj['e'].imag += numpy.einsum('pn,pij->nij', eri_e_dm_imag + eri_n_dm_imag, eri1_e)
+                vj_inter['e'].real += numpy.einsum('pn,pij->nij', eri_n_dm_real, eri1_e)
+                vj_inter['e'].imag += numpy.einsum('pn,pij->nij', eri_n_dm_imag, eri1_e)
+            buf2 = numpy.ndarray((nao_e,naux,nao_e), buffer=buf1)
+            for k in range(nset):
+                buf2[:] = lib.einsum('pij,jk->ipk', eri1_e, dms['e'][k].real)
+                vk[k].real += lib.einsum('ipk,pkj->ij', buf2, eri1_e)
+                buf2[:] = lib.einsum('pij,jk->ipk', eri1_e, dms['e'][k].imag)
+                vk[k].imag += lib.einsum('ipk,pkj->ij', buf2, eri1_e)
+            t1 = log.timer_debug1('jk', *t1)
+        if with_j:
+            vj['e'] = vj['e'].reshape(dm_shape_e)
+            vj_inter['e'] = vj_inter['e'].reshape(dm_shape_e)
+            vj['e'] = lib.tag_array(vj['e'], vint=vj_inter['e'])
+            for t, dm_shape_ in dm_shape.items():
+                if t == 'e':
+                    continue
+                vj[t] = vj[t].reshape(dm_shape_)
+                vj_inter[t] = vj_inter[t].reshape(dm_shape_)
+                vj[t] = lib.tag_array(vj[t], vint=vj_inter[t])
+        if with_k: vk = vk.reshape(dm_shape['e'])
+        logger.timer(dfobj, 'df vj and vk', *t0)
+        return vj, vk
+
+    for t, dm_ in dms.items():
+        assert not numpy.iscomplexobj(dm_)
+
+    if with_j:
+        dmtril = {}
+        for t, dm_ in dms.items():
+            nao = dm_shape[t][-1]
+            idx = numpy.arange(nao)
+            if t == 'e':
+                dmtril[t] = lib.pack_tril(dm_e + dm_e.conj().transpose(0,2,1))
+            else:
+                dmtril[t] = lib.pack_tril(dm_ + dm_.conj().transpose(0,2,1))
+            dmtril[t][:,idx*(idx+1)//2+idx] *= .5
+
+    if not with_k:
+        for eri1 in dfobj.loop():
+            # uses numpy.matmul
+            eri1_e = eri1['e']
+            dm_eri_e = dmtril['e'].dot(eri1_e.T)
+            dm_eri_n = 0
+            for t, dm_ in dmtril.items():
+                if t == 'e':
+                    continue
+                eri1_n = eri1[t]
+                dm_eri_n += dm_.dot(eri1_n.T) * dfobj._charges[t]
+                vj_t = dm_eri_e.dot(eri1_n) * dfobj._charges[t]
+                vj[t] += vj_t
+                vj_inter[t] += vj_t
+            vj['e'] += (dm_eri_e + dm_eri_n).dot(eri1_e)
+            vj_inter['e'] += dm_eri_n.dot(eri1_e)
+
+    elif getattr(dm['e'], 'mo_coeff', None) is not None:
+        #TODO: test whether dm.mo_coeff matching dm
+        mo_coeff = numpy.asarray(dm['e'].mo_coeff, order='F')
+        mo_occ   = numpy.asarray(dm['e'].mo_occ)
+        nmo = mo_occ.shape[-1]
+        nao = nao_e
+        mo_coeff = mo_coeff.reshape(-1,nao,nmo)
+        mo_occ   = mo_occ.reshape(-1,nmo)
+        if mo_occ.shape[0] * 2 == nset: # handle ROHF DM
+            mo_coeff = numpy.vstack((mo_coeff, mo_coeff))
+            mo_occa = numpy.array(mo_occ> 0, dtype=numpy.double)
+            mo_occb = numpy.array(mo_occ==2, dtype=numpy.double)
+            assert (mo_occa.sum() + mo_occb.sum() == mo_occ.sum())
+            mo_occ = numpy.vstack((mo_occa, mo_occb))
+
+        orbo = []
+        for k in range(nset):
+            c = numpy.einsum('pi,i->pi', mo_coeff[k][:,mo_occ[k]>0],
+                             numpy.sqrt(mo_occ[k][mo_occ[k]>0]))
+            orbo.append(numpy.asarray(c, order='F'))
+
+        max_memory = dfobj.max_memory - lib.current_memory()[0]
+        total_nao_square = nao_e**2
+        if with_j:
+            for t, dm_shape_ in dm_shape.items():
+                if t == 'e':
+                    continue
+                total_nao_square += dm_shape_[-1]**2
+        blksize = max(4, int(min(dfobj.blockdim, max_memory*.3e6/8/total_nao_square)))
+        buf = numpy.empty((blksize*nao,nao))
+        for eri1 in dfobj.loop(blksize):
+            eri1_e = eri1['e']
+            naux, nao_pair = eri1_e.shape
+            assert (nao_pair == nao*(nao+1)//2)
+            if with_j:
+                # uses numpy.matmul
+                dm_eri_e = dmtril['e'].dot(eri1_e.T)
+                dm_eri_n = 0
+                for t, dm_ in dmtril.items():
+                    if t == 'e':
+                        continue
+                    eri1_n = eri1[t]
+                    dm_eri_n += dm_.dot(eri1_n.T) * dfobj._charges[t]
+                    vj_t = dm_eri_e.dot(eri1_n) * dfobj._charges[t]
+                    vj[t] += vj_t
+                    vj_inter[t] += vj_t
+                vj['e'] += (dm_eri_e + dm_eri_n).dot(eri1_e)
+                vj_inter['e'] += dm_eri_n.dot(eri1_e)
+
+            for k in range(nset):
+                nocc = orbo[k].shape[1]
+                if nocc > 0:
+                    buf1 = buf[:naux*nocc]
+                    fdrv(ftrans, fmmm,
+                         buf1.ctypes.data_as(ctypes.c_void_p),
+                         eri1_e.ctypes.data_as(ctypes.c_void_p),
+                         orbo[k].ctypes.data_as(ctypes.c_void_p),
+                         ctypes.c_int(naux), ctypes.c_int(nao),
+                         (ctypes.c_int*4)(0, nocc, 0, nao),
+                         null, ctypes.c_int(0))
+                    vk[k] += lib.dot(buf1.T, buf1)
+            t1 = log.timer_debug1('jk', *t1)
+    else:
+        nao = nao_e
+        #:vk = numpy.einsum('pij,jk->pki', cderi, dm)
+        #:vk = numpy.einsum('pki,pkj->ij', cderi, vk)
+        rargs = (ctypes.c_int(nao), (ctypes.c_int*4)(0, nao, 0, nao),
+                 null, ctypes.c_int(0))
+        dms['e'] = [numpy.asarray(x, order='F') for x in dms['e']]
+        max_memory = dfobj.max_memory - lib.current_memory()[0]
+        total_nao_square = nao_e**2
+        if with_j:
+            for t, dm_shape_ in dm_shape.items():
+                if t == 'e':
+                    continue
+                total_nao_square += dm_shape_[-1]**2
+        blksize = max(4, int(min(dfobj.blockdim, max_memory*.22e6/8/total_nao_square)))
+        buf = numpy.empty((2,blksize,nao,nao))
+        for eri1 in dfobj.loop(blksize):
+            eri1_e = eri1['e']
+            naux, nao_pair = eri1_e.shape
+            assert (nao_pair == nao*(nao+1)//2)
+            if with_j:
+                # uses numpy.matmul
+                dm_eri_e = dmtril['e'].dot(eri1_e.T)
+                dm_eri_n = 0
+                for t, dm_ in dmtril.items():
+                    if t == 'e':
+                        continue
+                    eri1_n = eri1[t]
+                    dm_eri_n += dm_.dot(eri1_n.T) * dfobj._charges[t]
+                    vj_t = dm_eri_e.dot(eri1_n) * dfobj._charges[t]
+                    vj[t] += vj_t
+                    vj_inter[t] += vj_t
+                vj['e'] += (dm_eri_e + dm_eri_n).dot(eri1_e)
+                vj_inter['e'] += dm_eri_n.dot(eri1_e)
+
+            for k in range(nset):
+                buf1 = buf[0,:naux]
+                fdrv(ftrans, fmmm,
+                     buf1.ctypes.data_as(ctypes.c_void_p),
+                     eri1_e.ctypes.data_as(ctypes.c_void_p),
+                     dms['e'][k].ctypes.data_as(ctypes.c_void_p),
+                     ctypes.c_int(naux), *rargs)
+
+                buf2 = lib.unpack_tril(eri1_e, out=buf[1])
+                vk[k] += lib.dot(buf1.reshape(-1,nao).T, buf2.reshape(-1,nao))
+            t1 = log.timer_debug1('jk', *t1)
+
+    if with_j:
+        vj['e'] = lib.unpack_tril(vj['e'], 1).reshape(dm_shape_e)
+        vj_inter['e'] = lib.unpack_tril(vj_inter['e'], 1).reshape(dm_shape_e)
+        vj['e'] = lib.tag_array(vj['e'], vint=vj_inter['e'])
+        for t, dm_shape_ in dm_shape.items():
+            if t == 'e':
+                continue
+            vj[t] = lib.unpack_tril(vj[t], 1).reshape(dm_shape_)
+            vj_inter[t] = lib.unpack_tril(vj_inter[t], 1).reshape(dm_shape_)
+            vj[t] = lib.tag_array(vj[t], vint=vj_inter[t])
+    if with_k: vk = vk.reshape(dm_shape['e'])
+    logger.timer(dfobj, 'df vj and vk', *t0)
+    return vj, vk
+
+def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
+    '''vj returned is already combined for alpha and beta spins'''
+    from pyscf.scf import _vhf
+    from pyscf.scf import jk
+    from pyscf.df import addons
+    t0 = t1 = (logger.process_clock(), logger.perf_counter())
+
+    mol = dfobj.mol
+    if dfobj._vjopt is None:
+        opt = {}
+        dfobj.auxmol = auxmol = addons.make_auxmol(mol.components['e'], dfobj.auxbasis)
+
+        j2c = auxmol.intor('int2c2e', hermi=1)
+        j2c_diag = numpy.sqrt(abs(j2c.diagonal()))
+        aux_loc = auxmol.ao_loc
+        aux_q_cond = [j2c_diag[i0:i1].max()
+                      for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])]
+
+        try:
+            j2c = scipy.linalg.cho_factor(j2c, lower=True)
+            j2c_type = 'cd'
+        except scipy.linalg.LinAlgError:
+            j2c_type = 'regular'
+
+        # jk.get_jk function supports 4-index integrals. Use bas_placeholder
+        # (l=0, nctr=1, 1 function) to hold the last index.
+        bas_placeholder = numpy.array([0, 0, 1, 1, 0, 0, 0, 0],
+                                      dtype=numpy.int32)
+
+        for t, mol_ in mol.components.items():
+            opt[t] = _vhf._VHFOpt(mol_, 'int3c2e', 'CVHFnr3c2e_schwarz_cond',
+                                  dmcondname='CVHFnr_dm_cond',
+                                  direct_scf_tol=direct_scf_tol)
+
+            # q_cond part 1: the regular int2e (ij|ij) for mol's basis
+            opt[t].init_cvhf_direct(mol_, 'int2e', 'CVHFnr_int2e_q_cond')
+
+            # Update q_cond to include the 2e-integrals (auxmol|auxmol)
+            q_cond = numpy.hstack((opt[t].q_cond.ravel(), aux_q_cond))
+            opt[t].q_cond = q_cond
+
+            opt[t].j2c = j2c
+            opt[t].j2c_type = j2c_type
+
+            fakemol = mol_ + auxmol
+            fakemol._bas = numpy.vstack((fakemol._bas, bas_placeholder))
+            opt[t].fakemol = fakemol
+
+        dfobj._vjopt = opt
+        t1 = logger.timer_debug1(dfobj, 'df-vj init_direct_scf', *t1)
+
+    jaux_e_n = 0
+    opt = dfobj._vjopt
+    n_dm = None
+    dm_shape = {}
+    for t, mol_ in mol.components.items():
+        opt_ = opt[t]
+        fakemol = opt_.fakemol
+        dm_ = numpy.asarray(dm[t], order='C')
+        assert dm_.dtype == numpy.float64
+        # when 'e' is unrestricted, should use total density instead of spin density
+        # TODO: what if dm[0] + dm[1] is passed to get_j?
+        if dfobj._unrestricted[t]:
+            assert dm_.shape[0] == 2
+            dm_ = dm_[0] + dm_[1]
+        dm_shape[t] = dm_.shape
+        nao = dm_shape[t][-1]
+        dm_ = dm_.reshape(-1,nao,nao)
+        if not (t == 'e' or t.startswith('n')):
+            raise NotImplementedError
+        # make sure n_dm is consistent across all dm
+        if n_dm is None:
+            n_dm = dm_.shape[0]
+        elif n_dm != dm_.shape[0]:
+            raise ValueError(f'Density matrix of {t} has n_dm={dm_.shape[0]}, expected {n_dm}.')
+
+        # First compute the density in auxiliary basis
+        # j3c = fauxe2(mol, auxmol)
+        # jaux = numpy.einsum('ijk,ji->k', j3c, dm)
+        # rho = numpy.linalg.solve(auxmol.intor('int2c2e'), jaux)
+        nbas = mol_.nbas
+        nbas1 = mol_.nbas + dfobj.auxmol.nbas
+        shls_slice = (0, nbas, 0, nbas, nbas, nbas1, nbas1, nbas1+1)
+        with lib.temporary_env(opt_, prescreen='CVHFnr3c2e_vj_pass1_prescreen'):
+            jaux = jk.get_jk(fakemol, dm_, ['ijkl,ji->kl']*n_dm, 'int3c2e',
+                             aosym='s2ij', hermi=0, shls_slice=shls_slice,
+                             vhfopt=opt_)
+        # remove the index corresponding to bas_placeholder
+        jaux = numpy.array(jaux)[:,:,0]
+        if t == 'e':
+            jaux_e = jaux * dfobj._charges[t]
+        jaux_e_n += jaux * dfobj._charges[t]
+    t1 = logger.timer_debug1(dfobj, 'df-vj pass 1', *t1)
+
+    if opt['e'].j2c_type == 'cd':
+        rho_e = scipy.linalg.cho_solve(opt['e'].j2c, jaux_e.T)
+        rho_e_n = scipy.linalg.cho_solve(opt['e'].j2c, jaux_e_n.T)
+    else:
+        rho_e = scipy.linalg.solve(opt['e'].j2c, jaux_e.T)
+        rho_e_n = scipy.linalg.solve(opt['e'].j2c, jaux_e_n.T)
+    # transform rho to shape (:,1,naux), to adapt to 3c2e integrals (ij|k)
+    rho_e = rho_e.T[:,numpy.newaxis,:]
+    rho_e_n = rho_e_n.T[:,numpy.newaxis,:]
+    t1 = logger.timer_debug1(dfobj, 'df-vj solve ', *t1)
+
+    vj = {}
+    vj_inter = {}
+    # CVHFnr3c2e_vj_pass2_prescreen requires custom dm_cond
+    aux_loc = dfobj.auxmol.ao_loc
+    dm_cond_e = numpy.array([abs(rho_e[:,:,i0:i1]).max()
+                             for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
+    rho_n = rho_e_n - rho_e
+    dm_cond_n = numpy.array([abs(rho_n[:,:,i0:i1]).max()
+                             for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
+    for t, mol_ in mol.components.items():
+        opt_ = opt[t]
+        fakemol = opt_.fakemol
+        # Next compute the Coulomb matrix
+        # j3c = fauxe2(mol, auxmol)
+        # vj = numpy.einsum('ijk,k->ij', j3c, rho)
+        # temporarily set "_dmcondname=None" to skip the call to set_dm method.
+        nbas = mol_.nbas
+        nbas1 = mol_.nbas + dfobj.auxmol.nbas
+        shls_slice = (0, nbas, 0, nbas, nbas, nbas1, nbas1, nbas1+1)
+        with lib.temporary_env(opt_, prescreen='CVHFnr3c2e_vj_pass2_prescreen',
+                               _dmcondname=None):
+            if t == 'e':
+                dm_cond = [abs(rho_e_n[:,:,i0:i1]).max()
+                           for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])]
+                opt_.dm_cond = numpy.array(dm_cond)
+                vj[t] = jk.get_jk(fakemol, rho_e_n, ['ijkl,lk->ij']*n_dm, 'int3c2e',
+                                  aosym='s2ij', hermi=1, shls_slice=shls_slice,
+                                  vhfopt=opt_)
+                opt_.dm_cond = dm_cond_n
+                vj_inter[t] = jk.get_jk(fakemol, rho_n, ['ijkl,lk->ij']*n_dm, 'int3c2e',
+                                        aosym='s2ij', hermi=1, shls_slice=shls_slice,
+                                        vhfopt=opt_)
+            else:
+                opt_.dm_cond = dm_cond_e
+                vj[t] = jk.get_jk(fakemol, rho_e, ['ijkl,lk->ij']*n_dm, 'int3c2e',
+                                  aosym='s2ij', hermi=1, shls_slice=shls_slice,
+                                  vhfopt=opt_)
+                vj_inter[t] = vj[t]
+        vj[t] = numpy.asarray(vj[t]).reshape(dm_shape[t]) * dfobj._charges[t]
+        vj_inter[t] = numpy.asarray(vj_inter[t]).reshape(dm_shape[t]) * dfobj._charges[t]
+        vj[t] = lib.tag_array(vj[t], vint=vj_inter[t])
+
+    t1 = logger.timer_debug1(dfobj, 'df-vj pass 2', *t1)
+    logger.timer(dfobj, 'df-vj', *t0)
+    return vj
+
+def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False, df_ne=False):
+    '''with_df is df.DF if not df_ne, and DF class in this file if df_ne'''
+    assert isinstance(mf, neo.HF)
+    assert 'e' in mf.components
+    assert isinstance(mf.components['e'], scf.hf.SCF)
+    if 'p' in mf.components:
+        raise NotImplementedError
+
+    if with_df is None and df_ne:
+        mol = mf.mol
+        mol_e = mol.components['e']
+        mf_e = mf.components['e']
+        if auxbasis is None and isinstance(mol_e.basis, str):
+            if isinstance(mf_e, scf.hf.KohnShamDFT):
+                xc = mf_e.xc
+            else:
+                xc = 'HF'
+            if xc == 'LDA,VWN':
+                # This is likely the default xc setting of a KS instance.
+                # Postpone the auxbasis assignment to with_df.build().
+                auxbasis = None
+            else:
+                auxbasis = addons.predefined_auxbasis(mol_e, mol_e.basis, xc)
+        # e-e and e-n with_df
+        with_df = DF(mol, auxbasis)
+
+    if with_df is not None and df_ne:
+        if not isinstance(with_df, DF):
+            raise TypeError('with_df must be neo.df.DF when df_ne=True')
+        if with_df.mol is not mf.mol:
+            if with_df._cderi is not None:
+                raise ValueError('A built with_df object cannot be reused for a different NEO mol')
+            with_df.reset(mf.mol)
+        with_df.max_memory = mf.max_memory
+        with_df.stdout = mf.stdout
+        with_df.verbose = mf.verbose
+        with_df._charges.clear()
+        with_df._unrestricted.clear()
+        for t, mf_ in mf.components.items():
+            with_df._charges[t] = mf_.charge
+            if isinstance(mf_, scf.rohf.ROHF):
+                raise NotImplementedError
+            with_df._unrestricted[t] = isinstance(mf_, scf.uhf.UHF)
+
+    if with_df is not None and not df_ne:
+        assert isinstance(with_df, df.DF) and not isinstance(with_df, DF)
+        if isinstance(mf.components['e'], df_jk._DFHF):
+            # if it is already a DF object, do not overwrite, but update
+            mf = mf.copy()
+            mf.components['e'].with_df = with_df
+            mf.components['e'].only_dfj = ee_only_dfj
+            return mf
+
+    if isinstance(mf, _DFNEO):
+        # if it is already a DF object, do not overwrite, but update
+        mf = mf.copy()
+        mf.with_df = with_df
+        mf.ee_only_dfj = ee_only_dfj
+        mf.df_ne = df_ne
+
+    # NOTE: RSH is handled by with_df in elec component
+    _charge = mf.components['e'].charge
+    _mass = mf.components['e'].mass
+    _is_nucleus = mf.components['e'].is_nucleus
+    _nuc_occ_state = mf.components['e'].nuc_occ_state
+    base = mf.components['e'].undo_component()
+    # with_df is None or with_df is DF class in this file, need to rebuild elec DF
+    if isinstance(base, df_jk._DFHF):
+        base = base.undo_df()
+    if with_df is not None:
+        auxbasis = with_df.auxbasis
+    mf.components['e'] = neo.hf.general_scf(df_jk.density_fit(base,
+                                                              auxbasis=auxbasis,
+                                                              with_df=None,
+                                                              only_dfj=ee_only_dfj),
+                                            charge=_charge, mass=_mass,
+                                            is_nucleus=_is_nucleus,
+                                            nuc_occ_state=_nuc_occ_state)
+    if isinstance(mf, neo.KS):
+        mf.interactions = neo.hf.generate_interactions(mf.components,
+                                                       neo.ks.InteractionCorrelation,
+                                                       mf.max_memory,
+                                                       mf.direct_scf_tol,
+                                                       epc=mf.epc)
+    else:
+        mf.interactions = neo.hf.generate_interactions(mf.components,
+                                                       neo.hf.InteractionCoulomb,
+                                                       mf.max_memory,
+                                                       mf.direct_scf_tol)
+
+    if isinstance(mf, _DFNEO):
+        return mf
+
+    dfmf = _DFNEO(mf, with_df, ee_only_dfj, df_ne)
+    if df_ne:
+        name = _DFNEO.__name_mixin__ + '-EE&NE-' + mf.__class__.__name__
+    else:
+        name = _DFNEO.__name_mixin__ + '-EE-' + mf.__class__.__name__
+    return lib.set_class(dfmf, (_DFNEO, mf.__class__), name)
 
 class _DFNEO:
     __name_mixin__ = 'DF'
 
-    _keys = {'ee_only_dfj', 'df_ne', 'auxbasis'}
+    _keys = {'with_df', 'ee_only_dfj', 'df_ne'}
 
-    def __init__(self, mf, auxbasis=None, ee_only_dfj=False, df_ne=False):
+    def __init__(self, mf, df=None, ee_only_dfj=None, df_ne=None):
         self.__dict__.update(mf.__dict__)
-        self.auxbasis = auxbasis
+        self._eri = None
+        self.with_df = df
         self.ee_only_dfj = ee_only_dfj
         self.df_ne = df_ne
+        # Unless DF is used only for J matrix, disable direct_scf for K build.
+        # It is more efficient to construct K matrix with MO coefficients than
+        # the incremental method in direct_scf.
+        self.direct_scf = self.components['e'].direct_scf = ee_only_dfj
 
-        # copy direct_scf_tol, which is not in __dict__
-        self.direct_scf_tol = getattr(mf, 'direct_scf_tol')
-
-        if isinstance(mf, neo.KS):
-            self.interactions = hf.generate_interactions(
-                self.components, DFInteractionCorrelation,
-                self.max_memory, self.direct_scf_tol,
-                df_ne=self.df_ne, auxbasis=self.auxbasis, epc=mf.epc)
+    def undo_df(self):
+        '''Remove the DFNEO Mixin'''
+        obj = lib.view(self, lib.drop_class(self.__class__, _DFNEO))
+        obj.components = {}
+        for t, comp in self.components.items():
+            if t == 'e':
+                # also undo_df for the elec component
+                base = comp.undo_component().undo_df()
+            else:
+                base = comp.undo_component()
+            obj.components[t] = neo.hf.general_scf(base.copy(),
+                                                   charge=comp.charge,
+                                                   mass=comp.mass,
+                                                   is_nucleus=comp.is_nucleus,
+                                                   nuc_occ_state=comp.nuc_occ_state)
+        if isinstance(obj, neo.ks.KS):
+            obj.interactions = neo.hf.generate_interactions(obj.components,
+                                                            neo.ks.InteractionCorrelation,
+                                                            obj.max_memory,
+                                                            obj.direct_scf_tol,
+                                                            epc=obj.epc)
+            if isinstance(obj.components['e'], scf.hf.KohnShamDFT):
+                obj._numint = obj.components['e']._numint
+            else:
+                obj._numint = None
         else:
-            self.interactions = hf.generate_interactions(
-                self.components, DFInteractionCoulomb,
-                self.max_memory, self.direct_scf_tol,
-                df_ne=self.df_ne, auxbasis=self.auxbasis)
+            obj.interactions = neo.hf.generate_interactions(obj.components,
+                                                            neo.hf.InteractionCoulomb,
+                                                            obj.max_memory,
+                                                            obj.direct_scf_tol)
+        if hasattr(self, 'f') and self.f is not None:
+            obj.f = numpy.array(self.f, copy=True)
+        del obj.with_df, obj.ee_only_dfj, obj.df_ne
+        return obj
+
+    def reset(self, mol=None):
+        if self.with_df is not None:
+            self.with_df.reset(mol)
+        return super().reset(mol)
+
+    def _get_nn_vint_full_delta(self, dm, dm_last=0, vhf_last=0):
+        '''Build n-n inter-type Coulomb potential as full and delta pieces.'''
+        incremental_j = (
+            isinstance(dm_last, dict) and isinstance(vhf_last, dict) and
+            all(t in vhf_last and hasattr(vhf_last[t], 'vint_inc')
+                for t in self.components))
+        nn_vint_full = {}
+        nn_vint_delta = {}
+        for t in self.components:
+            nn_vint_full[t] = 0
+            nn_vint_delta[t] = 0
+        if incremental_j:
+            ddm = {}
+            for t, dm_ in dm.items():
+                dm_ = numpy.asarray(dm_)
+                dm_last_ = numpy.asarray(dm_last[t])
+                assert dm_last_.ndim == 0 or dm_last_.ndim == dm_.ndim
+                ddm[t] = dm_ - dm_last_
+        for t_pair, interaction in self.interactions.items():
+            if 'e' in t_pair:
+                continue
+            if interaction._is_direct_vint():
+                v = interaction.get_vint(ddm if incremental_j else dm,
+                                         coulomb_only=True)
+                target = nn_vint_delta
+            else:
+                v = interaction.get_vint(dm, coulomb_only=True)
+                target = nn_vint_full
+            for t in (interaction.mf1_type, interaction.mf2_type):
+                target[t] += v[t]
+        return nn_vint_full, nn_vint_delta
+
+    def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
+        if not self.with_df or not self.df_ne:
+            return super().get_veff(mol, dm, dm_last, vhf_last, hermi)
+        if mol is None: mol = self.mol
+        if dm is None: dm = self.make_rdm1()
+
+        mol_e = mol.components['e']
+        mf_e = self.components['e']
+        if isinstance(mf_e, scf.rohf.ROHF) or isinstance(mf_e, scf.ghf.GHF):
+            raise NotImplementedError
+        e_unrestricted = False
+        if isinstance(mf_e, scf.uhf.UHF):
+            e_unrestricted = True
+        if e_unrestricted:
+            # numpy.asarray will remove tag_array, and dm.mo_coeff is crucial for exchange
+            # so use numpy.asarray only when necessary
+            if not isinstance(dm['e'], numpy.ndarray):
+                dm['e'] = numpy.asarray(dm['e'])
+            if dm['e'].ndim == 2:  # RHF DM
+                logger.warn(mf_e, 'Incompatible dm dimension. Treat dm as RHF density matrix.')
+                dm['e'] = numpy.repeat(dm['e'][None]*.5, 2, axis=0)
+
+        if not isinstance(mf_e, scf.hf.KohnShamDFT):
+            with_dfk = not self.ee_only_dfj
+            # Initialize vint_inc with a full-density J build, then update it
+            # with density differences in later cycles.
+            incremental_j = (self.direct_scf and
+                             isinstance(dm_last, dict) and isinstance(vhf_last, dict) and
+                             all(t in vhf_last and hasattr(vhf_last[t], 'vint_inc') for t in dm))
+            nn_vint_full, nn_vint_delta = self._get_nn_vint_full_delta(
+                dm, dm_last, vhf_last)
+            include_last_vint_delta = (
+                incremental_j or
+                any(isinstance(nn_vint_delta[t], numpy.ndarray) for t in dm))
+            vint_full, vint_delta = neo.hf._init_vint_full_delta(
+                dm, vhf_last, include_last_vint_delta)
+            if incremental_j:
+                _dm = {}
+                for t, dm_ in dm.items():
+                    dm_ = numpy.asarray(dm_)
+                    dm_last_ = numpy.asarray(dm_last[t])
+                    assert dm_last_.ndim == 0 or dm_last_.ndim == dm_.ndim
+                    _dm[t] = dm_ - dm_last_
+            else:
+                _dm = dm
+            if with_dfk:
+                vj, vk = self.with_df.get_jk(_dm, hermi)
+            else:
+                vj = self.with_df.get_j(_dm, hermi)
+                vk = mf_e.get_k(mol_e, _dm['e'], hermi)
+            # vj.vint is the e-n part of DF-J.  If _dm is the density used for
+            # incremental updates, this contribution is cached in vint_inc;
+            # otherwise it is treated as a full-density contribution.
+            neo.hf._accumulate_vint(vint_full, vint_delta, vj, dm,
+                                    self.direct_scf, attr='vint')
+            # n-n contributions were already separated by their own integral
+            # builders, independent of the electronic DF-J choice.
+            for t in dm:
+                vint_full[t] += nn_vint_full[t]
+                vint_delta[t] += nn_vint_delta[t]
+            vint = neo.hf._tag_vint_full_delta(vint_full, vint_delta, dm)
+            vhf = {'e': vj['e']}
+            if incremental_j:
+                vhf['e'] += numpy.asarray(vhf_last['e'])
+            if e_unrestricted:
+                vhf['e'] = vhf['e'] - vk
+            else:
+                vhf['e'] = vhf['e'] - vk * .5
+            for t in dm:
+                if t == 'e':
+                    vhf[t] = lib.tag_array(vhf[t], vint=vint[t],
+                                           vint_inc=vint_delta[t])
+                else:
+                    vhf[t] = lib.tag_array(vint[t], vint=vint[t],
+                                           vint_inc=vint_delta[t])
+                self.components[t]._vint = vint[t]
+        else:
+            mf_e.initialize_grids(mol_e, dm['e'])
+
+            t0 = (logger.process_clock(), logger.perf_counter())
+
+            if e_unrestricted:
+                ground_state = (dm['e'].ndim == 3 and dm['e'].shape[0] == 2)
+            else:
+                ground_state = (isinstance(dm['e'], numpy.ndarray) and dm['e'].ndim == 2)
+
+            ni = mf_e._numint
+            if hermi == 2:  # because rho = 0
+                if e_unrestricted:
+                    n = (0,0)
+                else:
+                    n = 0
+                exc, vxc = 0, 0
+            else:
+                max_memory = mf_e.max_memory - lib.current_memory()[0]
+                if e_unrestricted:
+                    n, exc, vxc = ni.nr_uks(mol_e, mf_e.grids, mf_e.xc,
+                                            dm['e'], max_memory=max_memory)
+                else:
+                    n, exc, vxc = ni.nr_rks(mol_e, mf_e.grids, mf_e.xc,
+                                            dm['e'], max_memory=max_memory)
+                logger.debug(mf_e, 'nelec by numeric integration = %s', n)
+                if mf_e.do_nlc():
+                    if ni.libxc.is_nlc(mf_e.xc):
+                        xc = mf_e.xc
+                    else:
+                        assert ni.libxc.is_nlc(mf_e.nlc)
+                        xc = mf_e.nlc
+                    if e_unrestricted:
+                        n, enlc, vnlc = ni.nr_nlc_vxc(mol_e, mf_e.nlcgrids, xc, dm['e'][0]+dm['e'][1],
+                                                      max_memory=max_memory)
+                    else:
+                        n, enlc, vnlc = ni.nr_nlc_vxc(mol_e, mf_e.nlcgrids, xc, dm['e'],
+                                                      max_memory=max_memory)
+                    exc += enlc
+                    vxc += vnlc
+                    logger.debug(mf_e, 'nelec with nlc grids = %s', n)
+                t0 = logger.timer(mf_e, 'vxc', *t0)
+
+            # Initialize vint_inc with a full-density J build, then update it
+            # with density differences in later cycles.  XC always uses the
+            # current density.
+            incremental_jk = (self.direct_scf and
+                              isinstance(dm_last, dict) and isinstance(vhf_last, dict) and
+                              all(t in vhf_last and hasattr(vhf_last[t], 'vj') and
+                                  hasattr(vhf_last[t], 'vint_inc') for t in dm))
+            nn_vint_full, nn_vint_delta = self._get_nn_vint_full_delta(
+                dm, dm_last, vhf_last)
+            if incremental_jk:
+                _dm = {}
+                for t, dm_ in dm.items():
+                    dm_ = numpy.asarray(dm_)
+                    dm_last_ = numpy.asarray(dm_last[t])
+                    assert dm_last_.ndim == 0 or dm_last_.ndim == dm_.ndim
+                    _dm[t] = dm_ - dm_last_
+            else:
+                _dm = dm
+            if not ni.libxc.is_hybrid_xc(mf_e.xc):
+                vk = None
+                vj = self.with_df.get_j(_dm, hermi)
+            else:
+                omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf_e.xc, spin=mol_e.spin)
+                with_dfk = not self.ee_only_dfj
+                if omega == 0:
+                    if with_dfk:
+                        vj, vk = self.with_df.get_jk(_dm, hermi)
+                    else:
+                        vj = self.with_df.get_j(_dm, hermi)
+                        vk = mf_e.get_k(mol_e, _dm['e'], hermi)
+                    vk *= hyb
+                elif alpha == 0: # LR=0, only SR exchange
+                    vj = self.with_df.get_j(_dm, hermi)
+                    vk = mf_e.get_k(mol_e, _dm['e'], hermi, omega=-omega)
+                    vk *= hyb
+                elif hyb == 0: # SR=0, only LR exchange
+                    vj = self.with_df.get_j(_dm, hermi)
+                    vk = mf_e.get_k(mol_e, _dm['e'], hermi, omega=omega)
+                    vk *= alpha
+                else: # SR and LR exchange with different ratios
+                    if with_dfk:
+                        vj, vk = self.with_df.get_jk(_dm, hermi)
+                    else:
+                        vj = self.with_df.get_j(_dm, hermi)
+                        vk = mf_e.get_k(mol_e, _dm['e'], hermi)
+                    vk *= hyb
+                    vklr = mf_e.get_k(mol_e, _dm['e'], hermi, omega=omega)
+                    vklr *= (alpha - hyb)
+                    vk += vklr
+
+                if incremental_jk:
+                    vk += vhf_last['e'].vk
+
+                if ground_state:
+                    if e_unrestricted:
+                        exc -=(numpy.einsum('ij,ji', dm['e'][0], vk[0]).real +
+                               numpy.einsum('ij,ji', dm['e'][1], vk[1]).real) * .5
+                    else:
+                        exc -= numpy.einsum('ij,ji', dm['e'], vk).real * .5 * .5
+
+            include_last_vint_delta = (
+                incremental_jk or
+                any(isinstance(nn_vint_delta[t], numpy.ndarray)
+                    for t in dm))
+            vint_full, vint_delta = neo.hf._init_vint_full_delta(
+                nn_vint_full, vhf_last, include_last_vint_delta)
+            # vj.vint is the e-n part of DF-J.  If _dm is the density used for
+            # incremental updates, this contribution is cached in vint_inc;
+            # otherwise it is treated as a full-density contribution.
+            neo.hf._accumulate_vint(vint_full, vint_delta, vj, nn_vint_full,
+                                    self.direct_scf, attr='vint')
+            # n-n contributions were already separated by their own integral
+            # builders, independent of the electronic DF-J choice.
+            for t in nn_vint_full:
+                vint_full[t] += nn_vint_full[t]
+                vint_delta[t] += nn_vint_delta[t]
+            vint = neo.hf._tag_vint_full_delta(vint_full, vint_delta,
+                                               nn_vint_full)
+            epc = neo.ks._get_epc_vmat(self, dm)
+            if incremental_jk:
+                for t in vj:
+                    vj[t] += vhf_last[t].vj
+
+            vhf = {t: vint[t] + epc[t] for t in nn_vint_full if t != 'e'}
+            vhf['e'] = vj['e'] + vxc + epc['e']
+            if e_unrestricted:
+                if vk is not None:
+                    vhf['e'] = vhf['e'] - vk
+            else:
+                if vk is not None:
+                    vhf['e'] = vhf['e'] - vk * .5
+
+            if ground_state:
+                if e_unrestricted:
+                    ecoul = numpy.einsum('ij,ji', dm['e'][0]+dm['e'][1], vj['e']).real * .5
+                else:
+                    ecoul = numpy.einsum('ij,ji', dm['e'], vj['e']).real * .5
+            else:
+                ecoul = None
+
+            if hasattr(epc['e'], 'exc'):
+                exc += epc['e'].exc
+            vhf['e'] = lib.tag_array(vhf['e'], ecoul=ecoul, exc=exc,
+                                     vj=vj['e'], vk=vk, vint=vint['e'],
+                                     vint_inc=vint_delta['e'])
+            for t in vhf:
+                if t != 'e':
+                    vhf[t] = lib.tag_array(vhf[t], vj=vj[t], vint=vint[t],
+                                           vint_inc=vint_delta[t])
+                self.components[t]._vint = numpy.asarray(vint[t] + epc[t])
+
+        return vhf
+
+    @property
+    def auxbasis(self):
+        if self.with_df is not None:
+            return getattr(self.with_df, 'auxbasis', None)
+        return self.components['e'].auxbasis
 
     def nuc_grad_method(self):
         import pyscf.neo.df_grad
@@ -374,29 +1270,5 @@ class _DFNEO:
 
     Gradients = lib.alias(nuc_grad_method, alias_name='Gradients')
 
-    def reset(self, mol=None):
-        '''Reset mol and clean up relevant attributes for scanner mode'''
-        super().reset(mol)
-        # Need this because components and interactions can be
-        # completely destroyed in super().reset
-        if not isinstance(self.components['e'], df_jk._DFHF):
-            self.components['e'] = density_fit_e(self.components['e'],
-                                                 auxbasis=self.auxbasis,
-                                                 only_dfj=self.ee_only_dfj)
-            self.interactions.clear()
-            if isinstance(self, neo.KS):
-                self.interactions.update(hf.generate_interactions(
-                    self.components, DFInteractionCorrelation,
-                    self.max_memory, self.direct_scf_tol,
-                    df_ne=self.df_ne, auxbasis=self.auxbasis, epc=self.epc))
-            else:
-                self.interactions.update(hf.generate_interactions(
-                    self.components, DFInteractionCoulomb,
-                    self.max_memory, self.direct_scf_tol,
-                    df_ne=self.df_ne, auxbasis=self.auxbasis))
-        if self.components['e'].with_df is not None:
-            self.components['e'].with_df._low = None
-        for t, comp in self.interactions.items():
-            comp._cderi = None
-            comp._low = None
-        return self
+    def Hessian(self):
+        raise NotImplementedError

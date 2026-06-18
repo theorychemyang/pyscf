@@ -7,6 +7,7 @@ Analytic gradient for density-fitting interaction Coulomb in CDFT
 import numpy
 import scipy
 from pyscf import lib
+from pyscf.df import addons
 from pyscf.grad import rhf as rhf_grad
 from pyscf.neo import grad
 from pyscf.lib import logger
@@ -185,12 +186,15 @@ def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         if check_ne != 0:
             if check_ne == 1:
                 mol_e, mol_n = mol1, mol2
-                auxmol_e = comp1.with_df.auxmol
                 dm_e, dm_n = dm1, dm2
             else:
                 mol_e, mol_n = mol2, mol1
-                auxmol_e = comp2.with_df.auxmol
                 dm_e, dm_n = dm2, dm1
+
+            auxmol_e = mf.with_df.auxmol
+            if auxmol_e is None:
+                auxmol_e = addons.make_auxmol(mol_e, mf.with_df.auxbasis)
+                mf.with_df.auxmol = auxmol_e
 
             de += get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n, atmlst,
                               mf_grad.max_memory, mf_grad.auxbasis_response) *\

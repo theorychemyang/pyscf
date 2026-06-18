@@ -845,6 +845,8 @@ class Hessian(rhf_hessian.HessianBase):
     '''
 
     def __init__(self, scf_method):
+        if getattr(scf_method, 'df_ne', False):
+            raise NotImplementedError('Hessian for density-fitted NEO is not implemented')
         super().__init__(scf_method)
         if self.base.epc is not None:
             raise NotImplementedError('Hessian with epc is not implemented')
