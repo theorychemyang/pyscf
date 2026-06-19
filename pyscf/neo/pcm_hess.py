@@ -44,6 +44,7 @@ def get_dvgrids(pcmobj, dm, atmlst):
         dIdA = numpy.empty([len(atmlst), 3, ngrids])
         for g0, g1 in lib.prange(0, ngrids, blksize):
             fakemol = gto.fakemol_for_charges(grid_coords[g0:g1], expnt=charge_exp[g0:g1]**2)
+            fakemol.cart = mol.cart
             v_nj = df.incore.aux_e2(mol, fakemol, intor=int3c2e_ip1, aosym='s1', cintopt=cintopt)
             v_nj = numpy.einsum('dijq,ij->diq', v_nj, dm[t] + dm[t].T)
             dvj = numpy.asarray([numpy.sum(v_nj[:,p0:p1,:], axis=1) for p0,p1 in aoslice[:,2:]])
@@ -56,6 +57,7 @@ def get_dvgrids(pcmobj, dm, atmlst):
         dIdC = numpy.empty([3,ngrids])
         for g0, g1 in lib.prange(0, ngrids, blksize):
             fakemol = gto.fakemol_for_charges(grid_coords[g0:g1], expnt=charge_exp[g0:g1]**2)
+            fakemol.cart = mol.cart
             q_nj = df.incore.aux_e2(mol, fakemol, intor=int3c2e_ip2, aosym='s1', cintopt=cintopt)
             dIdC[:,g0:g1] = numpy.einsum('dijq,ij->dq', q_nj, dm[t])
         for i_atom in atmlst:
@@ -169,6 +171,7 @@ def analytical_hess_qv(pcmobj, dm, mol, dqdx, verbose=None):
     d2I_dA2 = numpy.zeros([9, nao, nao])
     for g0, g1 in lib.prange(0, ngrids, blksize):
         fakemol = gto.fakemol_for_charges(grid_coords[g0:g1], expnt=charge_exp[g0:g1]**2)
+        fakemol.cart = mol.cart
         v_nj = df.incore.aux_e2(mol, fakemol, intor=int3c2e_ipip1, aosym='s1', cintopt=cintopt)
         d2I_dA2 += numpy.einsum('dijq,q->dij', v_nj, q_sym[g0:g1])
     d2I_dA2 = d2I_dA2.reshape([3, 3, nao, nao])
@@ -185,6 +188,7 @@ def analytical_hess_qv(pcmobj, dm, mol, dqdx, verbose=None):
     d2I_dAdB = numpy.zeros([9, nao, nao])
     for g0, g1 in lib.prange(0, ngrids, blksize):
         fakemol = gto.fakemol_for_charges(grid_coords[g0:g1], expnt=charge_exp[g0:g1]**2)
+        fakemol.cart = mol.cart
         v_nj = df.incore.aux_e2(mol, fakemol, intor=int3c2e_ipvip1, aosym='s1', cintopt=cintopt)
         d2I_dAdB += numpy.einsum('dijq,q->dij', v_nj, q_sym[g0:g1])
     d2I_dAdB = d2I_dAdB.reshape([3, 3, nao, nao])
@@ -203,6 +207,7 @@ def analytical_hess_qv(pcmobj, dm, mol, dqdx, verbose=None):
         int3c2e_ip1ip2 = mol._add_suffix('int3c2e_ip1ip2')
         cintopt = gto.moleintor.make_cintopt(mol._atm, mol._bas, mol._env, int3c2e_ip1ip2)
         fakemol = gto.fakemol_for_charges(grid_coords[g0:g1], expnt=charge_exp[g0:g1]**2)
+        fakemol.cart = mol.cart
         v_nj = df.incore.aux_e2(mol, fakemol, intor=int3c2e_ip1ip2, aosym='s1', cintopt=cintopt)
         d2I_dAdC = numpy.einsum('dijq,q->dij', v_nj, q_sym[g0:g1])
         d2I_dAdC = d2I_dAdC.reshape([3, 3, nao, nao])
@@ -225,6 +230,7 @@ def analytical_hess_qv(pcmobj, dm, mol, dqdx, verbose=None):
     d2I_dC2 = numpy.empty([9, ngrids])
     for g0, g1 in lib.prange(0, ngrids, blksize):
         fakemol = gto.fakemol_for_charges(grid_coords[g0:g1], expnt=charge_exp[g0:g1]**2)
+        fakemol.cart = mol.cart
         v_nj = df.incore.aux_e2(mol, fakemol, intor=int3c2e_ipip2, aosym='s1', cintopt=cintopt)
         d2I_dC2[:,g0:g1] = numpy.einsum('dijq,ij->dq', v_nj, dm)
     d2I_dC2 = d2I_dC2.reshape([3, 3, ngrids])
@@ -270,7 +276,9 @@ def analytical_hess_solver(pcmobj, dVdx, verbose=None):
     vK_1 = numpy.linalg.solve(K.T, v_grids)
 
     if pcmobj.method.upper() in ['C-PCM', 'CPCM', 'COSMO']:
-        dF, _ = pcm_hess.get_dF_dA(pcmobj.surface)
+        dF, _ = pcm_hess.get_dF_dA(
+            pcmobj.surface,
+            surface_discretization_method=pcmobj.surface_discretization_method)
         _, dS, dSii = pcm_hess.get_dD_dS(pcmobj.surface, dF, with_D=False, with_S=True)
 
         # dR = 0, dK = dS
@@ -285,7 +293,9 @@ def analytical_hess_solver(pcmobj, dVdx, verbose=None):
         d2e_from_d2KR = numpy.einsum('Adi,BDi->ABdD', VS_1_dot_dSdx, S_1_dSdx_dot_q) * 2
 
         _, d2S = pcm_hess.get_d2D_d2S(pcmobj.surface, with_D=False, with_S=True)
-        d2F, _ = pcm_hess.get_d2F_d2A(pcmobj.surface)
+        d2F, _ = pcm_hess.get_d2F_d2A(
+            pcmobj.surface,
+            surface_discretization_method=pcmobj.surface_discretization_method)
         d2Sii = pcm_hess.get_d2Sii(pcmobj.surface, dF, d2F)
         dF = None
         d2F = None
@@ -297,7 +307,9 @@ def analytical_hess_solver(pcmobj, dVdx, verbose=None):
         dvK_1R = -pcm_hess.einsum_Adi_ij_Adj_inverseK(VS_1_dot_dSdx, K) @ R
 
     elif pcmobj.method.upper() in ['IEF-PCM', 'IEFPCM', 'SMD']:
-        dF, dA = pcm_hess.get_dF_dA(pcmobj.surface)
+        dF, dA = pcm_hess.get_dF_dA(
+            pcmobj.surface,
+            surface_discretization_method=pcmobj.surface_discretization_method)
         dD, dS, dSii = pcm_hess.get_dD_dS(pcmobj.surface, dF, with_D=True, with_S=True)
 
         # dR = f_eps/(2*pi) * (dD*A + D*dA)
@@ -349,7 +361,9 @@ def analytical_hess_solver(pcmobj, dVdx, verbose=None):
         d2e_from_d2KR  = numpy.einsum('Adi,BDi->ABdD', vK_1_dot_dKdx, K_1_dot_dKdx_dot_q)
         d2e_from_d2KR += numpy.einsum('Adi,BDi->BADd', vK_1_dot_dKdx, K_1_dot_dKdx_dot_q)
 
-        d2F, d2A = pcm_hess.get_d2F_d2A(pcmobj.surface)
+        d2F, d2A = pcm_hess.get_d2F_d2A(
+            pcmobj.surface,
+            surface_discretization_method=pcmobj.surface_discretization_method)
         vK_1_d2K_q  = pcm_hess.get_v_dot_d2A_dot_q(d2A, vK_1D, S @ q)
         vK_1_d2R_V  = pcm_hess.get_v_dot_d2A_dot_q(d2A, vK_1D, v_grids)
         d2A = None
@@ -400,7 +414,9 @@ def analytical_hess_solver(pcmobj, dVdx, verbose=None):
         dvK_1R = -pcm_hess.einsum_Adi_ij_Adj_inverseK(vK_1_dot_dKdx, K) @ R + VK_1_dot_dRdx
 
     elif pcmobj.method.upper() in ['SS(V)PE']:
-        dF, dA = pcm_hess.get_dF_dA(pcmobj.surface)
+        dF, dA = pcm_hess.get_dF_dA(
+            pcmobj.surface,
+            surface_discretization_method=pcmobj.surface_discretization_method)
         dD, dS, dSii = pcm_hess.get_dD_dS(pcmobj.surface, dF, with_D=True, with_S=True)
 
         # dR = f_eps/(2*pi) * (dD*A + D*dA)
@@ -464,7 +480,9 @@ def analytical_hess_solver(pcmobj, dVdx, verbose=None):
         d2e_from_d2KR  = numpy.einsum('Adi,BDi->ABdD', vK_1_dot_dKdx, K_1_dot_dKdx_dot_q)
         d2e_from_d2KR += numpy.einsum('Adi,BDi->BADd', vK_1_dot_dKdx, K_1_dot_dKdx_dot_q)
 
-        d2F, d2A = pcm_hess.get_d2F_d2A(pcmobj.surface)
+        d2F, d2A = pcm_hess.get_d2F_d2A(
+            pcmobj.surface,
+            surface_discretization_method=pcmobj.surface_discretization_method)
         vK_1_d2K_q  = pcm_hess.get_v_dot_d2A_dot_q(d2A, (D.T @ vK_1).T, S @ q)
         vK_1_d2K_q += pcm_hess.get_v_dot_d2A_dot_q(d2A, (S @ vK_1).T, D.T @ q)
         vK_1_d2R_V  = pcm_hess.get_v_dot_d2A_dot_q(d2A, (D.T @ vK_1).T, v_grids)
@@ -565,6 +583,7 @@ def analytical_grad_vmat(pcmobj, dqdx, mol, atmlst=None, verbose=None):
     dIdA = numpy.zeros([3, nao, nao])
     for g0, g1 in lib.prange(0, ngrids, blksize):
         fakemol = gto.fakemol_for_charges(grid_coords[g0:g1], expnt=charge_exp[g0:g1]**2)
+        fakemol.cart = mol.cart
         v_nj = df.incore.aux_e2(mol, fakemol, intor=int3c2e_ip1, aosym='s1', cintopt=cintopt)
         dIdA += numpy.einsum('dijq,q->dij', v_nj, q_sym[g0:g1])
 
@@ -579,6 +598,7 @@ def analytical_grad_vmat(pcmobj, dqdx, mol, atmlst=None, verbose=None):
     for i_atom in atmlst:
         g0,g1 = gridslice[i_atom]
         fakemol = gto.fakemol_for_charges(grid_coords[g0:g1], expnt=charge_exp[g0:g1]**2)
+        fakemol.cart = mol.cart
         q_nj = df.incore.aux_e2(mol, fakemol, intor=int3c2e_ip2, aosym='s1', cintopt=cintopt)
         dIdC = numpy.einsum('dijq,q->dij', q_nj, q_sym[g0:g1])
         dIdx[i_atom, :, :, :] += dIdC
@@ -592,6 +612,7 @@ def analytical_grad_vmat(pcmobj, dqdx, mol, atmlst=None, verbose=None):
             dIdx_from_dqdx = numpy.zeros([nao, nao])
             for g0, g1 in lib.prange(0, ngrids, blksize):
                 fakemol = gto.fakemol_for_charges(grid_coords[g0:g1], expnt=charge_exp[g0:g1]**2)
+                fakemol.cart = mol.cart
                 v_nj = df.incore.aux_e2(mol, fakemol, intor=int3c2e, aosym='s1', cintopt=cintopt)
                 dIdx_from_dqdx += numpy.einsum('ijq,q->ij', v_nj, dqdx[i_atom, i_xyz, g0:g1])
             dV_on_molecule_dx[i_atom, i_xyz, :, :] += dIdx_from_dqdx
@@ -611,7 +632,7 @@ def make_hess_object(base_method):
     assert isinstance(base_method, _Solvation)
     with_solvent = base_method.with_solvent
     if with_solvent.frozen:
-        raise RuntimeError('Frozen solvent model is not avialbe for energy hessian')
+        raise RuntimeError('Frozen solvent model is not available for energy hessian')
 
     vac_hess = base_method.undo_solvent().Hessian()
     vac_hess.base = base_method

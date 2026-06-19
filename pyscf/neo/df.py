@@ -1,4 +1,3 @@
-import tempfile
 import contextlib
 import ctypes
 import os
@@ -397,7 +396,7 @@ class DF(df.DF):
         else:
             log.warn(f'Low memory: {max_memory=}. Outcore DF integrals.')
             if self._cderi_to_save is None:
-                self._cderi_to_save = tempfile.NamedTemporaryFile(dir=lib.param.TMPDIR)
+                self._cderi_to_save = lib.NamedTemporaryFile(dir=lib.param.TMPDIR)
             cderi = self._cderi_to_save
 
             if is_custom_storage:

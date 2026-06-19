@@ -63,16 +63,22 @@ def grad_qv(pcmobj, dm, mol, q_sym = None):
     dvj = numpy.zeros([3,nao])
     for p0, p1 in lib.prange(0, ngrids, blksize):
         fakemol = gto.fakemol_for_charges(grid_coords[p0:p1], expnt=exponents[p0:p1]**2)
+        fakemol.cart = mol.cart
         v_nj = df.incore.aux_e2(mol, fakemol, intor=int3c2e_ip1, aosym='s1', cintopt=cintopt)
         dvj += numpy.einsum('xijk,ij,k->xi', v_nj, dm, q_sym[p0:p1])
+        # Free up v_nj to stay within mem limits
+        del v_nj
 
     int3c2e_ip2 = mol._add_suffix('int3c2e_ip2')
     cintopt = gto.moleintor.make_cintopt(mol._atm, mol._bas, mol._env, int3c2e_ip2)
     dq = numpy.empty([3,ngrids])
     for p0, p1 in lib.prange(0, ngrids, blksize):
         fakemol = gto.fakemol_for_charges(grid_coords[p0:p1], expnt=exponents[p0:p1]**2)
+        fakemol.cart = mol.cart
         q_nj = df.incore.aux_e2(mol, fakemol, intor=int3c2e_ip2, aosym='s1', cintopt=cintopt)
         dq[:,p0:p1] = numpy.einsum('xijk,ij,k->xk', q_nj, dm, q_sym[p0:p1])
+        # Free up q_nj to stay within mem limits
+        del q_nj
 
     aoslice = mol.aoslice_by_atom()
     dq = numpy.asarray([numpy.sum(dq[:,p0:p1], axis=1) for p0,p1 in gridslice])
@@ -102,7 +108,8 @@ def grad_solver(pcmobj):
 
     vK_1 = numpy.linalg.solve(K.T, v_grids)
 
-    dF, dA = pcm_grad.get_dF_dA(pcmobj.surface)
+    dF, dA = pcm_grad.get_dF_dA(pcmobj.surface,
+                                pcmobj.surface_discretization_method)
 
     with_D = pcmobj.method.upper() in ['IEF-PCM', 'IEFPCM', 'SS(V)PE']
     dD, dS, dSii = pcm_grad.get_dD_dS(pcmobj.surface, dF, with_D=with_D, with_S=True)
@@ -253,7 +260,7 @@ def make_grad_object(base_method):
     assert isinstance(base_method, _Solvation)
     with_solvent = base_method.with_solvent
     if with_solvent.frozen:
-        raise RuntimeError('Frozen solvent model is not avialbe for energy gradients')
+        raise RuntimeError('Frozen solvent model is not available for energy gradients')
 
     # create the Gradients in vacuum. Cannot call super().Gradients() here
     # because other dynamic corrections might be applied to the base_method.
@@ -333,4 +340,3 @@ class WithSolventGrad:
         # disable _finalize. It is called in grad_method.kernel method
         # where self.de was not yet initialized.
         pass
-
