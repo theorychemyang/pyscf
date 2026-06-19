@@ -680,8 +680,8 @@ void CVHFnrs8_incore_drv(double *eri, double **dms, double **vjk,
         {
                 int i, j, ic;
                 size_t ij, off;
-                size_t npair = nao*(nao+1)/2;
-                size_t nn = nao * nao;
+                size_t npair = (size_t)nao*(nao+1)/2;
+                size_t nn = (size_t)nao * nao;
                 double *v_priv = calloc(nn*n_dm, sizeof(double));
                 FjkPtr pf;
                 double *pv;
@@ -717,8 +717,8 @@ void CVHFnrs4_incore_drv(double *eri, double **dms, double **vjk,
         {
                 int i, j, ic;
                 size_t ij, off;
-                size_t npair = nao*(nao+1)/2;
-                size_t nn = nao * nao;
+                size_t npair = (size_t)nao*(nao+1)/2;
+                size_t nn = (size_t)nao * nao;
                 double *v_priv = calloc(nn*n_dm, sizeof(double));
                 FjkPtr pf;
                 double *pv;
@@ -834,8 +834,8 @@ void CVHFnrs2ij_incore_drv(double *eri, double **dms, double **vjk,
         {
                 int i, j, ic;
                 size_t ij, off;
-                size_t npair = nao*(nao+1)/2;
-                size_t nn = nao * nao;
+                size_t npair = (size_t)nao*(nao+1)/2;
+                size_t nn = (size_t)nao * nao;
                 double *v_priv = calloc(nn*n_dm, sizeof(double));
                 FjkPtr pf;
                 double *pv;
@@ -871,8 +871,8 @@ void CVHFnrs2kl_incore_drv(double *eri, double **dms, double **vjk,
         {
                 int i, j, ic;
                 size_t ij, off;
-                size_t npair = nao*(nao+1)/2;
-                size_t nn = nao * nao;
+                size_t npair = (size_t)nao*(nao+1)/2;
+                size_t nn = (size_t)nao * nao;
                 double *v_priv = calloc(nn*n_dm, sizeof(double));
                 FjkPtr pf;
                 double *pv;
@@ -908,7 +908,7 @@ void CVHFnrs1_incore_drv(double *eri, double **dms, double **vjk,
         {
                 int i, j, ic;
                 size_t ij, off;
-                size_t nn = nao * nao;
+                size_t nn = (size_t)nao * nao;
                 double *v_priv = calloc(nn*n_dm, sizeof(double));
                 FjkPtr pf;
                 double *pv;
