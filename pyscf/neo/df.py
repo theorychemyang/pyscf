@@ -553,7 +553,7 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
     dm_e = None # 'e' total density for unrestricted case
     dm_shape_e = None # 'e' total density matrix shape
     vj = {}
-    vj_inter = {}
+    vj_inter_e = None
     nao_e = None
     nao_max = 0
     for t, dm_ in dm.items():
@@ -577,7 +577,8 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
             dm_e = dms['e']
             dm_shape_e = dm_shape['e']
         vj[t] = 0
-        vj_inter[t] = 0
+    if with_j:
+        vj_inter_e = 0
     assert nao_max > 0 # max of nuc nao
     vk = numpy.zeros_like(dms['e'])
     nset = dms['e'].shape[0]
@@ -598,13 +599,12 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
         if with_j:
             assert numpy.iscomplexobj(dm_e)
             vj['e'] = numpy.zeros_like(dm_e)
-            vj_inter['e'] = numpy.zeros_like(dm_e)
+            vj_inter_e = numpy.zeros_like(dm_e)
             for t, dm_ in dms.items():
                 if t == 'e':
                     continue
                 # in this case, nuc dm and vj should also be complex
                 vj[t] = numpy.zeros_like(dm_, dtype=dm_e.dtype)
-                vj_inter[t] = numpy.zeros_like(dm_, dtype=dm_e.dtype)
 
         max_memory = dfobj.max_memory - lib.current_memory()[0]
         total_nao_square = nao_e**2
@@ -636,14 +636,12 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
                     vj_t_imag = numpy.einsum('pn,pij->nij', eri_e_dm_imag, eri1_n) * dfobj._charges[t]
                     vj[t].real += vj_t_real
                     vj[t].imag += vj_t_imag
-                    vj_inter[t].real += vj_t_real
-                    vj_inter[t].imag += vj_t_imag
                     eri_n_dm_real += numpy.einsum('pij,nji->pn', eri1_n, dm_.real) * dfobj._charges[t]
                     eri_n_dm_imag += numpy.einsum('pij,nji->pn', eri1_n, dm_.imag) * dfobj._charges[t]
                 vj['e'].real += numpy.einsum('pn,pij->nij', eri_e_dm_real + eri_n_dm_real, eri1_e)
                 vj['e'].imag += numpy.einsum('pn,pij->nij', eri_e_dm_imag + eri_n_dm_imag, eri1_e)
-                vj_inter['e'].real += numpy.einsum('pn,pij->nij', eri_n_dm_real, eri1_e)
-                vj_inter['e'].imag += numpy.einsum('pn,pij->nij', eri_n_dm_imag, eri1_e)
+                vj_inter_e.real += numpy.einsum('pn,pij->nij', eri_n_dm_real, eri1_e)
+                vj_inter_e.imag += numpy.einsum('pn,pij->nij', eri_n_dm_imag, eri1_e)
             buf2 = numpy.ndarray((nao_e,naux,nao_e), buffer=buf1)
             for k in range(nset):
                 buf2[:] = lib.einsum('pij,jk->ipk', eri1_e, dms['e'][k].real)
@@ -653,14 +651,13 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
             t1 = log.timer_debug1('jk', *t1)
         if with_j:
             vj['e'] = vj['e'].reshape(dm_shape_e)
-            vj_inter['e'] = vj_inter['e'].reshape(dm_shape_e)
-            vj['e'] = lib.tag_array(vj['e'], vint=vj_inter['e'])
+            vj_inter_e = vj_inter_e.reshape(dm_shape_e)
+            vj['e'] = lib.tag_array(vj['e'], vint=vj_inter_e)
             for t, dm_shape_ in dm_shape.items():
                 if t == 'e':
                     continue
                 vj[t] = vj[t].reshape(dm_shape_)
-                vj_inter[t] = vj_inter[t].reshape(dm_shape_)
-                vj[t] = lib.tag_array(vj[t], vint=vj_inter[t])
+                vj[t] = lib.tag_array(vj[t], vint=vj[t])
         if with_k: vk = vk.reshape(dm_shape['e'])
         logger.timer(dfobj, 'df vj and vk', *t0)
         return vj, vk
@@ -692,9 +689,8 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
                 dm_eri_n += dm_.dot(eri1_n.T) * dfobj._charges[t]
                 vj_t = dm_eri_e.dot(eri1_n) * dfobj._charges[t]
                 vj[t] += vj_t
-                vj_inter[t] += vj_t
             vj['e'] += (dm_eri_e + dm_eri_n).dot(eri1_e)
-            vj_inter['e'] += dm_eri_n.dot(eri1_e)
+            vj_inter_e += dm_eri_n.dot(eri1_e)
 
     elif getattr(dm['e'], 'mo_coeff', None) is not None:
         #TODO: test whether dm.mo_coeff matching dm
@@ -741,9 +737,8 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
                     dm_eri_n += dm_.dot(eri1_n.T) * dfobj._charges[t]
                     vj_t = dm_eri_e.dot(eri1_n) * dfobj._charges[t]
                     vj[t] += vj_t
-                    vj_inter[t] += vj_t
                 vj['e'] += (dm_eri_e + dm_eri_n).dot(eri1_e)
-                vj_inter['e'] += dm_eri_n.dot(eri1_e)
+                vj_inter_e += dm_eri_n.dot(eri1_e)
 
             for k in range(nset):
                 nocc = orbo[k].shape[1]
@@ -789,9 +784,8 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
                     dm_eri_n += dm_.dot(eri1_n.T) * dfobj._charges[t]
                     vj_t = dm_eri_e.dot(eri1_n) * dfobj._charges[t]
                     vj[t] += vj_t
-                    vj_inter[t] += vj_t
                 vj['e'] += (dm_eri_e + dm_eri_n).dot(eri1_e)
-                vj_inter['e'] += dm_eri_n.dot(eri1_e)
+                vj_inter_e += dm_eri_n.dot(eri1_e)
 
             for k in range(nset):
                 buf1 = buf[0,:naux]
@@ -807,14 +801,13 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
 
     if with_j:
         vj['e'] = lib.unpack_tril(vj['e'], 1).reshape(dm_shape_e)
-        vj_inter['e'] = lib.unpack_tril(vj_inter['e'], 1).reshape(dm_shape_e)
-        vj['e'] = lib.tag_array(vj['e'], vint=vj_inter['e'])
+        vj_inter_e = lib.unpack_tril(vj_inter_e, 1).reshape(dm_shape_e)
+        vj['e'] = lib.tag_array(vj['e'], vint=vj_inter_e)
         for t, dm_shape_ in dm_shape.items():
             if t == 'e':
                 continue
             vj[t] = lib.unpack_tril(vj[t], 1).reshape(dm_shape_)
-            vj_inter[t] = lib.unpack_tril(vj_inter[t], 1).reshape(dm_shape_)
-            vj[t] = lib.tag_array(vj[t], vint=vj_inter[t])
+            vj[t] = lib.tag_array(vj[t], vint=vj[t])
     if with_k: vk = vk.reshape(dm_shape['e'])
     logger.timer(dfobj, 'df vj and vk', *t0)
     return vj, vk
@@ -871,7 +864,7 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
         dfobj._vjopt = opt
         t1 = logger.timer_debug1(dfobj, 'df-vj init_direct_scf', *t1)
 
-    jaux_e_n = 0
+    jaux_n = 0
     opt = dfobj._vjopt
     n_dm = None
     dm_shape = {}
@@ -911,27 +904,27 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
         jaux = numpy.array(jaux)[:,:,0]
         if t == 'e':
             jaux_e = jaux * dfobj._charges[t]
-        jaux_e_n += jaux * dfobj._charges[t]
+        else:
+            jaux_n += jaux * dfobj._charges[t]
     t1 = logger.timer_debug1(dfobj, 'df-vj pass 1', *t1)
 
     if opt['e'].j2c_type == 'cd':
         rho_e = scipy.linalg.cho_solve(opt['e'].j2c, jaux_e.T)
-        rho_e_n = scipy.linalg.cho_solve(opt['e'].j2c, jaux_e_n.T)
+        rho_n = scipy.linalg.cho_solve(opt['e'].j2c, jaux_n.T)
     else:
         rho_e = scipy.linalg.solve(opt['e'].j2c, jaux_e.T)
-        rho_e_n = scipy.linalg.solve(opt['e'].j2c, jaux_e_n.T)
+        rho_n = scipy.linalg.solve(opt['e'].j2c, jaux_n.T)
     # transform rho to shape (:,1,naux), to adapt to 3c2e integrals (ij|k)
     rho_e = rho_e.T[:,numpy.newaxis,:]
-    rho_e_n = rho_e_n.T[:,numpy.newaxis,:]
+    rho_n = rho_n.T[:,numpy.newaxis,:]
     t1 = logger.timer_debug1(dfobj, 'df-vj solve ', *t1)
 
     vj = {}
-    vj_inter = {}
+    vj_inter_e = None
     # CVHFnr3c2e_vj_pass2_prescreen requires custom dm_cond
     aux_loc = dfobj.auxmol.ao_loc
     dm_cond_e = numpy.array([abs(rho_e[:,:,i0:i1]).max()
                              for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
-    rho_n = rho_e_n - rho_e
     dm_cond_n = numpy.array([abs(rho_n[:,:,i0:i1]).max()
                              for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
     for t, mol_ in mol.components.items():
@@ -947,25 +940,26 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
         with lib.temporary_env(opt_, prescreen='CVHFnr3c2e_vj_pass2_prescreen',
                                _dmcondname=None):
             if t == 'e':
-                dm_cond = [abs(rho_e_n[:,:,i0:i1]).max()
-                           for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])]
-                opt_.dm_cond = numpy.array(dm_cond)
-                vj[t] = jk.get_jk(fakemol, rho_e_n, ['ijkl,lk->ij']*n_dm, 'int3c2e',
-                                  aosym='s2ij', hermi=1, shls_slice=shls_slice,
-                                  vhfopt=opt_)
+                opt_.dm_cond = dm_cond_e
+                vj_e = jk.get_jk(fakemol, rho_e, ['ijkl,lk->ij']*n_dm, 'int3c2e',
+                                 aosym='s2ij', hermi=1, shls_slice=shls_slice,
+                                 vhfopt=opt_)
                 opt_.dm_cond = dm_cond_n
-                vj_inter[t] = jk.get_jk(fakemol, rho_n, ['ijkl,lk->ij']*n_dm, 'int3c2e',
-                                        aosym='s2ij', hermi=1, shls_slice=shls_slice,
-                                        vhfopt=opt_)
+                vj_inter_e = jk.get_jk(fakemol, rho_n, ['ijkl,lk->ij']*n_dm, 'int3c2e',
+                                       aosym='s2ij', hermi=1, shls_slice=shls_slice,
+                                       vhfopt=opt_)
+                vj[t] = numpy.asarray(vj_e) + numpy.asarray(vj_inter_e)
             else:
                 opt_.dm_cond = dm_cond_e
                 vj[t] = jk.get_jk(fakemol, rho_e, ['ijkl,lk->ij']*n_dm, 'int3c2e',
                                   aosym='s2ij', hermi=1, shls_slice=shls_slice,
                                   vhfopt=opt_)
-                vj_inter[t] = vj[t]
         vj[t] = numpy.asarray(vj[t]).reshape(dm_shape[t]) * dfobj._charges[t]
-        vj_inter[t] = numpy.asarray(vj_inter[t]).reshape(dm_shape[t]) * dfobj._charges[t]
-        vj[t] = lib.tag_array(vj[t], vint=vj_inter[t])
+        if t == 'e':
+            vj_inter_e = numpy.asarray(vj_inter_e).reshape(dm_shape[t]) * dfobj._charges[t]
+            vj[t] = lib.tag_array(vj[t], vint=vj_inter_e)
+        else:
+            vj[t] = lib.tag_array(vj[t], vint=vj[t])
 
     t1 = logger.timer_debug1(dfobj, 'df-vj pass 2', *t1)
     logger.timer(dfobj, 'df-vj', *t0)
