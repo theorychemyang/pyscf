@@ -1682,13 +1682,15 @@ class HF(scf.hf.SCF):
 
     def density_fit(self, auxbasis=None, with_df=None, ee_only_dfj=False,
                     df_ne=False, df_ne_scheme='global',
-                    nuc_auxbasis=None, nuc_auxbasis_beta=2.0):
+                    nuc_auxbasis=None, nuc_auxbasis_beta=2.0,
+                    df_ne_component_vint=False):
         import pyscf.neo.df
         return pyscf.neo.df.density_fit(self, auxbasis=auxbasis, with_df=with_df,
                                         ee_only_dfj=ee_only_dfj, df_ne=df_ne,
                                         df_ne_scheme=df_ne_scheme,
                                         nuc_auxbasis=nuc_auxbasis,
-                                        nuc_auxbasis_beta=nuc_auxbasis_beta)
+                                        nuc_auxbasis_beta=nuc_auxbasis_beta,
+                                        df_ne_component_vint=df_ne_component_vint)
 
     def sfx2c1e(self):
         raise NotImplementedError

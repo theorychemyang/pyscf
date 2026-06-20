@@ -304,10 +304,11 @@ def cholesky_eri_b_outcore(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
 class DF(df.DF):
     '''build all e-e and e-n cderi'''
     _keys = df.DF._keys.union(['df_ne_scheme', 'nuc_auxbasis',
-                               'nuc_auxbasis_beta'])
+                               'nuc_auxbasis_beta', 'df_ne_component_vint'])
 
     def __init__(self, mol, auxbasis=None, df_ne_scheme='global',
-                 nuc_auxbasis=None, nuc_auxbasis_beta=2.0):
+                 nuc_auxbasis=None, nuc_auxbasis_beta=2.0,
+                 df_ne_component_vint=False):
         super().__init__(mol, auxbasis)
         self._cderi_names = list(self.mol.components.keys())
         self._charges = {}
@@ -315,6 +316,7 @@ class DF(df.DF):
         self.df_ne_scheme = df_ne_scheme
         self.nuc_auxbasis = nuc_auxbasis
         self.nuc_auxbasis_beta = nuc_auxbasis_beta
+        self.df_ne_component_vint = df_ne_component_vint
 
     def _check_df_ne_scheme(self):
         if self.df_ne_scheme not in ('electron', 'global'):
@@ -536,6 +538,7 @@ class DF(df.DF):
 def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
     '''vj returned is already combined for alpha and beta spins'''
     assert (with_j or with_k)
+    with_vint = getattr(dfobj, 'df_ne_component_vint', False)
     if (not with_k and not dfobj.mol.incore_anyway and
         # 3-center integral tensor is not initialized
         dfobj._cderi is None):
@@ -577,7 +580,7 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
             dm_e = dms['e']
             dm_shape_e = dm_shape['e']
         vj[t] = 0
-    if with_j:
+    if with_j and with_vint:
         vj_inter_e = 0
     assert nao_max > 0 # max of nuc nao
     vk = numpy.zeros_like(dms['e'])
@@ -599,7 +602,8 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
         if with_j:
             assert numpy.iscomplexobj(dm_e)
             vj['e'] = numpy.zeros_like(dm_e)
-            vj_inter_e = numpy.zeros_like(dm_e)
+            if with_vint:
+                vj_inter_e = numpy.zeros_like(dm_e)
             for t, dm_ in dms.items():
                 if t == 'e':
                     continue
@@ -640,8 +644,9 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
                     eri_n_dm_imag += numpy.einsum('pij,nji->pn', eri1_n, dm_.imag) * dfobj._charges[t]
                 vj['e'].real += numpy.einsum('pn,pij->nij', eri_e_dm_real + eri_n_dm_real, eri1_e)
                 vj['e'].imag += numpy.einsum('pn,pij->nij', eri_e_dm_imag + eri_n_dm_imag, eri1_e)
-                vj_inter_e.real += numpy.einsum('pn,pij->nij', eri_n_dm_real, eri1_e)
-                vj_inter_e.imag += numpy.einsum('pn,pij->nij', eri_n_dm_imag, eri1_e)
+                if with_vint:
+                    vj_inter_e.real += numpy.einsum('pn,pij->nij', eri_n_dm_real, eri1_e)
+                    vj_inter_e.imag += numpy.einsum('pn,pij->nij', eri_n_dm_imag, eri1_e)
             buf2 = numpy.ndarray((nao_e,naux,nao_e), buffer=buf1)
             for k in range(nset):
                 buf2[:] = lib.einsum('pij,jk->ipk', eri1_e, dms['e'][k].real)
@@ -651,8 +656,9 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
             t1 = log.timer_debug1('jk', *t1)
         if with_j:
             vj['e'] = vj['e'].reshape(dm_shape_e)
-            vj_inter_e = vj_inter_e.reshape(dm_shape_e)
-            vj['e'] = lib.tag_array(vj['e'], vint=vj_inter_e)
+            if with_vint:
+                vj_inter_e = vj_inter_e.reshape(dm_shape_e)
+                vj['e'] = lib.tag_array(vj['e'], vint=vj_inter_e)
             for t, dm_shape_ in dm_shape.items():
                 if t == 'e':
                     continue
@@ -690,7 +696,8 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
                 vj_t = dm_eri_e.dot(eri1_n) * dfobj._charges[t]
                 vj[t] += vj_t
             vj['e'] += (dm_eri_e + dm_eri_n).dot(eri1_e)
-            vj_inter_e += dm_eri_n.dot(eri1_e)
+            if with_vint:
+                vj_inter_e += dm_eri_n.dot(eri1_e)
 
     elif getattr(dm['e'], 'mo_coeff', None) is not None:
         #TODO: test whether dm.mo_coeff matching dm
@@ -738,7 +745,8 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
                     vj_t = dm_eri_e.dot(eri1_n) * dfobj._charges[t]
                     vj[t] += vj_t
                 vj['e'] += (dm_eri_e + dm_eri_n).dot(eri1_e)
-                vj_inter_e += dm_eri_n.dot(eri1_e)
+                if with_vint:
+                    vj_inter_e += dm_eri_n.dot(eri1_e)
 
             for k in range(nset):
                 nocc = orbo[k].shape[1]
@@ -785,7 +793,8 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
                     vj_t = dm_eri_e.dot(eri1_n) * dfobj._charges[t]
                     vj[t] += vj_t
                 vj['e'] += (dm_eri_e + dm_eri_n).dot(eri1_e)
-                vj_inter_e += dm_eri_n.dot(eri1_e)
+                if with_vint:
+                    vj_inter_e += dm_eri_n.dot(eri1_e)
 
             for k in range(nset):
                 buf1 = buf[0,:naux]
@@ -801,8 +810,9 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
 
     if with_j:
         vj['e'] = lib.unpack_tril(vj['e'], 1).reshape(dm_shape_e)
-        vj_inter_e = lib.unpack_tril(vj_inter_e, 1).reshape(dm_shape_e)
-        vj['e'] = lib.tag_array(vj['e'], vint=vj_inter_e)
+        if with_vint:
+            vj_inter_e = lib.unpack_tril(vj_inter_e, 1).reshape(dm_shape_e)
+            vj['e'] = lib.tag_array(vj['e'], vint=vj_inter_e)
         for t, dm_shape_ in dm_shape.items():
             if t == 'e':
                 continue
@@ -817,6 +827,7 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
     from pyscf.scf import _vhf
     from pyscf.scf import jk
     t0 = t1 = (logger.process_clock(), logger.perf_counter())
+    with_vint = getattr(dfobj, 'df_ne_component_vint', False)
 
     mol = dfobj.mol
     if dfobj._vjopt is None:
@@ -864,7 +875,7 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
         dfobj._vjopt = opt
         t1 = logger.timer_debug1(dfobj, 'df-vj init_direct_scf', *t1)
 
-    jaux_n = 0
+    jaux_e_n = 0
     opt = dfobj._vjopt
     n_dm = None
     dm_shape = {}
@@ -904,19 +915,20 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
         jaux = numpy.array(jaux)[:,:,0]
         if t == 'e':
             jaux_e = jaux * dfobj._charges[t]
-        else:
-            jaux_n += jaux * dfobj._charges[t]
+        jaux_e_n += jaux * dfobj._charges[t]
     t1 = logger.timer_debug1(dfobj, 'df-vj pass 1', *t1)
 
     if opt['e'].j2c_type == 'cd':
         rho_e = scipy.linalg.cho_solve(opt['e'].j2c, jaux_e.T)
-        rho_n = scipy.linalg.cho_solve(opt['e'].j2c, jaux_n.T)
+        rho_e_n = scipy.linalg.cho_solve(opt['e'].j2c, jaux_e_n.T)
     else:
         rho_e = scipy.linalg.solve(opt['e'].j2c, jaux_e.T)
-        rho_n = scipy.linalg.solve(opt['e'].j2c, jaux_n.T)
+        rho_e_n = scipy.linalg.solve(opt['e'].j2c, jaux_e_n.T)
     # transform rho to shape (:,1,naux), to adapt to 3c2e integrals (ij|k)
     rho_e = rho_e.T[:,numpy.newaxis,:]
-    rho_n = rho_n.T[:,numpy.newaxis,:]
+    rho_e_n = rho_e_n.T[:,numpy.newaxis,:]
+    if with_vint:
+        rho_n = rho_e_n - rho_e
     t1 = logger.timer_debug1(dfobj, 'df-vj solve ', *t1)
 
     vj = {}
@@ -925,8 +937,11 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
     aux_loc = dfobj.auxmol.ao_loc
     dm_cond_e = numpy.array([abs(rho_e[:,:,i0:i1]).max()
                              for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
-    dm_cond_n = numpy.array([abs(rho_n[:,:,i0:i1]).max()
-                             for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
+    dm_cond_e_n = numpy.array([abs(rho_e_n[:,:,i0:i1]).max()
+                               for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
+    if with_vint:
+        dm_cond_n = numpy.array([abs(rho_n[:,:,i0:i1]).max()
+                                 for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
     for t, mol_ in mol.components.items():
         opt_ = opt[t]
         fakemol = opt_.fakemol
@@ -940,25 +955,25 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
         with lib.temporary_env(opt_, prescreen='CVHFnr3c2e_vj_pass2_prescreen',
                                _dmcondname=None):
             if t == 'e':
-                opt_.dm_cond = dm_cond_e
-                vj_e = jk.get_jk(fakemol, rho_e, ['ijkl,lk->ij']*n_dm, 'int3c2e',
-                                 aosym='s2ij', hermi=1, shls_slice=shls_slice,
-                                 vhfopt=opt_)
-                opt_.dm_cond = dm_cond_n
-                vj_inter_e = jk.get_jk(fakemol, rho_n, ['ijkl,lk->ij']*n_dm, 'int3c2e',
-                                       aosym='s2ij', hermi=1, shls_slice=shls_slice,
-                                       vhfopt=opt_)
-                vj[t] = numpy.asarray(vj_e) + numpy.asarray(vj_inter_e)
+                opt_.dm_cond = dm_cond_e_n
+                vj[t] = jk.get_jk(fakemol, rho_e_n, ['ijkl,lk->ij']*n_dm, 'int3c2e',
+                                  aosym='s2ij', hermi=1, shls_slice=shls_slice,
+                                  vhfopt=opt_)
+                if with_vint:
+                    opt_.dm_cond = dm_cond_n
+                    vj_inter_e = jk.get_jk(fakemol, rho_n, ['ijkl,lk->ij']*n_dm, 'int3c2e',
+                                           aosym='s2ij', hermi=1, shls_slice=shls_slice,
+                                           vhfopt=opt_)
             else:
                 opt_.dm_cond = dm_cond_e
                 vj[t] = jk.get_jk(fakemol, rho_e, ['ijkl,lk->ij']*n_dm, 'int3c2e',
                                   aosym='s2ij', hermi=1, shls_slice=shls_slice,
                                   vhfopt=opt_)
         vj[t] = numpy.asarray(vj[t]).reshape(dm_shape[t]) * dfobj._charges[t]
-        if t == 'e':
+        if t == 'e' and with_vint:
             vj_inter_e = numpy.asarray(vj_inter_e).reshape(dm_shape[t]) * dfobj._charges[t]
             vj[t] = lib.tag_array(vj[t], vint=vj_inter_e)
-        else:
+        elif t != 'e':
             vj[t] = lib.tag_array(vj[t], vint=vj[t])
 
     t1 = logger.timer_debug1(dfobj, 'df-vj pass 2', *t1)
@@ -967,7 +982,7 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
 
 def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
                 df_ne=False, df_ne_scheme='global', nuc_auxbasis=None,
-                nuc_auxbasis_beta=2.0):
+                nuc_auxbasis_beta=2.0, df_ne_component_vint=False):
     '''Apply density fitting to NEO SCF objects.
 
     If ``df_ne`` is false, only the electronic e-e Coulomb build is density
@@ -996,6 +1011,12 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
     relative to the NEO AO basis generator to match the equal-exponent product
     scale.  ``nuc_auxbasis_beta`` controls the spacing of the default
     ``aug_etb`` nuclear auxiliary basis.
+
+    ``df_ne_component_vint`` controls an extra compatibility path for
+    component-level calls such as ``mf.components['e'].get_fock()`` after a
+    DF-NE calculation.  It is disabled by default because it requires an
+    additional e-n-only electronic J reconstruction.  CNEO SCF, gradients,
+    and response functions do not need this cache.
     '''
     assert isinstance(mf, neo.HF)
     assert 'e' in mf.components
@@ -1030,7 +1051,8 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
         # e-e and e-n with_df
         with_df = DF(mol, auxbasis, df_ne_scheme=df_ne_scheme,
                      nuc_auxbasis=nuc_auxbasis,
-                     nuc_auxbasis_beta=nuc_auxbasis_beta)
+                     nuc_auxbasis_beta=nuc_auxbasis_beta,
+                     df_ne_component_vint=df_ne_component_vint)
 
     if with_df is not None and df_ne:
         if not isinstance(with_df, DF):
@@ -1042,6 +1064,7 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
         with_df.df_ne_scheme = df_ne_scheme
         with_df.nuc_auxbasis = nuc_auxbasis
         with_df.nuc_auxbasis_beta = nuc_auxbasis_beta
+        with_df.df_ne_component_vint = df_ne_component_vint
         with_df.max_memory = mf.max_memory
         with_df.stdout = mf.stdout
         with_df.verbose = mf.verbose
@@ -1068,6 +1091,7 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
         mf.with_df = with_df
         mf.ee_only_dfj = ee_only_dfj
         mf.df_ne = df_ne
+        mf.df_ne_component_vint = df_ne_component_vint
 
     # NOTE: RSH is handled by with_df in elec component
     _charge = mf.components['e'].charge
@@ -1102,7 +1126,7 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
     if isinstance(mf, _DFNEO):
         return mf
 
-    dfmf = _DFNEO(mf, with_df, ee_only_dfj, df_ne)
+    dfmf = _DFNEO(mf, with_df, ee_only_dfj, df_ne, df_ne_component_vint)
     if df_ne:
         name = _DFNEO.__name_mixin__ + '-EE&NE-' + mf.__class__.__name__
     else:
@@ -1112,14 +1136,16 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
 class _DFNEO:
     __name_mixin__ = 'DF'
 
-    _keys = {'with_df', 'ee_only_dfj', 'df_ne'}
+    _keys = {'with_df', 'ee_only_dfj', 'df_ne', 'df_ne_component_vint'}
 
-    def __init__(self, mf, df=None, ee_only_dfj=None, df_ne=None):
+    def __init__(self, mf, df=None, ee_only_dfj=None, df_ne=None,
+                 df_ne_component_vint=False):
         self.__dict__.update(mf.__dict__)
         self._eri = None
         self.with_df = df
         self.ee_only_dfj = ee_only_dfj
         self.df_ne = df_ne
+        self.df_ne_component_vint = df_ne_component_vint
         # Unless DF is used only for J matrix, disable direct_scf for K build.
         # It is more efficient to construct K matrix with MO coefficients than
         # the incremental method in direct_scf.
@@ -1157,7 +1183,7 @@ class _DFNEO:
                                                             obj.direct_scf_tol)
         if hasattr(self, 'f') and self.f is not None:
             obj.f = numpy.array(self.f, copy=True)
-        del obj.with_df, obj.ee_only_dfj, obj.df_ne
+        del obj.with_df, obj.ee_only_dfj, obj.df_ne, obj.df_ne_component_vint
         return obj
 
     def reset(self, mol=None):
@@ -1216,6 +1242,8 @@ class _DFNEO:
         mol_e = mol.components['e']
         mf_e = self.components['e']
         self._attach_global_elec_df()
+        cache_component_vint = bool(getattr(self, 'df_ne_component_vint', False))
+        self.with_df.df_ne_component_vint = cache_component_vint
         if isinstance(mf_e, scf.rohf.ROHF) or isinstance(mf_e, scf.ghf.GHF):
             raise NotImplementedError
         e_unrestricted = False
@@ -1278,12 +1306,19 @@ class _DFNEO:
                 vhf['e'] = vhf['e'] - vk * .5
             for t in dm:
                 if t == 'e':
-                    vhf[t] = lib.tag_array(vhf[t], vint=vint[t],
-                                           vint_inc=vint_delta[t])
+                    if cache_component_vint:
+                        vhf[t] = lib.tag_array(vhf[t], vint=vint[t],
+                                               vint_inc=vint_delta[t])
+                    else:
+                        vhf[t] = lib.tag_array(vhf[t],
+                                               vint_inc=vint_delta[t])
                 else:
                     vhf[t] = lib.tag_array(vint[t], vint=vint[t],
                                            vint_inc=vint_delta[t])
-                self.components[t]._vint = vint[t]
+                if t != 'e' or cache_component_vint:
+                    self.components[t]._vint = numpy.asarray(vint[t])
+                else:
+                    self.components[t]._vint = None
         else:
             mf_e.initialize_grids(mol_e, dm['e'])
 
@@ -1429,14 +1464,22 @@ class _DFNEO:
 
             if hasattr(epc['e'], 'exc'):
                 exc += epc['e'].exc
-            vhf['e'] = lib.tag_array(vhf['e'], ecoul=ecoul, exc=exc,
-                                     vj=vj['e'], vk=vk, vint=vint['e'],
-                                     vint_inc=vint_delta['e'])
+            if cache_component_vint:
+                vhf['e'] = lib.tag_array(vhf['e'], ecoul=ecoul, exc=exc,
+                                         vj=vj['e'], vk=vk, vint=vint['e'],
+                                         vint_inc=vint_delta['e'])
+            else:
+                vhf['e'] = lib.tag_array(vhf['e'], ecoul=ecoul, exc=exc,
+                                         vj=vj['e'], vk=vk,
+                                         vint_inc=vint_delta['e'])
             for t in vhf:
                 if t != 'e':
                     vhf[t] = lib.tag_array(vhf[t], vj=vj[t], vint=vint[t],
                                            vint_inc=vint_delta[t])
-                self.components[t]._vint = numpy.asarray(vint[t] + epc[t])
+                if t != 'e' or cache_component_vint:
+                    self.components[t]._vint = numpy.asarray(vint[t] + epc[t])
+                else:
+                    self.components[t]._vint = None
 
         return vhf
 

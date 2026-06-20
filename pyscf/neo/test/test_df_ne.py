@@ -35,14 +35,16 @@ class KnownValues(unittest.TestCase):
                     quantum_nuc=[0], verbose=0)
         for scheme in ('electron', 'global'):
             mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
-                                         df_ne_scheme=scheme)
+                                         df_ne_scheme=scheme,
+                                         df_ne_component_vint=True)
             dm = mf.get_init_guess()
 
             vj = mf.with_df.get_j(dm)
             self.assertIsNone(mf.with_df._cderi)
 
             mf_ref = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
-                                             df_ne_scheme=scheme)
+                                             df_ne_scheme=scheme,
+                                             df_ne_component_vint=True)
             mf_ref.with_df.build()
             vj_ref, vk_ref = mf_ref.with_df.get_jk(dm, with_k=False)
             self.assertIsNotNone(mf_ref.with_df._cderi)
@@ -56,13 +58,15 @@ class KnownValues(unittest.TestCase):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
                     quantum_nuc=[0], verbose=0)
         mf_ref = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
-                                         df_ne_scheme='electron')
+                                         df_ne_scheme='electron',
+                                         df_ne_component_vint=True)
         dm = mf_ref.get_init_guess()
         mf_ref.with_df.build()
         vj_ref, vk_ref = mf_ref.with_df.get_jk(dm, with_k=False)
 
         mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
-                                     df_ne_scheme='electron')
+                                     df_ne_scheme='electron',
+                                     df_ne_component_vint=True)
         mf.with_df.max_memory = 1e-4
         mf.with_df.build()
         self.assertIsNotNone(mf.with_df._cderi)
@@ -77,7 +81,8 @@ class KnownValues(unittest.TestCase):
     def test_component_fock_has_df_ne_coulomb(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
                     quantum_nuc=[0], verbose=0)
-        mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True)
+        mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
+                                     df_ne_component_vint=True)
         mf.scf()
         dm = mf.make_rdm1()
         vhf = mf.get_veff(mf.mol, dm)
@@ -85,13 +90,25 @@ class KnownValues(unittest.TestCase):
         fock_e = mf.components['e'].get_fock(dm=dm['e'])
         self.assertAlmostEqual(numpy.linalg.norm(fock['e'] - fock_e), 0, 12)
 
-    def test_component_fock_after_undo_df_without_cache_raises(self):
+    def test_component_fock_without_df_ne_cache_raises(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
                     quantum_nuc=[0], verbose=0)
         mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True)
         mf.scf()
         dm = mf.make_rdm1()
         mf.get_veff(mf.mol, dm)
+        with self.assertRaises(RuntimeError):
+            mf.components['e'].get_fock(dm=dm['e'])
+
+    def test_component_fock_after_undo_df_with_cache_raises(self):
+        mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
+                    quantum_nuc=[0], verbose=0)
+        mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
+                                     df_ne_component_vint=True)
+        mf.scf()
+        dm = mf.make_rdm1()
+        mf.get_veff(mf.mol, dm)
+        mf.components['e'].get_fock(dm=dm['e'])
         mf = mf.undo_df()
         dm = mf.make_rdm1()
         with self.assertRaises(RuntimeError):
