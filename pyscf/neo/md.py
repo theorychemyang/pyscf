@@ -8,6 +8,12 @@ import numpy
 from scipy import signal
 from ase.io.trajectory import Trajectory
 from ase import units
+from pyscf import lib
+
+def _cumulative_trapezoid(y, x):
+    if hasattr(scipy.integrate, 'cumulative_trapezoid'):
+        return scipy.integrate.cumulative_trapezoid(y, x)
+    return scipy.integrate.cumtrapz(y, x)
 
 def step_average(data):
     'get cumulative averaged data'
@@ -33,23 +39,21 @@ def vacf(datafile, start=0, end=-1, step=1):
         v.append(traj[i].get_velocities())
     v = numpy.array(v)
 
-    global n # the number of atoms
-    t, n, x = v.shape
+    t, natoms, x = v.shape
 
     mass = traj[-1].get_masses()
     acf = 0
 
-    for i in range(n): # i-th atom
+    for i in range(natoms): # i-th atom
         for j in range(x): # j-th component of verlocity
             acf += calc_ACF(v[start:end:step,i,j]) * mass[i]
 
-    return acf
+    return lib.tag_array(acf, natoms=natoms)
 
 def dacf(datafile, time_step=0.5, start=0, end=-1, step=1):
     'calculate dipole auto-correlation function (DACF) from trajectory of MD simulations'
     traj = Trajectory(datafile)
-    global n # the number of atoms
-    n = len(traj[-1].get_positions())
+    natoms = len(traj[-1].get_positions())
 
     dipole = []
     for i in range(len(traj)):
@@ -64,7 +68,7 @@ def dacf(datafile, time_step=0.5, start=0, end=-1, step=1):
         de = numpy.gradient(dipole[start:end:step, j], time_step)
         acf += calc_ACF(de)
 
-    return acf
+    return lib.tag_array(acf, natoms=natoms)
 
 def calc_FFT(acf):
     'get Fourier transform of ACF'
@@ -86,8 +90,13 @@ def calc_FFT(acf):
 
     return yfft
 
-def spectrum(acf, time_step=0.5, corr_depth=4096):
+def spectrum(acf, time_step=0.5, corr_depth=4096, natoms=None):
     'get wavenumber and intensity of spectrum'
+
+    if natoms is None:
+        natoms = getattr(acf, 'natoms', None)
+    if natoms is None:
+        raise ValueError('natoms must be provided when acf has no natoms tag')
 
     acf = acf[:corr_depth]
 
@@ -97,9 +106,9 @@ def spectrum(acf, time_step=0.5, corr_depth=4096):
 
     wavenumber = numpy.fft.fftfreq(len(yfft), time_step * fs2cm)[0:int(len(yfft)/2)]
     intensity = numpy.real(yfft[0:int(len(yfft)/2)])
-    factor = 11604.52500617 * fs2cm / (3 * n) # eV2K * fs2cm -> K*cm
+    factor = 11604.52500617 * fs2cm / (3 * natoms) # eV2K * fs2cm -> K*cm
     intensity *= factor
-    temperature = scipy.integrate.cumtrapz(intensity, wavenumber)
+    temperature = _cumulative_trapezoid(intensity, wavenumber)
     print('Integrated temperature (K)', temperature[-1])
     return wavenumber, intensity, temperature
 
