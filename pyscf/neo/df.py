@@ -22,10 +22,63 @@ MAX_MEMORY = getattr(__config__, 'df_outcore_max_memory', 2000)  # 2GB
 # see qchem default setting in https://manual.q-chem.com/5.4/sec_Basis_Customization.html
 LINEAR_DEP_THR = getattr(__config__, 'df_df_DF_lindep', 1e-7)
 
+def _solve_triangular(low, b):
+    if b.flags.c_contiguous:
+        trsm, = scipy.linalg.get_blas_funcs(('trsm',), (low, b))
+        return trsm(1.0, low, b.T, lower=True, trans_a=1, side=1,
+                    overwrite_b=True).T
+    else:
+        return scipy.linalg.solve_triangular(low, b, lower=True,
+                                             overwrite_b=True,
+                                             check_finite=False)
+
+def _getints3c(int3c, atm, bas, env, sh_range, mol_nbas, aux0, aux1,
+               comp, aosym, ao_loc, cintopt, out=None, out2=None,
+               transpose=True):
+    bstart, bend, nrow = sh_range
+    shls_slice = (bstart, bend, 0, mol_nbas, mol_nbas+aux0, mol_nbas+aux1)
+    ints = gto.moleintor.getints3c(int3c, atm, bas, env, shls_slice, comp,
+                                   aosym, ao_loc, cintopt, out=out)
+    if not transpose:
+        return ints, False
+    naux = ao_loc[mol_nbas+aux1] - ao_loc[mol_nbas+aux0]
+    out2_used = False
+    if ints.ndim == 3 and ints.flags.f_contiguous:
+        if out2 is None:
+            ints = lib.transpose(ints.T, axes=(0,2,1)).reshape(naux,-1)
+        else:
+            ints = lib.transpose(ints.T, axes=(0,2,1), out=out2).reshape(naux,-1)
+            out2_used = True
+    else:
+        ints = ints.reshape((-1,naux)).T
+    return ints, out2_used
+
+def _transform_schur_naux(low_en, low_n, dat_eaux, ints_naux):
+    rhs_naux = ints_naux - low_en.T.dot(dat_eaux)
+    return _solve_triangular(low_n, rhs_naux)
+
+def _cholesky_2c2e_schur(auxmol, auxmol_e, int2c):
+    '''Factor the global auxiliary metric with the e-only block first.'''
+    nbas_e = auxmol_e.nbas
+    nbas = auxmol.nbas
+    naux_e = auxmol_e.nao_nr()
+    j2c_e = auxmol_e.intor(int2c, hermi=1)
+    low_e = scipy.linalg.cholesky(j2c_e, lower=True)
+    j2c_en = auxmol.intor(int2c, shls_slice=(0, nbas_e, nbas_e, nbas))
+    low_en = scipy.linalg.solve_triangular(low_e, j2c_en,
+                                           lower=True,
+                                           check_finite=False)
+    j2c_nn = auxmol.intor(int2c, hermi=1,
+                          shls_slice=(nbas_e, nbas, nbas_e, nbas))
+    j2c_nn -= low_en.T.dot(low_en)
+    low_n = scipy.linalg.cholesky(j2c_nn, lower=True)
+    return naux_e, low_e, low_en, low_n
+
 def cholesky_eri_incore(mol, auxbasis='weigend+etb', auxmol=None,
                         int3c='int3c2e', aosym='s2ij', int2c='int2c2e', comp=1,
                         max_memory=MAX_MEMORY, decompose_j2c='cd',
-                        lindep=LINEAR_DEP_THR, verbose=0, fauxe2=aux_e2):
+                        lindep=LINEAR_DEP_THR, verbose=0, fauxe2=aux_e2,
+                        auxmol_e=None, cderi_e=None):
     from pyscf.df.outcore import _guess_shell_ranges
     assert (comp == 1)
     t0 = (logger.process_clock(), logger.perf_counter())
@@ -38,22 +91,41 @@ def cholesky_eri_incore(mol, auxbasis='weigend+etb', auxmol=None,
     elif mol.cart and not auxmol.cart:
         raise RuntimeError('Cartesian orbitals for mol and spherical orbitals for auxmol not supported')
 
-    j2c = auxmol.intor(int2c, hermi=1)
+    schur = False
+    build_e_cderi = auxmol_e is not None and cderi_e is None
+    reuse_e_cderi = auxmol_e is not None and cderi_e is not None
+    if auxmol_e is not None and decompose_j2c != 'eig':
+        try:
+            naux_e, low_e, low_en, low_n = _cholesky_2c2e_schur(auxmol, auxmol_e, int2c)
+            schur = True
+            decompose_j2c = 'cd'
+            low = None
+        except scipy.linalg.LinAlgError:
+            schur = False
     if decompose_j2c == 'eig':
+        j2c = auxmol.intor(int2c, hermi=1)
         low = _eig_decompose(mol, j2c, lindep)
-    else:
+        j2c = None
+    elif not schur:
+        j2c = auxmol.intor(int2c, hermi=1)
         try:
             low = scipy.linalg.cholesky(j2c, lower=True)
             decompose_j2c = 'cd'
         except scipy.linalg.LinAlgError:
             low = _eig_decompose(mol, j2c, lindep)
             decompose_j2c = 'eig'
-    j2c = None
-    naux, naoaux = low.shape
+        j2c = None
+    if schur:
+        naux = naoaux = naux_e + low_n.shape[0]
+    else:
+        naux, naoaux = low.shape
     log.debug('size of aux basis %d', naux)
     log.timer_debug1('2c2e', *t0)
 
-    max_words = max_memory*.98e6/8 - low.size
+    if schur:
+        max_words = max_memory*.98e6/8 - low_e.size - low_en.size - low_n.size
+    else:
+        max_words = max_memory*.98e6/8 - low.size
     cderi = {}
     for t, mol_ in mol.components.items():
         int3c = gto.moleintor.ascint3(mol_._add_suffix(int3c))
@@ -68,6 +140,9 @@ def cholesky_eri_incore(mol, auxbasis='weigend+etb', auxmol=None,
             nao_pair = nao * (nao+1) // 2
 
         cderi[t] = numpy.empty((naux, nao_pair))
+        if schur and t == 'e' and build_e_cderi:
+            cderi_e = numpy.empty((naux_e, nao_pair))
+            max_words -= cderi_e.size
 
         max_words -= cderi[t].size
         # Divide by 3 because scipy.linalg.solve may create a temporary copy for
@@ -77,7 +152,10 @@ def cholesky_eri_incore(mol, auxbasis='weigend+etb', auxmol=None,
         log.debug1('shranges = %s', shranges)
 
         cintopt = gto.moleintor.make_cintopt(atm, bas, env, int3c)
-        bufs1 = numpy.empty((comp*max([x[2] for x in shranges]),naoaux))
+        buf_naoaux = naoaux
+        if schur and t == 'e' and reuse_e_cderi:
+            buf_naoaux = ao_loc[mol_.nbas+auxmol.nbas] - ao_loc[mol_.nbas+auxmol_e.nbas]
+        bufs1 = numpy.empty((comp*max([x[2] for x in shranges]),buf_naoaux))
         bufs2 = numpy.empty_like(bufs1)
 
         p1 = 0
@@ -85,37 +163,80 @@ def cholesky_eri_incore(mol, auxbasis='weigend+etb', auxmol=None,
             log.debug('int3c2e for %s [%d/%d], AO [%d:%d], nrow = %d',
                       t, istep+1, len(shranges), *sh_range)
             bstart, bend, nrow = sh_range
-            shls_slice = (bstart, bend, 0, mol_.nbas, mol_.nbas, mol_.nbas+auxmol.nbas)
-            ints = gto.moleintor.getints3c(int3c, atm, bas, env, shls_slice, comp,
-                                           aosym, ao_loc, cintopt, out=bufs1)
-
-            if ints.ndim == 3 and ints.flags.f_contiguous:
-                ints = lib.transpose(ints.T, axes=(0,2,1), out=bufs2).reshape(naoaux,-1)
-                bufs1, bufs2 = bufs2, bufs1
-            else:
-                ints = ints.reshape((-1,naoaux)).T
-
             p0, p1 = p1, p1 + nrow
+            if schur and t == 'e' and reuse_e_cderi:
+                # Reusing e_df._cderi: skip the leading e-auxiliary shells and
+                # compute only the remaining nuclear-auxiliary rows.
+                ints, out2_used = _getints3c(int3c, atm, bas, env, sh_range,
+                                             mol_.nbas, auxmol_e.nbas,
+                                             auxmol.nbas, comp, aosym, ao_loc,
+                                             cintopt, out=bufs1, out2=bufs2)
+                if out2_used:
+                    bufs1, bufs2 = bufs2, bufs1
+            else:
+                # Vanilla path: transform all auxiliary shells in auxmol.
+                # In build-together mode for t == 'e', the leading e-auxiliary
+                # rows are also saved as e_df._cderi.
+                ints, out2_used = _getints3c(int3c, atm, bas, env, sh_range,
+                                             mol_.nbas, 0, auxmol.nbas, comp,
+                                             aosym, ao_loc, cintopt,
+                                             out=bufs1, out2=bufs2)
+                if out2_used:
+                    bufs1, bufs2 = bufs2, bufs1
             if decompose_j2c == 'cd':
-                if ints.flags.c_contiguous:
-                    trsm, = scipy.linalg.get_blas_funcs(('trsm',), (low, ints))
-                    dat = trsm(1.0, low, ints.T, lower=True, trans_a = 1, side = 1, overwrite_b=True).T
+                if schur:
+                    if t == 'e' and reuse_e_cderi:
+                        dat_eaux = cderi_e[:,p0:p1]
+                        ints_naux = ints
+                    else:
+                        ints_naux = ints[naux_e:]
+                        dat_eaux = _solve_triangular(low_e, ints[:naux_e])
+                        if dat_eaux.flags.f_contiguous:
+                            dat_eaux = lib.transpose(dat_eaux.T, out=bufs2)
+                        if t == 'e' and build_e_cderi:
+                            cderi_e[:,p0:p1] = dat_eaux
+                    cderi[t][:naux_e,p0:p1] = dat_eaux
+                    dat_naux = _transform_schur_naux(low_en, low_n, dat_eaux,
+                                                     ints_naux)
+                    if dat_naux.flags.f_contiguous:
+                        dat_naux = lib.transpose(dat_naux.T, out=bufs2)
+                    cderi[t][naux_e:,p0:p1] = dat_naux
                 else:
-                    dat = scipy.linalg.solve_triangular(low, ints, lower=True,
-                                                       overwrite_b=True, check_finite=False)
-                if dat.flags.f_contiguous:
-                    dat = lib.transpose(dat.T, out=bufs2)
-                cderi[t][:,p0:p1] = dat
+                    dat = _solve_triangular(low, ints)
+                if not schur:
+                    if dat.flags.f_contiguous:
+                        dat = lib.transpose(dat.T, out=bufs2)
+                    cderi[t][:,p0:p1] = dat
             else:
                 dat = numpy.ndarray((naux, ints.shape[1]), buffer=bufs2)
                 cderi[t][:,p0:p1] = lib.dot(low, ints, c=dat)
             dat = ints = None
 
     log.timer('cholesky_eri', *t0)
+    if build_e_cderi:
+        return cderi, cderi_e
     return cderi
 
+def _concat_auxmols(mol, auxmols):
+    '''Build component-major auxmol with e auxiliaries first.
+
+    This layout is used for SCF DF tensors.  The contiguous e|n auxiliary split
+    is required by the Schur reuse path.
+    '''
+    auxmol = auxmols[0]
+    for auxmol1 in auxmols[1:]:
+        if auxmol1.natm != mol.natm:
+            raise RuntimeError('DF auxiliary molecule is inconsistent with NEO molecule')
+        auxmol = gto.conc_mol(auxmol, auxmol1)
+    return auxmol
+
 def _combine_auxbasis(mol, auxmols):
-    '''Build a component-unified auxmol with parent atom indexing.'''
+    '''Build atom-major auxmol with combined e/n auxiliaries on each atom.
+
+    This layout is used for DF gradients.  Gradient code rebuilds derivative
+    integrals instead of reading SCF cderi, and expects aoslice_by_atom to
+    describe contiguous atom blocks.
+    '''
     fake_mol = mol.components['e'].copy(deep=False)
     basis = {}
     atoms = []
@@ -161,8 +282,8 @@ def _make_nuc_auxbasis(mol_n, nuc_auxbasis, nuc_auxbasis_beta=2.0):
 
     if isinstance(nuc_auxbasis, str) and re.fullmatch(r'\d+s\d+p\d+d(\d+f)?',
                                                       nuc_auxbasis):
-        return {label: neo_mole.make_even_tempered_nuclear_basis(
-            mol_n.super_mol, ia, nuc_auxbasis, alpha_scale=2.0)}
+        return {label: neo_mole.make_even_tempered_nuclear_basis(mol_n.super_mol,
+                ia, nuc_auxbasis, alpha_scale=2.0)}
 
     if isinstance(nuc_auxbasis, str):
         with open(os.devnull, 'w') as devnull:
@@ -188,10 +309,42 @@ def _make_nuc_auxmol(mol_n, nuc_auxbasis=None, nuc_auxbasis_beta=2.0):
         with contextlib.redirect_stderr(devnull):
             return addons.make_auxmol(mol_n, auxbasis)
 
+def _load_cderi_slice(feri, p0, p1, out=None):
+    '''Load AO-pair columns [p0:p1] from incore or block-format cderi.'''
+    if isinstance(feri, numpy.ndarray):
+        if out is None:
+            return feri[:,p0:p1]
+        out[:] = feri[:,p0:p1]
+        return out
+    if isinstance(feri, h5py.Dataset):
+        if out is None:
+            return numpy.asarray(feri[:,p0:p1])
+        feri.read_direct(out, source_sel=numpy.s_[:,p0:p1])
+        return out
+
+    dat = feri['0']
+    assert dat.ndim == 2
+    naux = dat.shape[0]
+    if out is None:
+        out = numpy.empty((naux, p1-p0))
+    col1 = 0
+    for key in range(len(feri)):
+        dset = feri[str(key)]
+        col0, col1 = col1, col1 + dset.shape[1]
+        q0 = max(p0, col0)
+        q1 = min(p1, col1)
+        if q1 > q0:
+            dset.read_direct(out,
+                             dest_sel=numpy.s_[:,q0-p0:q1-p0],
+                             source_sel=numpy.s_[:,q0-col0:q1-col0])
+    return out
+
 def cholesky_eri_b_outcore(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
                            int3c='int3c2e', aosym='s2ij', int2c='int2c2e', comp=1,
                            max_memory=MAX_MEMORY, auxmol=None, decompose_j2c='CD',
-                           lindep=LINEAR_DEP_THR, verbose=logger.NOTE):
+                           lindep=LINEAR_DEP_THR, verbose=logger.NOTE,
+                           auxmol_e=None, cderi_e=None, cderi_e_dataname='j3c',
+                           cderi_e_to_save=None):
     from pyscf.df.outcore import _guess_shell_ranges, _create_h5file
     assert (aosym in ('s1', 's2ij'))
     log = logger.new_logger(mol, verbose)
@@ -205,98 +358,170 @@ def cholesky_eri_b_outcore(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
     elif mol.cart and not auxmol.cart:
         raise RuntimeError('Cartesian orbitals for mol and spherical orbitals for auxmol not supported')
 
-    j2c = auxmol.intor(int2c, hermi=1)
-    log.debug('size of aux basis %d', j2c.shape[0])
+    naoaux = auxmol.nao_nr()
+    log.debug('size of aux basis %d', naoaux)
     time1 = log.timer('2c2e', *time0)
     decompose_j2c = decompose_j2c.upper()
+    schur = False
+    if (auxmol_e is not None and (cderi_e is not None or
+                                  cderi_e_to_save is not None) and
+        comp == 1 and decompose_j2c == 'CD'):
+        try:
+            naux_e, low_e, low_en, low_n = _cholesky_2c2e_schur(auxmol, auxmol_e, int2c)
+            schur = True
+            low = None
+        except scipy.linalg.LinAlgError:
+            schur = False
     if decompose_j2c != 'CD':
+        j2c = auxmol.intor(int2c, hermi=1)
         low = _eig_decompose(mol, j2c, lindep)
-    else:
+        j2c = None
+    elif not schur:
+        j2c = auxmol.intor(int2c, hermi=1)
         try:
             low = scipy.linalg.cholesky(j2c, lower=True)
             decompose_j2c = 'CD'
         except scipy.linalg.LinAlgError:
             low = _eig_decompose(mol, j2c, lindep)
             decompose_j2c = 'ED'
-    j2c = None
-    naoaux, naux = low.shape
+        j2c = None
+    if schur:
+        naoaux = naux = naux_e + low_n.shape[0]
+    else:
+        naoaux, naux = low.shape
     time1 = log.timer('Cholesky 2c2e', *time1)
 
-    def transform(b):
+    def transform(b, return_e=False):
         if b.ndim == 3 and b.flags.f_contiguous:
             b = lib.transpose(b.T, axes=(0,2,1)).reshape(naoaux,-1)
         else:
             b = b.reshape((-1,naoaux)).T
+        if schur:
+            dat = numpy.empty((naux, b.shape[1]), dtype=b.dtype)
+            dat_eaux = _solve_triangular(low_e, b[:naux_e])
+            dat[:naux_e] = dat_eaux
+            dat[naux_e:] = _transform_schur_naux(low_en, low_n, dat_eaux,
+                                                 b[naux_e:])
+            if return_e:
+                return dat, dat[:naux_e]
+            return dat
         if decompose_j2c != 'CD':
             return lib.dot(low, b)
 
-        if b.flags.c_contiguous:
-            trsm, = scipy.linalg.get_blas_funcs(('trsm',), (low, b))
-            return trsm(1.0, low, b.T, lower=True, trans_a = 1, side = 1,
-                     overwrite_b=True).T
-        else:
-            return scipy.linalg.solve_triangular(low, b, lower=True,
-                                             overwrite_b=True, check_finite=False)
+        return _solve_triangular(low, b)
 
-    for t, mol_ in mol.components.items():
-        int3c = gto.moleintor.ascint3(mol_._add_suffix(int3c))
-        atm, bas, env = gto.mole.conc_env(mol_._atm, mol_._bas, mol_._env,
-                                          auxmol._atm, auxmol._bas, auxmol._env)
-        ao_loc = gto.moleintor.make_loc(bas, int3c)
-        nao = int(ao_loc[mol_.nbas])
-        naoaux = int(ao_loc[-1] - nao)
-        if aosym == 's1':
-            nao_pair = nao * nao
-            buflen = min(max(int(max_memory*.24e6/8/naoaux/comp), 1), nao_pair)
-            shranges = _guess_shell_ranges(mol_, buflen, 's1')
-        else:
-            nao_pair = nao * (nao+1) // 2
-            buflen = min(max(int(max_memory*.24e6/8/naoaux/comp), 1), nao_pair)
-            shranges = _guess_shell_ranges(mol_, buflen, 's2ij')
-        log.debug('erifile %.8g MB, IO buf size %.8g MB',
-                  naoaux*nao_pair*8/1e6, comp*buflen*naoaux*8/1e6)
-        log.debug1('shranges = %s', shranges)
-        # TODO: Libcint-3.14 and newer version support to compute int3c2e without
-        # the opt for the 3rd index.
-        #if '3c2e' in int3c:
-        #    cintopt = gto.moleintor.make_cintopt(atm, mol._bas, env, int3c)
-        #else:
-        #    cintopt = gto.moleintor.make_cintopt(atm, bas, env, int3c)
-        cintopt = gto.moleintor.make_cintopt(atm, bas, env, int3c)
-        bufs1 = numpy.empty((comp*max([x[2] for x in shranges]),naoaux))
-        bufs2 = numpy.empty_like(bufs1)
-
-        def process(sh_range):
-            nonlocal bufs1, bufs2
-            bufs2, bufs1 = bufs1, bufs2
-            bstart, bend, nrow = sh_range
-            shls_slice = (bstart, bend, 0, mol_.nbas, mol_.nbas, mol_.nbas+auxmol.nbas)
-            ints = gto.moleintor.getints3c(int3c, atm, bas, env, shls_slice, comp,
-                                           aosym, ao_loc, cintopt, out=bufs1)
-            if comp == 1:
-                dat = transform(ints)
+    if schur and cderi_e is not None:
+        cderi_e_context = addons.load(cderi_e, cderi_e_dataname)
+    else:
+        cderi_e_context = contextlib.nullcontext(None)
+    with cderi_e_context as feri_e:
+        for t, mol_ in mol.components.items():
+            reuse_e_cderi = schur and t == 'e' and feri_e is not None
+            save_e_cderi = schur and t == 'e' and cderi_e_to_save is not None
+            int3c = gto.moleintor.ascint3(mol_._add_suffix(int3c))
+            atm, bas, env = gto.mole.conc_env(mol_._atm, mol_._bas, mol_._env,
+                                              auxmol._atm, auxmol._bas, auxmol._env)
+            ao_loc = gto.moleintor.make_loc(bas, int3c)
+            nao = int(ao_loc[mol_.nbas])
+            naoaux = int(ao_loc[-1] - nao)
+            if aosym == 's1':
+                nao_pair = nao * nao
+                buflen = min(max(int(max_memory*.24e6/8/naoaux/comp), 1), nao_pair)
+                shranges = _guess_shell_ranges(mol_, buflen, 's1')
             else:
-                dat = [transform(x) for x in ints]
-            return dat
+                nao_pair = nao * (nao+1) // 2
+                buflen = min(max(int(max_memory*.24e6/8/naoaux/comp), 1), nao_pair)
+                shranges = _guess_shell_ranges(mol_, buflen, 's2ij')
+            log.debug('erifile %.8g MB, IO buf size %.8g MB',
+                      naoaux*nao_pair*8/1e6, comp*buflen*naoaux*8/1e6)
+            log.debug1('shranges = %s', shranges)
+            # TODO: Libcint-3.14 and newer version support to compute int3c2e without
+            # the opt for the 3rd index.
+            #if '3c2e' in int3c:
+            #    cintopt = gto.moleintor.make_cintopt(atm, mol._bas, env, int3c)
+            #else:
+            #    cintopt = gto.moleintor.make_cintopt(atm, bas, env, int3c)
+            cintopt = gto.moleintor.make_cintopt(atm, bas, env, int3c)
+            buf_naoaux = naoaux
+            if reuse_e_cderi:
+                buf_naoaux = ao_loc[mol_.nbas+auxmol.nbas] - ao_loc[mol_.nbas+auxmol_e.nbas]
+            bufs1 = numpy.empty((comp*max([x[2] for x in shranges]),buf_naoaux))
+            bufs2 = numpy.empty_like(bufs1)
 
-        feri = _create_h5file(erifile, f'{dataname}/{t}')
-
-        for istep, dat in enumerate(lib.map_with_prefetch(process, shranges)):
-            sh_range = shranges[istep]
-            label = f'{dataname}/{t}/{istep}'
-            if comp == 1:
-                feri[label] = dat
+            if reuse_e_cderi:
+                p1 = 0
+                col_ranges = {}
+                for sh_range in shranges:
+                    p0, p1 = p1, p1 + sh_range[2]
+                    col_ranges[sh_range] = (p0, p1)
             else:
-                shape = (len(dat),) + dat[0].shape
-                fdat = feri.create_dataset(label, shape, dat[0].dtype.char)
-                for i, b in enumerate(dat):
-                    fdat[i] = b
-            dat = None
-            log.debug('int3c2e for %s [%d/%d], AO [%d:%d], nrow = %d',
-                      t, istep+1, len(shranges), *sh_range)
-            time1 = log.timer('gen CD eri for %s [%d/%d]' % (t,istep+1,len(shranges)), *time1)
-        bufs1 = None
-        bufs2 = None
+                col_ranges = None
+
+            def process(sh_range):
+                nonlocal bufs1, bufs2
+                bufs2, bufs1 = bufs1, bufs2
+                bstart, bend, nrow = sh_range
+                if reuse_e_cderi:
+                    # The e-auxiliary rows are already available from e_df.
+                    # Only compute the nuclear-auxiliary rows needed to complete
+                    # the Schur-transformed global tensor.
+                    p0, p1 = col_ranges[sh_range]
+                    ints_naux, _ = _getints3c(int3c, atm, bas, env, sh_range,
+                                              mol_.nbas, auxmol_e.nbas,
+                                              auxmol.nbas, comp, aosym, ao_loc,
+                                              cintopt, out=bufs1)
+                    dat = numpy.empty((naux, ints_naux.shape[1]), dtype=ints_naux.dtype)
+                    _load_cderi_slice(feri_e, p0, p1, out=dat[:naux_e])
+                    dat[naux_e:] = _transform_schur_naux(low_en, low_n, dat[:naux_e],
+                                                         ints_naux)
+                    return dat, None
+
+                # Normal path. In the build-together case for t == 'e', this full
+                # block is transformed once and its e-auxiliary rows are also
+                # written to e_df._cderi.
+                ints, _ = _getints3c(int3c, atm, bas, env, sh_range, mol_.nbas,
+                                      0, auxmol.nbas, comp, aosym, ao_loc,
+                                      cintopt, out=bufs1, transpose=False)
+                if comp == 1:
+                    if save_e_cderi:
+                        dat, dat_eaux = transform(ints, return_e=True)
+                    else:
+                        dat = transform(ints)
+                        dat_eaux = None
+                else:
+                    dat = [transform(x) for x in ints]
+                    dat_eaux = None
+                return dat, dat_eaux
+
+            feri = _create_h5file(erifile, f'{dataname}/{t}')
+            if save_e_cderi:
+                feri_e_out = _create_h5file(cderi_e_to_save, cderi_e_dataname)
+            else:
+                feri_e_out = None
+
+            for istep, data in enumerate(lib.map_with_prefetch(process, shranges)):
+                dat, dat_eaux = data
+                sh_range = shranges[istep]
+                label = f'{dataname}/{t}/{istep}'
+                if comp == 1:
+                    feri[label] = dat
+                    if feri_e_out is not None:
+                        feri_e_out[f'{cderi_e_dataname}/{istep}'] = dat_eaux
+                else:
+                    shape = (len(dat),) + dat[0].shape
+                    fdat = feri.create_dataset(label, shape, dat[0].dtype.char)
+                    for i, b in enumerate(dat):
+                        fdat[i] = b
+                dat = None
+                log.debug('int3c2e for %s [%d/%d], AO [%d:%d], nrow = %d',
+                          t, istep+1, len(shranges), *sh_range)
+                time1 = log.timer('gen CD eri for %s [%d/%d]' % (t,istep+1,len(shranges)), *time1)
+            bufs1 = None
+            bufs2 = None
+            if feri_e_out is not None:
+                feri_e_out.flush()
+                feri_e_out.close()
+
     feri.flush()
     feri.close()
     return erifile
@@ -317,6 +542,12 @@ class DF(df.DF):
         self.nuc_auxbasis = nuc_auxbasis
         self.nuc_auxbasis_beta = nuc_auxbasis_beta
         self.df_ne_component_vint = df_ne_component_vint
+        # Non-owning reference to the electronic component's ordinary DF
+        # object.  It is used when the global NEO DF build can also produce or
+        # reuse the smaller e-only cderi for electronic K.
+        self._elec_with_df = None
+        self._global_aux_e_vjopt = None
+        self._auxmol_atom_major = None
 
     def _check_df_ne_scheme(self):
         if self.df_ne_scheme not in ('electron', 'global'):
@@ -362,10 +593,23 @@ class DF(df.DF):
                 continue
             auxmols.append(_make_nuc_auxmol(mol_n, self.nuc_auxbasis,
                                             self.nuc_auxbasis_beta))
-        return _combine_auxbasis(self.mol, auxmols)
+        return _concat_auxmols(self.mol, auxmols)
+
+    def make_auxmol_atom_major(self):
+        auxmol = addons.make_auxmol(self.mol.components['e'], self.auxbasis)
+        if self.df_ne_scheme == 'global':
+            auxmols = [auxmol]
+            for t, mol_n in self.mol.components.items():
+                if t == 'e':
+                    continue
+                auxmols.append(_make_nuc_auxmol(mol_n, self.nuc_auxbasis,
+                                                self.nuc_auxbasis_beta))
+            auxmol = _combine_auxbasis(self.mol, auxmols)
+        return auxmol
 
     __getstate__, __setstate__ = lib.generate_pickle_methods(
-            excludes=('_cderi_to_save', '_cderi', '_cderi_names', '_vjopt', '_rsh_df'),
+            excludes=('_cderi_to_save', '_cderi', '_cderi_names', '_vjopt',
+                      '_global_aux_e_vjopt', '_auxmol_atom_major', '_rsh_df'),
             reset_state=True)
 
     def build(self):
@@ -391,10 +635,42 @@ class DF(df.DF):
         max_memory = self.max_memory - lib.current_memory()[0]
         int3c = mol._add_suffix('int3c2e')
         int2c = mol._add_suffix('int2c2e')
+        auxmol_e = cderi_e = cderi_e_dataname = None
+        cderi_e_to_save = None
+        e_df = None
+        if getattr(self, '_build_e_cderi', False):
+            e_df = self._elec_with_df
+        # When global DF-J is built together with electronic DF-K, the mixed
+        # auxiliary metric can reuse the electronic auxiliary block.  The
+        # electronic component's DF object supplies or receives this block.
+        if self.df_ne_scheme == 'global' and e_df is not None:
+            if e_df.auxmol is None:
+                e_df.auxmol = addons.make_auxmol(mol.components['e'],
+                                                 self.auxbasis)
+            auxmol_e = e_df.auxmol
+            cderi_e = getattr(e_df, '_cderi', None)
+            cderi_e_dataname = e_df._dataname
         if (nao_pair*naux*8/1e6 < .9*max_memory and not is_custom_storage):
-            self._cderi = cholesky_eri_incore(mol, int3c=int3c, int2c=int2c,
-                                              auxmol=auxmol,
-                                              max_memory=max_memory, verbose=log)
+            cderi_e_incore = cderi_e if isinstance(cderi_e, numpy.ndarray) else None
+            if auxmol_e is not None and cderi_e is not None and cderi_e_incore is None:
+                nao_e = mol.components['e'].nao_nr()
+                nao_pair_e = nao_e * (nao_e+1) // 2
+                cderi_e_incore = numpy.empty((auxmol_e.nao_nr(), nao_pair_e))
+                p0 = 0
+                for dat in e_df.loop():
+                    p1 = p0 + dat.shape[0]
+                    cderi_e_incore[p0:p1] = dat
+                    p0 = p1
+                e_df._cderi = cderi_e_incore
+            build_e_cderi_incore = auxmol_e is not None and cderi_e_incore is None
+            cderi = cholesky_eri_incore(mol, int3c=int3c, int2c=int2c,
+                                        auxmol=auxmol, max_memory=max_memory,
+                                        verbose=log, auxmol_e=auxmol_e,
+                                        cderi_e=cderi_e_incore)
+            if build_e_cderi_incore:
+                self._cderi, e_df._cderi = cderi
+            else:
+                self._cderi = cderi
         else:
             log.warn(f'Low memory: {max_memory=}. Outcore DF integrals.')
             if self._cderi_to_save is None:
@@ -415,12 +691,22 @@ class DF(df.DF):
             if self._compatible_format:
                 raise NotImplementedError
             else:
+                if e_df is not None and cderi_e is None:
+                    if e_df._cderi_to_save is None:
+                        e_df._cderi_to_save = lib.NamedTemporaryFile(dir=lib.param.TMPDIR)
+                    cderi_e_to_save = e_df._cderi_to_save
                 # Store DF tensor in blocks. This is to reduce the
-                # initialization overhead
+                # initialization overhead.  If cderi_e_to_save is set, the
+                # electronic component pass also writes e_df._cderi.
                 cholesky_eri_b_outcore(mol, cderi, dataname=self._dataname,
                                        int3c=int3c, int2c=int2c, auxmol=auxmol,
-                                       max_memory=max_memory, verbose=log)
+                                       max_memory=max_memory, verbose=log,
+                                       auxmol_e=auxmol_e, cderi_e=cderi_e,
+                                       cderi_e_dataname=cderi_e_dataname,
+                                       cderi_e_to_save=cderi_e_to_save)
             self._cderi = cderi
+            if cderi_e_to_save is not None:
+                e_df._cderi = cderi_e_to_save
             log.timer_debug1('Generate density fitting integrals', *t0)
         return self
 
@@ -429,11 +715,44 @@ class DF(df.DF):
         if mol is not None:
             self.mol = mol
             self.auxmol = None
+            self._auxmol_atom_major = None
         self._cderi = None
         self._cderi_names = list(self.mol.components.keys())
         self._vjopt = None
+        self._global_aux_e_vjopt = None
         self._rsh_df = {}
         return self
+
+    @contextlib.contextmanager
+    def with_global_aux_electron_j(self):
+        '''Temporarily use the global-auxiliary electronic block for J.'''
+        with_df_e = self._elec_with_df
+        if self.auxmol is None:
+            self.auxmol = self.make_auxmol()
+        if self._cderi is None:
+            cderi = None
+            # Direct DF-J does not use _dataname.  Keep the electronic
+            # default to avoid a surprising temporary state.
+            dataname = with_df_e._dataname
+        elif isinstance(self._cderi, dict):
+            # Incore cderi is passed as the electronic ndarray itself, so the
+            # dataname is irrelevant.
+            cderi = self._cderi['e']
+            dataname = with_df_e._dataname
+        else:
+            # Outcore global cderi stores component blocks under
+            # self._dataname/<component>.
+            cderi = self._cderi
+            dataname = f'{self._dataname}/e'
+        vjopt = self._global_aux_e_vjopt
+        if vjopt is None and isinstance(self._vjopt, dict):
+            vjopt = self._vjopt.get('e')
+            self._global_aux_e_vjopt = vjopt
+        with lib.temporary_env(with_df_e, auxmol=self.auxmol,
+                               _vjopt=vjopt, _cderi=cderi,
+                               _dataname=dataname):
+            yield with_df_e
+            self._global_aux_e_vjopt = with_df_e._vjopt
 
     def loop(self, blksize=None):
         if self._cderi is None:
@@ -1111,6 +1430,17 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
                                             charge=_charge, mass=_mass,
                                             is_nucleus=_is_nucleus,
                                             nuc_occ_state=_nuc_occ_state)
+    if isinstance(with_df, DF):
+        if with_df.df_ne_scheme == 'global':
+            mf_e = mf.components['e']
+            with_df._elec_with_df = mf_e.with_df
+            if not isinstance(mf_e, _SeparateJKDF):
+                mf_e = mf.components['e'] = mf_e.view(lib.make_class(
+                    (_SeparateJKDF, mf_e.__class__)))
+            # Only component-level get_fock/get_veff needs to redirect J to
+            # the mixed NEO DF object.  The regular multicomponent get_veff
+            # calls self.with_df directly and does not use this hook.
+            mf_e.with_df._global_aux_j_with_df = with_df
     if isinstance(mf, neo.KS):
         mf.interactions = neo.hf.generate_interactions(mf.components,
                                                        neo.ks.InteractionCorrelation,
@@ -1132,6 +1462,25 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
     else:
         name = _DFNEO.__name_mixin__ + '-EE-' + mf.__class__.__name__
     return lib.set_class(dfmf, (_DFNEO, mf.__class__), name)
+
+class _SeparateJKDF:
+    '''Use a separate DF object for J while keeping the regular DF object for K.'''
+
+    def get_jk(self, mol=None, dm=None, hermi=1, with_j=True, with_k=True,
+               omega=None):
+        global_with_df = getattr(self.with_df, '_global_aux_j_with_df', None)
+        if global_with_df is None or not with_j:
+            return super().get_jk(mol, dm, hermi, with_j, with_k, omega)
+
+        vj = vk = None
+        if with_j:
+            # Global NEO DF redirects only J.  K keeps using self.with_df,
+            # which is the ordinary e-only DF object of the electronic component.
+            with global_with_df.with_global_aux_electron_j():
+                vj = super().get_jk(mol, dm, hermi, True, False, omega)[0]
+        if with_k:
+            vk = super().get_jk(mol, dm, hermi, False, True, omega)[1]
+        return vj, vk
 
 class _DFNEO:
     __name_mixin__ = 'DF'
@@ -1157,6 +1506,11 @@ class _DFNEO:
         obj.components = {}
         for t, comp in self.components.items():
             if t == 'e':
+                if isinstance(comp, _SeparateJKDF):
+                    comp = lib.view(comp, lib.drop_class(comp.__class__,
+                                                         _SeparateJKDF))
+                    if hasattr(comp.with_df, '_global_aux_j_with_df'):
+                        del comp.with_df._global_aux_j_with_df
                 # also undo_df for the elec component
                 base = comp.undo_component().undo_df()
             else:
@@ -1193,10 +1547,10 @@ class _DFNEO:
 
     def _get_nn_vint_full_delta(self, dm, dm_last=0, vhf_last=0):
         '''Build n-n inter-type Coulomb potential as full and delta pieces.'''
-        incremental_j = (
-            isinstance(dm_last, dict) and isinstance(vhf_last, dict) and
-            all(t in vhf_last and hasattr(vhf_last[t], 'vint_inc')
-                for t in self.components))
+        incremental_j = (isinstance(dm_last, dict) and
+                         isinstance(vhf_last, dict) and
+                         all(t in vhf_last and hasattr(vhf_last[t], 'vint_inc')
+                             for t in self.components))
         nn_vint_full = {}
         nn_vint_delta = {}
         for t in self.components:
@@ -1223,16 +1577,6 @@ class _DFNEO:
                 target[t] += v[t]
         return nn_vint_full, nn_vint_delta
 
-    def _attach_global_elec_df(self):
-        # The global DF-NE tensor replaces the electronic component DF tensor
-        # when component-level electronic DF code is called, e.g. gradients.
-        if self.with_df is not None and self.with_df.df_ne_scheme == 'global':
-            if self.with_df._cderi is None:
-                self.with_df.build()
-            mf_e = self.components['e']
-            mf_e.with_df.auxmol = self.with_df.auxmol
-            mf_e.with_df._cderi = self.with_df._cderi['e']
-
     def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
         if not self.with_df or not self.df_ne:
             return super().get_veff(mol, dm, dm_last, vhf_last, hermi)
@@ -1241,9 +1585,12 @@ class _DFNEO:
 
         mol_e = mol.components['e']
         mf_e = self.components['e']
-        self._attach_global_elec_df()
         cache_component_vint = bool(getattr(self, 'df_ne_component_vint', False))
         self.with_df.df_ne_component_vint = cache_component_vint
+        # Combined DF-JK is valid only for the electronic auxiliary scheme.  In
+        # the global scheme, J uses the mixed e/n auxiliary metric while K uses
+        # the e-only DF object.
+        with_df_jk = self.with_df.df_ne_scheme == 'electron' and not self.ee_only_dfj
         if isinstance(mf_e, scf.rohf.ROHF) or isinstance(mf_e, scf.ghf.GHF):
             raise NotImplementedError
         e_unrestricted = False
@@ -1259,19 +1606,15 @@ class _DFNEO:
                 dm['e'] = numpy.repeat(dm['e'][None]*.5, 2, axis=0)
 
         if not isinstance(mf_e, scf.hf.KohnShamDFT):
-            with_dfk = not self.ee_only_dfj
             # Initialize vint_inc with a full-density J build, then update it
             # with density differences in later cycles.
             incremental_j = (self.direct_scf and
                              isinstance(dm_last, dict) and isinstance(vhf_last, dict) and
                              all(t in vhf_last and hasattr(vhf_last[t], 'vint_inc') for t in dm))
-            nn_vint_full, nn_vint_delta = self._get_nn_vint_full_delta(
-                dm, dm_last, vhf_last)
-            include_last_vint_delta = (
-                incremental_j or
+            nn_vint_full, nn_vint_delta = self._get_nn_vint_full_delta(dm, dm_last, vhf_last)
+            include_last_vint_delta = (incremental_j or
                 any(isinstance(nn_vint_delta[t], numpy.ndarray) for t in dm))
-            vint_full, vint_delta = neo.hf._init_vint_full_delta(
-                dm, vhf_last, include_last_vint_delta)
+            vint_full, vint_delta = neo.hf._init_vint_full_delta(dm, vhf_last, include_last_vint_delta)
             if incremental_j:
                 _dm = {}
                 for t, dm_ in dm.items():
@@ -1281,11 +1624,16 @@ class _DFNEO:
                     _dm[t] = dm_ - dm_last_
             else:
                 _dm = dm
-            if with_dfk:
-                vj, vk = self.with_df.get_jk(_dm, hermi)
+            if self.with_df.df_ne_scheme == 'global' and not self.ee_only_dfj:
+                build_e_cderi = True
             else:
-                vj = self.with_df.get_j(_dm, hermi)
-                vk = mf_e.get_k(mol_e, _dm['e'], hermi)
+                build_e_cderi = False
+            with lib.temporary_env(self.with_df, _build_e_cderi=build_e_cderi):
+                if with_df_jk:
+                    vj, vk = self.with_df.get_jk(_dm, hermi)
+                else:
+                    vj = self.with_df.get_j(_dm, hermi)
+                    vk = mf_e.get_k(mol_e, _dm['e'], hermi)
             # vj.vint is the e-n part of DF-J.  If _dm is the density used for
             # incremental updates, this contribution is cached in vint_inc;
             # otherwise it is treated as a full-density contribution.
@@ -1330,6 +1678,8 @@ class _DFNEO:
                 ground_state = (isinstance(dm['e'], numpy.ndarray) and dm['e'].ndim == 2)
 
             ni = mf_e._numint
+            is_hybrid = ni.libxc.is_hybrid_xc(mf_e.xc)
+            with_df_jk = with_df_jk and is_hybrid
             if hermi == 2:  # because rho = 0
                 if e_unrestricted:
                     n = (0,0)
@@ -1369,8 +1719,7 @@ class _DFNEO:
                               isinstance(dm_last, dict) and isinstance(vhf_last, dict) and
                               all(t in vhf_last and hasattr(vhf_last[t], 'vj') and
                                   hasattr(vhf_last[t], 'vint_inc') for t in dm))
-            nn_vint_full, nn_vint_delta = self._get_nn_vint_full_delta(
-                dm, dm_last, vhf_last)
+            nn_vint_full, nn_vint_delta = self._get_nn_vint_full_delta(dm, dm_last, vhf_last)
             if incremental_jk:
                 _dm = {}
                 for t, dm_ in dm.items():
@@ -1380,54 +1729,57 @@ class _DFNEO:
                     _dm[t] = dm_ - dm_last_
             else:
                 _dm = dm
-            if not ni.libxc.is_hybrid_xc(mf_e.xc):
-                vk = None
-                vj = self.with_df.get_j(_dm, hermi)
+            if self.with_df.df_ne_scheme == 'global' and not self.ee_only_dfj and is_hybrid:
+                build_e_cderi = True
             else:
-                omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf_e.xc, spin=mol_e.spin)
-                with_dfk = not self.ee_only_dfj
-                if omega == 0:
-                    if with_dfk:
-                        vj, vk = self.with_df.get_jk(_dm, hermi)
-                    else:
-                        vj = self.with_df.get_j(_dm, hermi)
-                        vk = mf_e.get_k(mol_e, _dm['e'], hermi)
-                    vk *= hyb
-                elif alpha == 0: # LR=0, only SR exchange
+                build_e_cderi = False
+            with lib.temporary_env(self.with_df, _build_e_cderi=build_e_cderi):
+                if not is_hybrid:
+                    vk = None
                     vj = self.with_df.get_j(_dm, hermi)
-                    vk = mf_e.get_k(mol_e, _dm['e'], hermi, omega=-omega)
-                    vk *= hyb
-                elif hyb == 0: # SR=0, only LR exchange
-                    vj = self.with_df.get_j(_dm, hermi)
-                    vk = mf_e.get_k(mol_e, _dm['e'], hermi, omega=omega)
-                    vk *= alpha
-                else: # SR and LR exchange with different ratios
-                    if with_dfk:
-                        vj, vk = self.with_df.get_jk(_dm, hermi)
-                    else:
+                else:
+                    omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf_e.xc, spin=mol_e.spin)
+                    if omega == 0:
+                        if with_df_jk:
+                            vj, vk = self.with_df.get_jk(_dm, hermi)
+                        else:
+                            vj = self.with_df.get_j(_dm, hermi)
+                            vk = mf_e.get_k(mol_e, _dm['e'], hermi)
+                        vk *= hyb
+                    elif alpha == 0: # LR=0, only SR exchange
                         vj = self.with_df.get_j(_dm, hermi)
-                        vk = mf_e.get_k(mol_e, _dm['e'], hermi)
-                    vk *= hyb
-                    vklr = mf_e.get_k(mol_e, _dm['e'], hermi, omega=omega)
-                    vklr *= (alpha - hyb)
-                    vk += vklr
+                        vk = mf_e.get_k(mol_e, _dm['e'], hermi, omega=-omega)
+                        vk *= hyb
+                    elif hyb == 0: # SR=0, only LR exchange
+                        vj = self.with_df.get_j(_dm, hermi)
+                        vk = mf_e.get_k(mol_e, _dm['e'], hermi, omega=omega)
+                        vk *= alpha
+                    else: # SR and LR exchange with different ratios
+                        if with_df_jk:
+                            vj, vk = self.with_df.get_jk(_dm, hermi)
+                        else:
+                            vj = self.with_df.get_j(_dm, hermi)
+                            vk = mf_e.get_k(mol_e, _dm['e'], hermi)
+                        vk *= hyb
+                        vklr = mf_e.get_k(mol_e, _dm['e'], hermi, omega=omega)
+                        vklr *= (alpha - hyb)
+                        vk += vklr
 
-                if incremental_jk:
-                    vk += vhf_last['e'].vk
+                    if incremental_jk:
+                        vk += vhf_last['e'].vk
 
-                if ground_state:
-                    if e_unrestricted:
-                        exc -=(numpy.einsum('ij,ji', dm['e'][0], vk[0]).real +
-                               numpy.einsum('ij,ji', dm['e'][1], vk[1]).real) * .5
-                    else:
-                        exc -= numpy.einsum('ij,ji', dm['e'], vk).real * .5 * .5
+                    if ground_state:
+                        if e_unrestricted:
+                            exc -=(numpy.einsum('ij,ji', dm['e'][0], vk[0]).real +
+                                   numpy.einsum('ij,ji', dm['e'][1], vk[1]).real) * .5
+                        else:
+                            exc -= numpy.einsum('ij,ji', dm['e'], vk).real * .5 * .5
 
-            include_last_vint_delta = (
-                incremental_jk or
-                any(isinstance(nn_vint_delta[t], numpy.ndarray)
-                    for t in dm))
-            vint_full, vint_delta = neo.hf._init_vint_full_delta(
-                nn_vint_full, vhf_last, include_last_vint_delta)
+            include_last_vint_delta = (incremental_jk or
+                any(isinstance(nn_vint_delta[t], numpy.ndarray) for t in dm))
+            vint_full, vint_delta = neo.hf._init_vint_full_delta(nn_vint_full,
+                                                                 vhf_last,
+                                                                 include_last_vint_delta)
             # vj.vint is the e-n part of DF-J.  If _dm is the density used for
             # incremental updates, this contribution is cached in vint_inc;
             # otherwise it is treated as a full-density contribution.
@@ -1530,14 +1882,12 @@ if __name__ == '__main__':
             else:
                 print(f'  {label:25s} {energy:18.12f} {energy - e_ref:12.4e}')
 
-    run_df_ne_error_case(
-        'HF/NEO-HF/def2SVP/weigend, ee_only_dfj=False',
+    run_df_ne_error_case('HF/NEO-HF/def2SVP/weigend, ee_only_dfj=False',
         lambda: neo.HF(neo.M(atom='H 0 0 0; F 0 0 1',
                              basis='def2svp', quantum_nuc=[0], verbose=0)),
         'weigend')
 
-    run_df_ne_error_case(
-        'HF/NEO-HF/def2SVP/weigend, ee_only_dfj=True',
+    run_df_ne_error_case('HF/NEO-HF/def2SVP/weigend, ee_only_dfj=True',
         lambda: neo.HF(neo.M(atom='H 0 0 0; F 0 0 1',
                              basis='def2svp', quantum_nuc=[0], verbose=0)),
         'weigend', ee_only_dfj=True)
@@ -1546,15 +1896,13 @@ if __name__ == '__main__':
                   H 0.000 0.000 0.900;
                   H 0.779 0.000 0.450'''
 
-    run_df_ne_error_case(
-        'H3+/CNEO-CAM-B3LYP/cc-pvdz/cc-pvdz-jkfit, ee_only_dfj=False',
+    run_df_ne_error_case('H3+/CNEO-CAM-B3LYP/cc-pvdz/cc-pvdz-jkfit, ee_only_dfj=False',
         lambda: neo.KS(neo.M(atom=h3p_atom, basis='ccpvdz', charge=1,
                              quantum_nuc=['H'], verbose=0),
                        xc='camb3lyp'),
         'cc-pvdz-jkfit')
 
-    run_df_ne_error_case(
-        'H3+/CNEO-CAM-B3LYP/occ-pvdz/cc-pvdz-jkfit, ee_only_dfj=True',
+    run_df_ne_error_case('H3+/CNEO-CAM-B3LYP/occ-pvdz/cc-pvdz-jkfit, ee_only_dfj=True',
         lambda: neo.KS(neo.M(atom=h3p_atom, basis='ccpvdz', charge=1,
                              quantum_nuc=['H'], verbose=0),
                        xc='camb3lyp'),

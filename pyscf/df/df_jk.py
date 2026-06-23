@@ -420,7 +420,9 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13):
 
     mol = dfobj.mol
     if dfobj._vjopt is None:
-        dfobj.auxmol = auxmol = addons.make_auxmol(mol, dfobj.auxbasis)
+        auxmol = dfobj.auxmol
+        if auxmol is None:
+            dfobj.auxmol = auxmol = addons.make_auxmol(mol, dfobj.auxbasis)
         opt = _vhf._VHFOpt(mol, 'int3c2e', 'CVHFnr3c2e_schwarz_cond',
                            dmcondname='CVHFnr_dm_cond',
                            direct_scf_tol=direct_scf_tol)

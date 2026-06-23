@@ -7,11 +7,29 @@ Analytic gradient for density-fitting interaction Coulomb in CDFT
 import numpy
 import scipy
 from pyscf import lib
-from pyscf.df import addons
+from pyscf.df.grad import rhf as df_rhf_grad
 from pyscf.grad import rhf as rhf_grad
 from pyscf.neo import grad
 from pyscf.lib import logger
 from pyscf.df.grad.rhf import _int3c_wrapper, balance_partition
+
+class _SeparateJKDFGrad:
+    '''Electronic component gradient with a separate J DF object.'''
+
+    def get_jk(self, mol=None, dm=None, hermi=0, with_j=True, with_k=True,
+               omega=None):
+        vj = vk = None
+        if with_j:
+            global_with_df = self.base.with_df._global_aux_j_with_df
+            if global_with_df._auxmol_atom_major is None:
+                global_with_df._auxmol_atom_major = (
+                    global_with_df.make_auxmol_atom_major())
+            with lib.temporary_env(self.base.with_df,
+                                   auxmol=global_with_df._auxmol_atom_major):
+                vj = df_rhf_grad.get_j(self, mol, dm, hermi)
+        if with_k:
+            vk = super().get_jk(mol, dm, hermi, False, True, omega)[1]
+        return vj, vk
 
 
 def get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n, charge_product,
@@ -160,14 +178,12 @@ def get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n, charge_product,
                  lib.einsum('xpq,p,q->xp', int2c_e1, rhoj_n_total, rhoj_e)
 
         auxslices = auxmol_e.aoslice_by_atom()
-        # The aux-response term is accumulated over all auxiliary functions,
-        # then reduced to parent-atom rows.  Select atmlst to match de.
         de -= numpy.array([vjaux[:, p0:p1].sum(axis=1)
                            for p0, p1 in auxslices[:, 2:]])[list(atmlst)]
     return de
 
 def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
-    '''Calcuate gradient for inter-component density-fitting Coulomb interactions'''
+    '''Calculate gradient for inter-component density-fitting Coulomb interactions'''
     mf = mf_grad.base
     mol = mf_grad.mol
 
@@ -231,13 +247,10 @@ def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
 
     if mol_n:
         t0 = (logger.process_clock(), logger.perf_counter())
-        auxmol_e = mf.with_df.auxmol
-        if auxmol_e is None:
-            if hasattr(mf.with_df, 'make_auxmol'):
-                auxmol_e = mf.with_df.make_auxmol()
-            else:
-                auxmol_e = addons.make_auxmol(mol_e, mf.with_df.auxbasis)
-            mf.with_df.auxmol = auxmol_e
+        with_df = mf.with_df
+        if with_df._auxmol_atom_major is None:
+            with_df._auxmol_atom_major = with_df.make_auxmol_atom_major()
+        auxmol_e = with_df._auxmol_atom_major
 
         de += get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n,
                           charge_product, atmlst, mf_grad.max_memory,
@@ -252,20 +265,21 @@ def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
 
 
 class Gradients(grad.Gradients):
-    '''Analtic graident for density-fitting CDFT'''
-
-    def __init__(self, mf):
-        super().__init__(mf)
+    '''Analytic gradient for density-fitting CDFT'''
 
     auxbasis_response = True
     grad_int = grad_int
 
-    def kernel(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
-        # The electronic component gradient is evaluated before grad_int, so
-        # attach the global electronic DF tensor before the parent kernel enters
-        # component-level gradient code.
-        if hasattr(self.base, '_attach_global_elec_df'):
-            self.base._attach_global_elec_df()
-        return super().kernel(mo_energy, mo_coeff, mo_occ, atmlst)
+    def __init__(self, mf):
+        super().__init__(mf)
+        comp_e = self.components.get('e', None)
+        # pyscf.df.grad.rhf reads base.with_df directly.  Match the SCF split:
+        # J temporarily points base.with_df to the global-J cderi block, while
+        # K keeps using base.with_df as the ordinary e-only DF object.
+        if (comp_e is not None and
+            getattr(comp_e.base.with_df, '_global_aux_j_with_df', None) is not None and
+            not isinstance(comp_e, _SeparateJKDFGrad)):
+            self.components['e'] = comp_e.view(lib.make_class(
+                (_SeparateJKDFGrad, comp_e.__class__)))
 
 Grad = Gradients

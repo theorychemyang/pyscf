@@ -275,9 +275,9 @@ class ComponentSCF(Component):
         return h
 
     def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
+        if mol is None:
+            mol = self.mol
         if self.is_nucleus: # Nucleus does not have self-type interaction
-            if mol is None:
-                mol = self.mol
             veff = numpy.zeros((mol.nao, mol.nao))
             if isinstance(self, scf.hf.KohnShamDFT):
                 veff = lib.tag_array(veff, ecoul=0, exc=0, vj=veff.copy(), vk=veff.copy())
