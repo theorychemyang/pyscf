@@ -5,7 +5,6 @@ Nuclear Electronic Orbital Hartree-Fock (NEO-HF)
 '''
 
 import ctypes
-import h5py
 import numpy
 import warnings
 from scipy.special import erf
@@ -796,8 +795,6 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
              diis=None, diis_start_cycle=None, level_shift_factor=None,
              damp_factor=None, fock_last=None, diis_pos='both', diis_type=3):
     if h1e is None: h1e = mf.get_hcore()
-    if s1e is None: s1e = mf.get_ovlp()
-    if dm is None: dm = mf.make_rdm1()
     if vhf is None: vhf = mf.get_veff(mf.mol, dm)
     f = {}
     for t, comp in mf.components.items():
@@ -847,55 +844,66 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
     if damp_factor is None:
         damp_factor = mf.damp
 
-    # TODO: unpack level_shift_factor and damp_factor
+    if s1e is None: s1e = mf.get_ovlp()
+    if dm is None: dm = mf.make_rdm1()
 
     for t, comp in mf.components.items():
         if not t.startswith('n') and isinstance(comp, scf.uhf.UHF) \
                 and isinstance(dm[t], numpy.ndarray) and dm[t].ndim == 2:
             dm[t] = numpy.asarray((dm[t]*0.5,) * 2)
 
-    if damp_factor is not None and abs(damp_factor) > 1e-4:
-        warnings.warn('Damping for multi-component SCF is not yet implemented.')
-    # if 0 <= cycle < diis_start_cycle-1 and abs(damp_factor) > 1e-4 and fock_last is not None:
+    if 0 <= cycle < diis_start_cycle-1 and abs(damp_factor) > 1e-4 and fock_last is not None:
+        raise NotImplementedError('Damping for multi-component SCF is not yet implemented.')
 
     if diis is not None and cycle >= diis_start_cycle:
         if isinstance(mf, neo.CDFT):
-            # if CNEO, needs to manually use lib.diis and pack/unpack
             keys = sorted(f.keys())
             shapes = {k: f[k].shape for k in keys}
+            if diis.damp:
+                raise NotImplementedError('DIIS damping for CDFT is not implemented.')
             if diis_type != 1:
                 f_flat = numpy.concatenate([f[k].ravel() for k in keys])
 
             if diis_type == 1:
                 f0_flat = numpy.concatenate([f0[k].ravel() for k in keys])
-                f_flat = diis.update(f0_flat, scf.diis.get_err_vec(s1e, dm, f, diis.Corth))
+                f_flat = lib.diis.DIIS.update(diis, f0_flat,
+                                              scf.diis.get_err_vec(s1e, dm, f, diis.Corth))
             elif diis_type == 2:
-                f_flat = diis.update(f_flat)
+                f_flat = lib.diis.DIIS.update(diis, f_flat)
             elif diis_type == 3:
-                f_flat = diis.update(f_flat, scf.diis.get_err_vec(s1e, dm, f, diis.Corth))
+                # Equivalent to packing f and calling
+                # lib.diis.DIIS.update(diis, f_flat,
+                #                      scf.diis.get_err_vec(s1e, dm, f, diis.Corth)).
+                f = diis.update(s1e, dm, f)
+                f_flat = None
             else:
                 print("\nWARN: Unknow CDFT DIIS type, NO DIIS IS USED!!!\n")
+                f_flat = None
 
-            # Reconstruct dictionary
-            offset = 0
-            f_new = {}
-            for k in keys:
-                size = numpy.prod(shapes[k])
-                f_new[k] = f_flat[offset:offset+size].reshape(shapes[k])
-                offset += size
-            f = f_new
+            if f_flat is not None:
+                # The type 1/2 CDFT paths bypass CDIIS.update, so reproduce
+                # CDIIS' post-update rollback trimming after the raw DIIS call.
+                if diis.rollback > 0 and len(diis._bookkeep) == diis.space:
+                    diis._bookkeep = diis._bookkeep[-diis.rollback:]
+
+                # Reconstruct dictionary
+                offset = 0
+                f_new = {}
+                for k in keys:
+                    size = numpy.prod(shapes[k])
+                    f_new[k] = f_flat[offset:offset+size].reshape(shapes[k])
+                    offset += size
+                f = f_new
 
             if diis_type == 1:
                 for t in fock_add:
                     f[t] += fock_add[t]
         else:
-            # if not CNEO, directly use the scf.diis object provided
             f = diis.update(s1e, dm, f)
             # WARNING: CDIIS only. Using EDIIS or ADIIS will cause errors
 
-    if level_shift_factor is not None and abs(level_shift_factor) > 1e-4:
-        warnings.warn('Level shift for multi-component SCF is not yet implemented.')
-    # if abs(level_shift_factor) > 1e-4:
+    if abs(level_shift_factor) > 1e-4:
+        raise NotImplementedError('Level shift for multi-component SCF is not yet implemented.')
 
     # Post-DIIS CDFT optimization
     if isinstance(mf, neo.CDFT) and (diis_pos == 'post' or diis_pos == 'both'):
@@ -971,12 +979,6 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         mf_diis.Corth = x_orth
     else:
         mf_diis = None
-
-    if isinstance(mf, neo.CDFT):
-        # mf_diis needs to be the raw lib.diis.DIIS() for CNEO
-        mf_diis = lib.diis.DIIS()
-        mf_diis.space = 8
-        mf_diis.Corth = x_orth
 
     if dump_chk and mf.chkfile:
         # Explicit overwrite the mol object in chkfile

@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 
-import numpy
 import unittest
 from pyscf import neo
 
