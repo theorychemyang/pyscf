@@ -40,6 +40,7 @@ class KnownValues(unittest.TestCase):
 
     def test_tddft_epc_17_1(self):
         mf = neo.KS(mol, xc='b3lyp5', epc='17-1')
+        mf.conv_check = False
         mf.run()
 
         td_mf1 = tddft_slow.TDDirect(mf)

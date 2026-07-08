@@ -796,6 +796,7 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
              diis=None, diis_start_cycle=None, level_shift_factor=None,
              damp_factor=None, fock_last=None, diis_pos='both', diis_type=3):
     if h1e is None: h1e = mf.get_hcore()
+    if s1e is None: s1e = mf.get_ovlp()
     if dm is None: dm = mf.make_rdm1()
     if vhf is None: vhf = mf.get_veff(mf.mol, dm)
     f = {}
@@ -845,7 +846,6 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
         level_shift_factor = mf.level_shift
     if damp_factor is None:
         damp_factor = mf.damp
-    if s1e is None: s1e = mf.get_ovlp()
 
     # TODO: unpack level_shift_factor and damp_factor
 
@@ -868,11 +868,11 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
 
             if diis_type == 1:
                 f0_flat = numpy.concatenate([f0[k].ravel() for k in keys])
-                f_flat = diis.update(f0_flat, scf.diis.get_err_vec(s1e, dm, f))
+                f_flat = diis.update(f0_flat, scf.diis.get_err_vec(s1e, dm, f, diis.Corth))
             elif diis_type == 2:
                 f_flat = diis.update(f_flat)
             elif diis_type == 3:
-                f_flat = diis.update(f_flat, scf.diis.get_err_vec(s1e, dm, f))
+                f_flat = diis.update(f_flat, scf.diis.get_err_vec(s1e, dm, f, diis.Corth))
             else:
                 print("\nWARN: Unknow CDFT DIIS type, NO DIIS IS USED!!!\n")
 
@@ -976,6 +976,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         # mf_diis needs to be the raw lib.diis.DIIS() for CNEO
         mf_diis = lib.diis.DIIS()
         mf_diis.space = 8
+        mf_diis.Corth = x_orth
 
     if dump_chk and mf.chkfile:
         # Explicit overwrite the mol object in chkfile
@@ -1023,8 +1024,6 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             scf_conv = mf.check_convergence(locals())
         elif abs(e_tot-last_hf_e) < conv_tol and norm_gorb['e'] < conv_tol_grad:
             scf_conv = True
-        else:
-            scf_conv = False
 
         if dump_chk and mf.chkfile:
             mf.dump_chk(locals())
@@ -1047,7 +1046,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         vhf = mf.get_veff(mol, dm, dm_last, vhf)
         e_tot, last_hf_e = mf.energy_tot(dm, h1e, vhf), e_tot
 
-        fock = mf.get_fock(h1e, s1e, vhf, dm)
+        fock = mf.get_fock(h1e, s1e, vhf, dm, level_shift_factor=0)
         grad = mf.get_grad(mo_coeff, mo_occ, fock)
         norm_gorb = {}
         for t in grad.keys():
@@ -1064,6 +1063,8 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
             scf_conv = mf.check_convergence(locals())
         elif abs(e_tot-last_hf_e) < conv_tol or norm_gorb['e'] < conv_tol_grad:
             scf_conv = True
+        else:
+            scf_conv = False
         log.info('Extra cycle  E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g',
                  e_tot, e_tot-last_hf_e, norm_gorb['e'], norm_ddm['e'])
         for t in grad.keys():

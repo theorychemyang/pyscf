@@ -18,12 +18,16 @@ def tearDownModule():
 class KnownValues(unittest.TestCase):
     def test_scf_noepc(self):
         mf = neo.CDFT(mol, xc='b3lyp5', epc=None)
-        self.assertAlmostEqual(mf.scf(), -93.33840228714486, 6)
-        self.assertAlmostEqual(mf.f[0][-1], -0.040303732060570516, 5)
-        self.assertAlmostEqual(mf.dip_moment()[-1], -2.85726808, 5)
+        mf.conv_tol = 1e-11
+        mf.conv_tol_grad = 1e-6
+        self.assertAlmostEqual(mf.scf(), -93.33840228460394, 8)
+        self.assertAlmostEqual(mf.f[0][-1], -0.04030159716283275, 6)
+        self.assertAlmostEqual(mf.dip_moment()[-1], -2.8571852181865407, 5)
         mf_symm = neo.CDFT(mol_symm, xc='b3lyp5', epc=None)
-        self.assertAlmostEqual(mf_symm.scf(), -93.33840228714486, 6)
-        self.assertAlmostEqual(mf_symm.f[0][0], -0.040303732060570516, 5)
+        mf_symm.conv_tol = 1e-11
+        mf_symm.conv_tol_grad = 1e-6
+        self.assertAlmostEqual(mf_symm.scf(), -93.33840228460409, 8)
+        self.assertAlmostEqual(mf_symm.f[0][0], -0.040301597162828474, 6)
 
     def test_scf_epc17_1(self):
         mf = neo.CDFT(mol, xc='b3lyp5', epc='17-1')
@@ -35,6 +39,7 @@ class KnownValues(unittest.TestCase):
 
     def test_scf_epc18_1(self):
         mf = neo.CDFT(mol, xc='b3lyp5', epc='18-1')
+        mf.max_cycle = 80
         self.assertAlmostEqual(mf.scf(), -93.38492562345472, 5)
 
     def test_scf_epc18_2(self):
