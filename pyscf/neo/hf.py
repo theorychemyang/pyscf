@@ -279,7 +279,7 @@ class ComponentSCF(Component):
         if self.is_nucleus: # Nucleus does not have self-type interaction
             veff = numpy.zeros((mol.nao, mol.nao))
             if isinstance(self, scf.hf.KohnShamDFT):
-                veff = lib.tag_array(veff, ecoul=0, exc=0, vj=veff.copy(), vk=veff.copy())
+                veff = lib.tag_array(veff, ecoul=None, exc=0, vj=veff.copy(), vk=veff.copy())
         else:
             if abs(self.charge) != 1.:
                 raise NotImplementedError('General charge J/K with tag_array')
@@ -1553,23 +1553,30 @@ class HF(scf.hf.SCF):
                 exc = vhf_self.exc + vint_exc
                 ecoul = vhf_self.ecoul
                 # update ecoul
-                if ecoul is not None:
-                    dm_t = dm[t]
-                    if isinstance(comp, scf.uhf.UHF):
-                        if not isinstance(dm_t, numpy.ndarray):
-                            dm_t = numpy.asarray(dm_t)
-                        if dm_t.ndim == 2:  # RHF DM
-                            dm_t = numpy.repeat(dm_t[None]*.5, 2, axis=0)
-                        ground_state = (dm_t.ndim == 3 and dm_t.shape[0] == 2)
-                        if ground_state:
-                            ecoul += numpy.einsum('ij,ji', dm_t[0]+dm_t[1],
+                dm_t = dm[t]
+                if isinstance(comp, scf.uhf.UHF):
+                    if not isinstance(dm_t, numpy.ndarray):
+                        dm_t = numpy.asarray(dm_t)
+                    if dm_t.ndim == 2:  # RHF DM
+                        dm_t = numpy.repeat(dm_t[None]*.5, 2, axis=0)
+                    ground_state = (dm_t.ndim == 3 and dm_t.shape[0] == 2)
+                    if ground_state:
+                        ecoul_vint = numpy.einsum('ij,ji', dm_t[0]+dm_t[1],
                                                   vint_coul).real * .5
+                else:
+                    ground_state = (isinstance(dm_t, numpy.ndarray) and
+                                    dm_t.ndim == 2)
+                    if ground_state:
+                        ecoul_vint = numpy.einsum('ij,ji', dm_t,
+                                                  vint_coul).real * .5
+                if ground_state:
+                    if ecoul is not None:
+                        ecoul += ecoul_vint
+                    elif comp.is_nucleus:
+                        ecoul = ecoul_vint
                     else:
-                        ground_state = (isinstance(dm_t, numpy.ndarray) and
-                                        dm_t.ndim == 2)
-                        if ground_state:
-                            ecoul += numpy.einsum('ij,ji', dm_t,
-                                                  vint_coul).real * .5
+                        raise RuntimeError(
+                            f'Missing self Coulomb energy tag for component {t}')
                 # Update overall veff tags. The update of vj is a bit useless,
                 # because ecoul has already been evaluated.
                 vhf[t] = lib.tag_array(vhf[t], ecoul=ecoul, exc=exc,

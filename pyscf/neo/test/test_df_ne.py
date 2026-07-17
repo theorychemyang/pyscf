@@ -308,6 +308,13 @@ class KnownValues(unittest.TestCase):
             es.append(mf.scf())
         self.assertAlmostEqual(es[0], es[1], 8)
 
+    def test_ks_epc(self):
+        mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
+                    quantum_nuc=[0])
+        mf = neo.KS(mol, xc='LDA,VWN', epc='17-2').density_fit(
+            auxbasis='weigend', df_ne=True)
+        self.assertAlmostEqual(mf.scf(), -98.24173535806187, 6)
+
     def test_scf(self):
         mol = neo.M(atom='''H 0 0 0; F 0 0 1''', basis='aug-ccpvdz', quantum_nuc=[0])
         mf = neo.CDFT(mol, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)

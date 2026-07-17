@@ -1526,10 +1526,6 @@ class _DFNEO:
                                                             obj.max_memory,
                                                             obj.direct_scf_tol,
                                                             epc=obj.epc)
-            if isinstance(obj.components['e'], scf.hf.KohnShamDFT):
-                obj._numint = obj.components['e']._numint
-            else:
-                obj._numint = None
         else:
             obj.interactions = neo.hf.generate_interactions(obj.components,
                                                             neo.hf.InteractionCoulomb,
@@ -1826,8 +1822,25 @@ class _DFNEO:
                                          vint_inc=vint_delta['e'])
             for t in vhf:
                 if t != 'e':
-                    vhf[t] = lib.tag_array(vhf[t], vj=vj[t], vint=vint[t],
-                                           vint_inc=vint_delta[t])
+                    comp = self.components[t]
+                    if isinstance(comp, scf.hf.KohnShamDFT):
+                        assert isinstance(comp, scf.hf.RHF)
+                        assert not isinstance(comp, (scf.rohf.ROHF, scf.uhf.UHF,
+                                                     scf.ghf.GHF))
+                        dm_t = dm[t]
+                        ecoul_t = None
+                        ground_state_t = (isinstance(dm_t, numpy.ndarray) and
+                                          dm_t.ndim == 2)
+                        if ground_state_t:
+                            ecoul_t = numpy.einsum('ij,ji', dm_t, vj[t]).real * .5
+                        vint_t = vint[t] + epc[t]
+                        vhf[t] = lib.tag_array(vhf[t], ecoul=ecoul_t,
+                                               exc=getattr(epc[t], 'exc', 0),
+                                               vj=vj[t], vint=vint_t,
+                                               vint_inc=vint_delta[t])
+                    else:
+                        vhf[t] = lib.tag_array(vhf[t], vj=vj[t], vint=vint[t],
+                                               vint_inc=vint_delta[t])
                 if t != 'e' or cache_component_vint:
                     self.components[t]._vint = numpy.asarray(vint[t] + epc[t])
                 else:
