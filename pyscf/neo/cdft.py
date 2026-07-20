@@ -13,11 +13,18 @@ from pyscf.neo import ks
 
 def _get_mo_coeff_occ(mf, fock, s1e):
     mo_energy, mo_coeff = mf.eig(fock, s1e)
-    # Temporarily disable the verbose output in get_occ
     verbose = mf.verbose
-    mf.verbose = 0
-    mo_occ = mf.get_occ(mo_energy, mo_coeff)
-    mf.verbose = verbose
+    nnuc = mf.mol.nnuc
+    try:
+        # Temporarily disable the verbose output in get_occ
+        mf.verbose = 0
+        # Temporarily set nnuc=1 for expectation position constraint
+        # and restore nnuc before returning to the physical SCF density.
+        mf.mol.nnuc = 1.0
+        mo_occ = mf.get_occ(mo_energy, mo_coeff)
+    finally:
+        mf.mol.nnuc = nnuc
+        mf.verbose = verbose
     return mo_coeff, mo_occ
 
 def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None):
