@@ -34,6 +34,26 @@ class KnownValues(unittest.TestCase):
 
         self.assertAlmostEqual(de[0,2], (e2-e1)/0.002*lib.param.BOHR, 5)
 
+    def test_grad_ecp_fd(self):
+        mol = neo.M(atom='Na 0 0 0; H 0 0 3.0',
+                    basis={'Na': 'lanl2dz', 'H': 'sto-3g'},
+                    ecp={'Na': 'lanl2dz'}, nuc_basis='pb4d',
+                    quantum_nuc=[1], unit='Bohr')
+        mf = neo.HF(mol)
+        mf.conv_tol = 1e-11
+        mf.conv_tol_grad = 1e-6
+        mf.run()
+        de = mf.nuc_grad_method().kernel()
+
+        mfs = mf.as_scanner()
+        e1 = mfs('Na 0 0 -0.001; H 0 0 3.0')
+        e2 = mfs('Na 0 0  0.001; H 0 0 3.0')
+        self.assertAlmostEqual(de[0,2], (e2-e1)/0.002, 6)
+
+        e1 = mfs('Na 0 0 0; H 0 0 2.999')
+        e2 = mfs('Na 0 0 0; H 0 0 3.001')
+        self.assertAlmostEqual(de[1,2], (e2-e1)/0.002, 6)
+
     def test_epc_grad(self):
         mol = neo.M(atom='''H 0 0 0; F 0 0 0.9''', basis='def2-tzvppd',
                     quantum_nuc=[0])

@@ -7,15 +7,16 @@ Analytic nuclear gradient for constrained nuclear-electronic orbital
 import numpy
 import ctypes
 import warnings
+import copy
 from scipy.special import erf
 from pyscf import df, gto, lib, neo, scf
 from pyscf.grad import rhf as rhf_grad
 from pyscf.lib import logger
 from pyscf.scf import hf, _vhf
 from pyscf.scf.jk import get_jk
-from pyscf.dft.numint import eval_ao, eval_rho, _scale_ao
+from pyscf.dft.numint import BLKSIZE, eval_ao, eval_rho, _scale_ao
 from pyscf.grad.rks import _d1_dot_
-from pyscf.neo.ks import precompute_epc_electron, eval_epc
+from pyscf.neo.ks import precompute_epc_electron, eval_epc, _hash_grids
 
 
 def general_grad(grad_method):
@@ -46,7 +47,7 @@ class ComponentGrad:
             raise NotImplementedError('Nuclear gradients for GTH PP')
         else:
             h -= mol.intor('int1e_ipnuc', comp=3) * self.base.charge
-        if mol.has_ecp():
+        if not self.base.is_nucleus and mol.has_ecp():
             h -= mol.intor('ECPscalar_ipnuc', comp=3) * self.base.charge
 
         # Add MM contribution if present
@@ -100,7 +101,7 @@ class ComponentGrad:
                     with mol.with_rinv_at_nucleus(atm_id):
                         vrinv = mol.intor('int1e_iprinv', comp=3) # <\nabla|1/r|>
                         vrinv *= -mol.atom_charge(atm_id)
-                        if with_ecp and atm_id in ecp_atoms:
+                        if not self.base.is_nucleus and with_ecp and atm_id in ecp_atoms:
                             vrinv += mol.intor('ECPscalar_iprinv', comp=3)
                         vrinv *= self.base.charge
                 else:
@@ -219,10 +220,6 @@ def grad_epc(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
     '''Calculate EPC gradient contributions using pre-screened grids'''
     mf = mf_grad.base
     mol = mf_grad.mol
-    if mo_energy is None: mo_energy = mf.mo_energy
-    if mo_occ is None:    mo_occ = mf.mo_occ
-    if mo_coeff is None:  mo_coeff = mf.mo_coeff
-
     if atmlst is None:
         atmlst = range(mol.natm)
 
@@ -232,42 +229,74 @@ def grad_epc(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
     if mf.epc is None:
         return de
 
+    if mo_energy is None: mo_energy = mf.mo_energy
+    if mo_occ is None:    mo_occ = mf.mo_occ
+    if mo_coeff is None:  mo_coeff = mf.mo_coeff
+
     log = logger.Logger(mf_grad.stdout, mf_grad.verbose)
 
     ni = mf._numint
-    grids = mf.grids
-
-    # Get all nuclear components
-    n_types = []
-    mol_n = {}
-    non0tab_n = {}
-    vxc_n = {}
-    ao_loc_n = {}
-
-    for t, comp in mf.components.items():
-        if not t.startswith('n'):
-            continue
-        mol_n_t = comp.mol
-        ia = mol_n_t.atom_index
-        if mol_n_t.super_mol.atom_pure_symbol(ia) == 'H' and \
-                (isinstance(mf.epc, str) or ia in mf.epc['epc_nuc']):
-            n_types.append(t)
-            mol_n[t] = mol_n_t
-            non0tab_n[t] = ni.make_mask(mol_n_t, grids.coords)
-            nao_n = mol_n_t.nao
-            vxc_n[t] = numpy.zeros((3,nao_n,nao_n))
-            ao_loc_n[t] = mol_n_t.ao_loc_nr()
-
-    if len(n_types) == 0:
-        return de
 
     mf_e = mf.components['e']
-    assert(mf._elec_grids_hash == neo.ks._hash_grids(mf_e.grids))
+    grids_e = mf_e.grids
+    if grids_e.coords is None:
+        grids_e.build(with_non0tab=True)
+    grids_changed = (mf._elec_grids_hash != _hash_grids(grids_e))
+    if grids_changed and mf._epc_n_types is not None:
+        if len(mf._epc_n_types) > 0:
+            mf._skip_epc = False
+    if mf._skip_epc:
+        return de
+
+    # Get all nuclear components
+    if mf._epc_n_types is None:
+        n_types = []
+        for t_pair, interaction in mf.interactions.items():
+            if interaction._need_epc():
+                if t_pair[0].startswith('n'):
+                    n_type  = t_pair[0]
+                else:
+                    n_type  = t_pair[1]
+                n_types.append(n_type)
+        mf._epc_n_types = n_types
+    else:
+        n_types = mf._epc_n_types
+
+    if len(n_types) == 0:
+        mf._skip_epc = True
+        return de
+
+    mol_e = mf_e.mol
+    if mf.grids is None or grids_changed:
+        mf._elec_grids_hash = _hash_grids(grids_e)
+        # Screen grids based on the union of nuclear basis functions.
+        total_mask = numpy.zeros(((len(grids_e.coords)+BLKSIZE-1)//BLKSIZE, 1),
+                                 dtype=numpy.uint8)
+        for n_type in n_types:
+            mol_n_t = mf.components[n_type].mol
+            non0tab_n = ni.make_mask(mol_n_t, grids_e.coords)
+            total_mask |= numpy.any(non0tab_n > 0, axis=1).reshape(-1,1)
+
+        blk_index = numpy.where(numpy.any(total_mask > 0, axis=1))[0]
+        if len(blk_index) == 0:
+            mf._skip_epc = True
+            return de
+
+        # Update grid coordinates and weights.
+        starts = blk_index[:, None] * BLKSIZE + numpy.arange(BLKSIZE)
+        mask = starts < len(grids_e.coords)
+        valid_indices = starts[mask]
+        mf.grids = copy.copy(grids_e)
+        mf.grids.coords = grids_e.coords[valid_indices]
+        mf.grids.weights = grids_e.weights[valid_indices]
+        mf.grids.non0tab = ni.make_mask(mol_e, mf.grids.coords)
+        mf.grids.screen_index = mf.grids.non0tab
+
+    grids = mf.grids
 
     dm0 = mf.make_rdm1(mo_coeff, mo_occ)
 
     # Get electron component
-    mol_e = mf_e.mol
     dm_e = dm0['e']
     if isinstance(mf_e, scf.uhf.UHF):
         assert dm_e.ndim > 2 and dm_e.shape[0] == 2
@@ -275,6 +304,18 @@ def grad_epc(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
     nao_e = mol_e.nao
     ao_loc_e = mol_e.ao_loc_nr()
     vxc_e = numpy.zeros((3,nao_e,nao_e))
+
+    mol_n = {}
+    non0tab_n = {}
+    vxc_n = {}
+    ao_loc_n = {}
+    for n_type in n_types:
+        mol_n_t = mf.components[n_type].mol
+        mol_n[n_type] = mol_n_t
+        non0tab_n[n_type] = ni.make_mask(mol_n_t, grids.coords)
+        nao_n = mol_n_t.nao
+        vxc_n[n_type] = numpy.zeros((3,nao_n,nao_n))
+        ao_loc_n[n_type] = mol_n_t.ao_loc_nr()
 
     # Single grid loop over pre-screened points
     for ao_e, mask_e, weight, coords in ni.block_loop(mol_e, grids, nao_e, 1):
@@ -535,6 +576,9 @@ class Gradients(rhf_grad.GradientsBase):
             self.check_sanity()
         if self.verbose >= logger.INFO:
             self.dump_flags()
+
+        if self.grid_response and hasattr(self.base, 'epc') and self.base.epc is not None:
+            raise NotImplementedError('Grid response for NEO EPC gradients')
 
         # Get gradient from each component
         de = 0

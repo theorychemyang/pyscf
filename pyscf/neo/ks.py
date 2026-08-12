@@ -532,7 +532,6 @@ class KS(hf.HF):
 
     def _get_vint_fast(self, mol=None, dm=None, dm_last=0, vhf_last=0):
         '''Inter-type Coulomb and possible epc'''
-        import copy
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()
 
@@ -582,6 +581,10 @@ class KS(hf.HF):
             new._numint = new.components['e']._numint
         else:
             new._numint = None
+        new.grids = None
+        new._elec_grids_hash = None
+        new._epc_n_types = None
+        new._skip_epc = False
         return new
 
     def reset(self, mol=None):
@@ -596,6 +599,7 @@ class KS(hf.HF):
                 comp._vint = None
             for t, comp in self.interactions.items():
                 comp._eri = None
+                comp._vhfopt = None
                 # reset grids in interactions
                 comp.grids = None
                 comp._elec_grids_hash = None

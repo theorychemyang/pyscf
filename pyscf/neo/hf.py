@@ -500,8 +500,14 @@ class ComponentSCF(Component):
         return dip
 
     def to_gpu(self):
-        obj = self.undo_component().to_gpu()
-        obj = general_scf(obj, self.charge, self.mass, self.is_nucleus, self.nuc_occ_state)
+        base = self.undo_component()
+        if base.__class__.__name__ == 'HF1e':
+            obj = lib.view(base, scf.uhf.UHF).to_gpu()
+        else:
+            obj = base.to_gpu()
+        from gpu4pyscf.neo import hf as gpu_hf
+        obj = gpu_hf.general_scf(obj, self.charge, self.mass,
+                                 self.is_nucleus, self.nuc_occ_state)
         return lib.to_gpu(self, obj)
 
 def _build_eri(mol1, mol2, cart):
@@ -586,17 +592,15 @@ class InteractionCoulomb:
         nao2 = self.mf2.mol.nao_nr()
         return nao1**2*nao2**2*2/1e6+lib.current_memory()[0] < self.max_memory*.95
 
-    def _init_vhfopt(self):
-        opt = _vhf._VHFOpt(self.mol, 'int2e', 'CVHFnrs8_vj_prescreen',
+    def _init_vhfopt(self, mol=None):
+        if mol is None:
+            mol = self.mol
+        opt = _vhf._VHFOpt(mol, 'int2e', 'CVHFnrs8_vj_prescreen',
                            'CVHFnr_int2e_q_cond', None, self.direct_scf_tol)
         return opt
 
-    def _vhfopt_set_dm(self, dm1, dm2):
-        nao1 = self.mf1.mol.nao_nr()
-        nao2 = self.mf2.mol.nao_nr()
+    def _vhfopt_set_dm(self, mol, dm1, nao1, dm2, nao2):
         dms = _combine_dm(dm1, nao1, dm2, nao2)
-
-        mol = self.mol
         self._vhfopt._dmcondname = 'CVHFnr_dm_cond'
         self._vhfopt.set_dm(dms, mol._atm, mol._bas, mol._env)
         self._vhfopt._dmcondname = None # avoid set_dm in get_jk
@@ -643,33 +647,49 @@ class InteractionCoulomb:
                 vj[self.mf2_type] = dot_eri_dm(self._eri, dm1,
                                                nao_v=mol2.nao, eri_dot_dm=False)
         else:
+            if ((dm1 is not None and dm1.ndim != 2) or
+                (dm2 is not None and dm2.ndim != 2)):
+                raise NotImplementedError(
+                    'Direct inter-component Coulomb does not support batched '
+                    'density matrices. Use incore ERI for response functions.')
             if not mol.direct_vee:
                 warnings.warn(f'Direct Vee is used for {self.mf1_type}-{self.mf2_type} ERIs, '
                               +'might be slow. '
                               +f'PYSCF_MAX_MEMORY is set to {mol.max_memory} MB, '
                               +f'required memory: {mol1.nao**2*mol2.nao**2*2/1e6=:.2f} MB')
-            if self._vhfopt is None:
-                self._vhfopt = self._init_vhfopt()
-            self._vhfopt_set_dm(dm1, dm2)
+            nao1 = mol1.nao_nr()
+            nao2 = mol2.nao_nr()
+            # CPU direct_bindm is faster for these cross-J contractions when
+            # the smaller AO-pair side is placed on ij.
+            if nao2 < nao1:
+                mol_j = mol2 + mol1
+                if self._vhfopt is None:
+                    self._vhfopt = self._init_vhfopt(mol_j)
+                self._vhfopt_set_dm(mol_j, dm2, nao2, dm1, nao1)
+                mols = (mol2, mol2, mol1, mol1)
+                script1 = 'ijkl,lk->ij'
+                script2 = 'ijkl,ji->kl'
+            else:
+                if self._vhfopt is None:
+                    self._vhfopt = self._init_vhfopt()
+                self._vhfopt_set_dm(mol, dm1, nao1, dm2, nao2)
+                mols = (mol1, mol1, mol2, mol2)
+                script1 = 'ijkl,ji->kl'
+                script2 = 'ijkl,lk->ij'
             if dm1 is not None and dm2 is not None:
                 vj[self.mf1_type], vj[self.mf2_type] = \
-                        scf.jk.get_jk((mol1, mol1, mol2, mol2),
-                                      (dm2, dm1),
-                                      scripts=('ijkl,lk->ij', 'ijkl,ji->kl'),
+                        scf.jk.get_jk(mols, (dm2, dm1),
+                                      scripts=(script2, script1),
                                       intor='int2e', aosym='s4',
                                       vhfopt=self._vhfopt)
             elif dm1 is not None:
                 vj[self.mf2_type] = \
-                        scf.jk.get_jk((mol1, mol1, mol2, mol2),
-                                      dm1,
-                                      scripts='ijkl,ji->kl',
+                        scf.jk.get_jk(mols, dm1, scripts=script1,
                                       intor='int2e', aosym='s4',
                                       vhfopt=self._vhfopt)
             else:
                 vj[self.mf1_type] = \
-                        scf.jk.get_jk((mol1, mol1, mol2, mol2),
-                                      dm2,
-                                      scripts='ijkl,lk->ij',
+                        scf.jk.get_jk(mols, dm2, scripts=script2,
                                       intor='int2e', aosym='s4',
                                       vhfopt=self._vhfopt)
         charge_product = self.mf1.charge * self.mf2.charge
@@ -1332,15 +1352,19 @@ class HF(scf.hf.SCF):
                             mol.components[t].intor_symmetric
                 h_core = comp.get_hcore(mol_tmp.components[t])
                 s = comp.get_ovlp(mol_tmp.components[t])
-                vint = 0
-                for t_pair, interaction in self.interactions.items():
-                    # Only get e Coulomb on n
-                    if t in t_pair and 'e' in t_pair:
-                        vint += interaction.get_vint(dm_guess)[t]
+                vint = self._get_init_guess_vint(t, dm_guess)
                 mo_energy, mo_coeff = comp.eig(h_core + vint, s)
                 mo_occ = comp.get_occ(mo_energy, mo_coeff)
                 dm_guess[t] = comp.make_rdm1(mo_coeff, mo_occ)
         return dm_guess
+
+    def _get_init_guess_vint(self, t, dm_guess):
+        vint = 0
+        for t_pair, interaction in self.interactions.items():
+            # Only get e Coulomb on n
+            if t in t_pair and 'e' in t_pair:
+                vint += interaction.get_vint(dm_guess)[t]
+        return vint
 
     def make_rdm1(self, mo_coeff=None, mo_occ=None, **kwargs):
         if mo_coeff is None: mo_coeff = self.mo_coeff
@@ -1755,6 +1779,7 @@ class HF(scf.hf.SCF):
                 comp._vint = None
             for t, comp in self.interactions.items():
                 comp._eri = None
+                comp._vhfopt = None
         else:
             # quantum nuc is different, need to rebuild
             self.components.clear()
@@ -1791,7 +1816,7 @@ class HF(scf.hf.SCF):
         raise NotImplementedError
 
     def to_gpu(self):
-        raise NotImplementedError
+        return lib.to_gpu(self)
 
 if __name__ == '__main__':
     mol = neo.M(atom='H 0 0 0', basis='ccpvdz', nuc_basis='pb4d', verbose=5, spin=1)
