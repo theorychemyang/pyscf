@@ -273,13 +273,17 @@ class ComponentSCF(Component):
                 h += hcore_qmmm(mol, mol.mm_mol) * self.charge
         return h
 
-    def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
+    def get_veff(self, mol=None, dm=None, dm_last=None, vhf_last=None, hermi=1):
         if mol is None:
             mol = self.mol
+        with_ecoul = False
         if self.is_nucleus: # Nucleus does not have self-type interaction
             veff = numpy.zeros((mol.nao, mol.nao))
             if isinstance(self, scf.hf.KohnShamDFT):
                 veff = lib.tag_array(veff, ecoul=None, exc=0, vj=veff.copy(), vk=veff.copy())
+            else:
+                assert isinstance(self, scf.hf.RHF)
+                with_ecoul = isinstance(dm, numpy.ndarray) and dm.ndim == 2
         else:
             if abs(self.charge) != 1.:
                 raise NotImplementedError('General charge J/K with tag_array')
@@ -288,6 +292,7 @@ class ComponentSCF(Component):
                                         hermi)
             else:
                 veff = super().get_veff(mol, dm, dm_last, vhf_last, hermi)
+            with_ecoul = hasattr(veff, 'ecoul')
 
         # Cached Coulomb/epc interaction from other components.  Component-level
         # stability analysis and response code call get_veff directly.
@@ -310,6 +315,14 @@ class ComponentSCF(Component):
             else:
                 veff = lib.tag_array(veff + self._vint, vhf_self=vhf_self,
                                      vint=self._vint)
+            if not isinstance(self, scf.hf.KohnShamDFT) and with_ecoul:
+                dm_tot = numpy.asarray(dm)
+                if isinstance(self, scf.uhf.UHF) and dm_tot.ndim == 3:
+                    dm_tot = dm_tot[0] + dm_tot[1]
+                ecoul = numpy.einsum('ij,ji->', dm_tot, self._vint).real * .5
+                if not self.is_nucleus:
+                    ecoul += vhf_self.ecoul
+                veff = lib.tag_array(veff, ecoul=ecoul)
         return veff
 
     def get_occ(self, mo_energy=None, mo_coeff=None):
@@ -699,7 +712,7 @@ class InteractionCoulomb:
             vj[self.mf2_type] *= charge_product
         return vj
 
-def _init_vint_full_delta(components, vhf_last=0,
+def _init_vint_full_delta(components, vhf_last=None,
                           include_last_vint_delta=False):
     '''Initialize inter-type potential accumulators.
 
@@ -713,7 +726,7 @@ def _init_vint_full_delta(components, vhf_last=0,
     Args:
         components : iterable of str
             Component labels to initialize.
-        vhf_last : dict or 0
+        vhf_last : dict or None
             Previous effective potentials.  When requested, the vint_inc tag
             on each entry is used to initialize vint_delta.
         include_last_vint_delta : bool
@@ -1298,6 +1311,8 @@ class HF(scf.hf.SCF):
             coeff = mo_coeff.get(t) if mo_coeff is not None and \
                     isinstance(mo_coeff, dict) else None
             mo_occ[t] = comp.get_occ(mo_energy[t], coeff)
+        if 'gap' in self.components['e'].scf_summary:
+            self.scf_summary['gap'] = self.components['e'].scf_summary['gap']
         return mo_occ
 
     def get_grad(self, mo_coeff, mo_occ, fock):
@@ -1394,6 +1409,8 @@ class HF(scf.hf.SCF):
         self.scf_summary['e2'] = 0
         e_elec = 0
         e_coul = 0
+        ecoul = 0
+        with_ecoul = True
         for t, comp in self.components.items():
             logger.debug(self, f'Component: {t}')
             # vint is already in vhf
@@ -1402,6 +1419,14 @@ class HF(scf.hf.SCF):
             e_coul += e_coul_t
             self.scf_summary['e1'] += comp.scf_summary['e1']
             self.scf_summary['e2'] += comp.scf_summary['e2']
+            if hasattr(vhf[t], 'ecoul'):
+                ecoul += vhf[t].ecoul.real
+            else:
+                with_ecoul = False
+        if with_ecoul:
+            self.scf_summary['coul'] = ecoul
+            exx = self.scf_summary['e2'] - ecoul
+            self.scf_summary['exc'] = exx
         return e_elec, e_coul
 
     def energy_tot(self, dm=None, h1e=None, vhf=None):
@@ -1556,15 +1581,15 @@ class HF(scf.hf.SCF):
     def get_k(self, mol=None, dm=None, hermi=1, omega=None):
         raise AttributeError('get_k should not be called from multi-component SCF')
 
-    def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
+    def get_veff(self, mol=None, dm=None, dm_last=None, vhf_last=None, hermi=1):
         '''Self-type JK'''
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()
         vint = self._get_vint(mol, dm, dm_last, vhf_last)
         vhf = {}
         for t, comp in self.components.items():
-            dm_last_t = dm_last[t] if isinstance(dm_last, dict) else 0
-            vhf_last_t = vhf_last[t] if isinstance(vhf_last, dict) else 0
+            dm_last_t = dm_last[t] if isinstance(dm_last, dict) else None
+            vhf_last_t = vhf_last[t] if isinstance(vhf_last, dict) else None
             vint_coul = vint[t].vj if hasattr(vint[t], 'vj') else vint[t]
             vint_exc = vint[t].exc if hasattr(vint[t], 'exc') else 0
             vint_inc = getattr(vint[t], 'vint_inc', 0)
@@ -1614,7 +1639,7 @@ class HF(scf.hf.SCF):
                 vhf[t] = lib.tag_array(vhf[t], **tags)
         return vhf
 
-    def _get_vint(self, mol=None, dm=None, dm_last=0, vhf_last=0, **kwargs):
+    def _get_vint(self, mol=None, dm=None, dm_last=None, vhf_last=None, **kwargs):
         '''Inter-type Coulomb'''
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()

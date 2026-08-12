@@ -1567,7 +1567,7 @@ class _DFNEO:
         with lib.temporary_env(self.with_df, _build_e_cderi=build_e_cderi):
             return get_j(self.with_df, {'e': e_guess}, output_components=(t,))[t]
 
-    def _get_nn_vint_full_delta(self, dm, dm_last=0, vhf_last=0):
+    def _get_nn_vint_full_delta(self, dm, dm_last=None, vhf_last=None):
         '''Build n-n inter-type Coulomb potential as full and delta pieces.'''
         incremental_j = (isinstance(dm_last, dict) and
                          isinstance(vhf_last, dict) and
@@ -1599,7 +1599,7 @@ class _DFNEO:
                 target[t] += v[t]
         return nn_vint_full, nn_vint_delta
 
-    def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
+    def get_veff(self, mol=None, dm=None, dm_last=None, vhf_last=None, hermi=1):
         if not self.with_df or not self.df_ne:
             return super().get_veff(mol, dm, dm_last, vhf_last, hermi)
         if mol is None: mol = self.mol

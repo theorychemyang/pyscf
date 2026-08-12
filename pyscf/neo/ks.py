@@ -483,6 +483,7 @@ class KS(hf.HF):
         if h1e is None: h1e = self.get_hcore()
         if vhf is None: vhf = self.get_veff(self.mol, dm)
         self.scf_summary['e1'] = 0
+        self.scf_summary['e2'] = 0
         self.scf_summary['coul'] = 0
         self.scf_summary['exc'] = 0
         e_elec = 0
@@ -493,6 +494,7 @@ class KS(hf.HF):
             e_elec += e_elec_t
             e2 += e2_t
             self.scf_summary['e1'] += comp.scf_summary['e1']
+            self.scf_summary['e2'] += comp.scf_summary['e2']
             if hasattr(vhf[t], 'exc'):
                 self.scf_summary['coul'] += comp.scf_summary['coul']
                 self.scf_summary['exc'] += comp.scf_summary['exc']
@@ -530,7 +532,7 @@ class KS(hf.HF):
                         vint[t] += v[t]
         return vint
 
-    def _get_vint_fast(self, mol=None, dm=None, dm_last=0, vhf_last=0):
+    def _get_vint_fast(self, mol=None, dm=None, dm_last=None, vhf_last=None):
         '''Inter-type Coulomb and possible epc'''
         if mol is None: mol = self.mol
         if dm is None: dm = self.make_rdm1()
