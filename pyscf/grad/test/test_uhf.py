@@ -61,6 +61,8 @@ class KnownValues(unittest.TestCase):
         mf.conv_tol = 1e-14
         e0 = mf.kernel()
         g = grad.UHF(mf).kernel()
+        g1 = grad.UHF(mf).kernel(atmlst=[1])
+        self.assertAlmostEqual(abs(g1 - g[[1]]).max(), 0, 8)
         mf_scanner = mf.as_scanner()
 
         e1 = mf_scanner('''O    0.   0.       0.
@@ -275,6 +277,28 @@ H             -0.43459905    0.65805058   -0.00861418''')
 # [ 0   4.31591309e-02  -1.63887474e-03]
 # [ 0  -4.31591309e-02  -1.63887474e-03]]
         self.assertAlmostEqual(lib.fp(g1), -0.062338912126, 6)
+
+    def test_gth_pp_grad(self):
+        mol = gto.M(
+            atom = '''
+            O     0.   0.       0.
+            H     0.   -0.757   0.587
+            H     0.   0.757    0.587 ''',
+            basis = 'gth-dzv',
+            pseudo = 'gth-pbe',
+            charge = 1,
+            spin = 1)
+        mf = mol.UKS(xc='pbe').run()
+        g  = mf.nuc_grad_method().kernel()
+
+        mf_scan = mf.as_scanner()
+        e1 = mf_scan('''O    0.   0.       0.
+                        H    0.   -0.758   0.587
+                        H    0.   0.757    0.587''')
+        e2 = mf_scan('''O    0.   0.       0.
+                        H    0.   -0.756   0.587
+                        H    0.   0.757    0.587''')
+        self.assertAlmostEqual(g[1,1], (e2-e1)/2e-3*lib.param.BOHR, 6)
 
 
 if __name__ == "__main__":

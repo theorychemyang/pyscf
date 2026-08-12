@@ -172,6 +172,7 @@ ALIAS = {
     'def2qzvppd' : 'def2-qzvppd.dat',
     'def2qzvpp'  : 'def2-qzvpp.dat' ,
     'def2qzvp'   : 'def2-qzvp.dat'  ,
+    'qavgvszps' : 'qavg-vszps.dat' ,
     'def2svpjfit'    : 'def2-universal-jfit.dat',
     'def2svpjkfit'   : 'def2-universal-jkfit.dat',
     'def2tzvpjfit'   : 'def2-universal-jfit.dat',
@@ -252,6 +253,7 @@ ALIAS = {
     'crenbl'     : 'crenbl.dat'     ,
     'crenbs'     : 'crenbs.dat'     ,
     'lanl2dz'    : 'lanl2dz.dat'    ,
+    'ecpqvszp'  : 'ecp-q-vszp.dat' ,
     'lanl2tz'    : 'lanl2tz.dat'    ,
     'lanl08'     : 'lanl08.dat'     ,
     'sbkjc'      : 'sbkjc.dat'      ,
@@ -322,6 +324,8 @@ ALIAS = {
 # All-electron basis designed for periodic calculations, available in Crystal
     'pobtzvp'       :  'pob-tzvp.dat',
     'pobtzvpp'      :  'pob-tzvpp.dat',
+    'pobdzvprev2'   :  'pob-dzvp-rev2.dat',
+    'pobtzvprev2'   :  'pob-tzvp-rev2.dat',
     'crystalccpvdz' :  'crystal-cc-pvdz.dat',
 # ccECP
     'ccecp'         : join('ccecp-basis', 'ccECP', 'ccECP.dat'   ),

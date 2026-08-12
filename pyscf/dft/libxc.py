@@ -53,7 +53,7 @@ _itrf.LIBXC_needs_laplacian.restype = ctypes.c_int
 _itrf.LIBXC_is_hybrid.restype = ctypes.c_int
 _itrf.LIBXC_is_nlc.argtypes = (ctypes.c_int, ctypes.c_void_p)
 _itrf.LIBXC_is_nlc.restype = ctypes.c_int
-_itrf.LIBXC_is_cam_rsh.argtypes = (ctypes.c_int, ctypes.c_void_p)
+_itrf.LIBXC_is_cam_rsh.argtypes = (ctypes.c_void_p,)
 _itrf.LIBXC_is_cam_rsh.restype = ctypes.c_int
 _itrf.LIBXC_xc_type.argtypes = (ctypes.c_int, ctypes.c_void_p)
 _itrf.LIBXC_xc_type.restype = ctypes.c_int
@@ -95,6 +95,10 @@ _itrf.xc_func_get_info.restype = ctypes.c_void_p
 _itrf.xc_func_info_get_n_ext_params.argtypes = (ctypes.c_void_p, )
 _itrf.xc_func_info_get_n_ext_params.restype = ctypes.c_int
 _itrf.xc_func_set_ext_params.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_double))
+_itrf.xc_func_set_ext_params_name.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_double)
+_itrf.xc_func_set_ext_params_name.restype = None
+_itrf.LIBXC_xc_func_find_ext_params_name.argtypes = (ctypes.c_void_p, ctypes.c_char_p)
+_itrf.LIBXC_xc_func_find_ext_params_name.restype = ctypes.c_int
 
 _XC_FUNC_TYPE_SIZE = _itrf.LIBXC_xc_func_type_size()
 
@@ -1217,11 +1221,11 @@ def define_xc_(ni, description, xctype='LDA', hyb=0, rsh=(0,0,0)):
                 assert len(fxc) == 3, 'fxc for GGA should be arranged as (v2rho2, v2rhosigma, v2sigma2)'
             elif xctype == 'MGGA':
                 if len(fxc) == 10:
-                    fxc = [fxc[i] for i in [0, 1, 2, 6, 4, 9]]
+                    fxc = [fxc[i] for i in [0, 1, 2, 6, 9, 4]]
                 else:
                     assert len(fxc) == 6, (
                         'fxc for MGGA should be arranged as\n'
-                        '(v2rho2, v2rhosigma, v2sigma2, v2tau2, v2rhotau, v2sigmatau)\nor\n'
+                        '(v2rho2, v2rhosigma, v2sigma2, v2rhotau, v2sigmatau, v2tau2)\nor\n'
                         '(v2rho2, v2rhosigma, v2sigma2, v2lapl2, v2tau2, '
                         'v2rholapl, v2rhotau, v2lapltau, v2sigmalapl, v2sigmatau)')
             assert all(x is not None for x in fxc)
@@ -1353,14 +1357,24 @@ class XCFunctionalCache:
             self.facs = facs
         if ext_params is not None:
             for xid, param in ext_params.items():
-                param = numpy.asarray(param, dtype=numpy.double)
                 func = obj_by_id[xid]
-                info = _itrf.xc_func_get_info(func)
-                n = _itrf.xc_func_info_get_n_ext_params(info)
-                assert param.size == n, \
-                    f"""Unexpected size of external parameters for functional {xid}.
+                if isinstance(param, dict):
+                    for k, v in param.items():
+                        if _itrf.LIBXC_xc_func_find_ext_params_name(
+                                func, str(k).encode()) < 0:
+                            raise ValueError(
+                                f"Unknown ext_params name '{k}' for functional {xid}.")
+                        _itrf.xc_func_set_ext_params_name(
+                            func, str(k).encode(), float(v))
+                else:
+                    param = numpy.asarray(param, dtype=numpy.double)
+                    info = _itrf.xc_func_get_info(func)
+                    n = _itrf.xc_func_info_get_n_ext_params(info)
+                    assert param.size == n, \
+                        f"""Unexpected size of external parameters for functional {xid}.
 Expected {n} but {param.size} provided."""
-                _itrf.xc_func_set_ext_params(func, param.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
+                    _itrf.xc_func_set_ext_params(
+                        func, param.ctypes.data_as(ctypes.POINTER(ctypes.c_double)))
         if callable(callback):
             callback(self, obj_by_id, self.spin)
 
