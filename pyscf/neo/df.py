@@ -1551,9 +1551,9 @@ class _DFNEO:
             self.with_df.reset(mol)
         return super().reset(mol)
 
-    def _get_init_guess_vint(self, t, dm_guess):
+    def _get_init_guess_vint(self, output_components, dm_guess):
         if not self.with_df or not self.df_ne:
-            return super()._get_init_guess_vint(t, dm_guess)
+            return super()._get_init_guess_vint(output_components, dm_guess)
 
         assert 'e' in dm_guess
         e_guess = dm_guess['e']
@@ -1565,7 +1565,8 @@ class _DFNEO:
                          (not isinstance(mf_e, scf.hf.KohnShamDFT) or
                           mf_e._numint.libxc.is_hybrid_xc(mf_e.xc)))
         with lib.temporary_env(self.with_df, _build_e_cderi=build_e_cderi):
-            return get_j(self.with_df, {'e': e_guess}, output_components=(t,))[t]
+            return get_j(self.with_df, {'e': e_guess},
+                         output_components=output_components)
 
     def _get_nn_vint_full_delta(self, dm, dm_last=None, vhf_last=None):
         '''Build n-n inter-type Coulomb potential as full and delta pieces.'''

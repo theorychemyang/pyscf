@@ -1348,6 +1348,8 @@ class HF(scf.hf.SCF):
 
         # Nuclear guess is obtained from the electron guess from a pure classical nuclei
         # calculation, then only set one nucleus to be quantum and obtain its solution
+        nuc_types = tuple(t for t in self.components if t.startswith('n') and t not in dm_guess)
+        vint = self._get_init_guess_vint(nuc_types, dm_guess) if nuc_types else {}
         for t, comp in self.components.items():
             if t.startswith('n') and t not in dm_guess:
                 mol_tmp = neo.Mole()
@@ -1370,18 +1372,19 @@ class HF(scf.hf.SCF):
                             mol.components[t].intor_symmetric
                 h_core = comp.get_hcore(mol_tmp.components[t])
                 s = comp.get_ovlp(mol_tmp.components[t])
-                vint = self._get_init_guess_vint(t, dm_guess)
-                mo_energy, mo_coeff = comp.eig(h_core + vint, s)
+                mo_energy, mo_coeff = comp.eig(h_core + vint[t], s)
                 mo_occ = comp.get_occ(mo_energy, mo_coeff)
                 dm_guess[t] = comp.make_rdm1(mo_coeff, mo_occ)
         return dm_guess
 
-    def _get_init_guess_vint(self, t, dm_guess):
-        vint = 0
+    def _get_init_guess_vint(self, output_components, dm_guess):
+        vint = {t: 0 for t in output_components}
         for t_pair, interaction in self.interactions.items():
             # Only get e Coulomb on n
-            if t in t_pair and 'e' in t_pair:
-                vint += interaction.get_vint(dm_guess)[t]
+            if 'e' in t_pair:
+                for t in output_components:
+                    if t in t_pair:
+                        vint[t] += interaction.get_vint(dm_guess)[t]
         return vint
 
     def make_rdm1(self, mo_coeff=None, mo_occ=None, **kwargs):
