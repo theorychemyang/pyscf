@@ -287,9 +287,12 @@ class ComponentSCF(Component):
         else:
             if abs(self.charge) != 1.:
                 raise NotImplementedError('General charge J/K with tag_array')
-            if hasattr(vhf_last, 'vhf_self'):
-                veff = super().get_veff(mol, dm, dm_last, vhf_last.vhf_self,
-                                        hermi)
+            if not isinstance(self, scf.hf.KohnShamDFT) and mol.nelectron == 1:
+                if dm is None:
+                    dm = self.make_rdm1()
+                veff = lib.tag_array(numpy.zeros_like(numpy.asarray(dm)), ecoul=0)
+            elif hasattr(vhf_last, 'vhf_self'):
+                veff = super().get_veff(mol, dm, dm_last, vhf_last.vhf_self, hermi)
             else:
                 veff = super().get_veff(mol, dm, dm_last, vhf_last, hermi)
             with_ecoul = hasattr(veff, 'ecoul')

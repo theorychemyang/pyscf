@@ -2,6 +2,7 @@
 
 import numpy
 import unittest
+from unittest import mock
 from pyscf import neo
 
 class KnownValues(unittest.TestCase):
@@ -55,6 +56,18 @@ class KnownValues(unittest.TestCase):
             comp.direct_scf = False
         e_incore = mf.kernel()
         self.assertAlmostEqual(e_direct, e_incore, 8)
+
+    def test_hf1e_skips_self_jk(self):
+        mol = neo.M(atom='H 0 0 0', basis='6-31g', nuc_basis='pb4d',
+                    quantum_nuc=[0], spin=1, verbose=0)
+        mf = neo.HF(mol)
+        with mock.patch.object(mf.components['e'], 'get_jk',
+                               side_effect=AssertionError('Electronic self J/K was evaluated')):
+            energy = mf.kernel()
+        self.assertTrue(mf.converged)
+        self.assertAlmostEqual(energy, -0.462666579268432, 8)
+        self.assertAlmostEqual(mf.scf_summary['exc'], 0, 12)
+        self.assertAlmostEqual(mf.scf_summary['coul'], mf.scf_summary['e2'], 12)
 
     def test_component_fock_has_inter_type_coulomb(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
