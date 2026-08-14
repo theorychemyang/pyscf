@@ -12,17 +12,24 @@ from pyscf.neo import grad
 from pyscf.lib import logger
 from pyscf.df.grad.rhf import _int3c_wrapper, balance_partition
 
-class _SeparateJKDFGrad:
-    '''Electronic component gradient with a separate J DF object.'''
+class _ElectronicGradWithoutJ:
+    '''Electronic component gradient with J supplied by the global DF path.'''
 
     def get_j(self, mol=None, dm=None, hermi=0, omega=None):
-        global_with_df = self.base.with_df._global_aux_j_with_df
-        if global_with_df._auxmol_atom_major is None:
-            global_with_df._auxmol_atom_major = (
-                global_with_df.make_auxmol_atom_major())
-        with lib.temporary_env(self.base.with_df,
-                               auxmol=global_with_df._auxmol_atom_major):
-            return super().get_j(mol, dm, hermi, omega)
+        if mol is None: mol = self.mol
+        if dm is None: dm = self.base.make_rdm1()
+        nao = mol.nao
+        dms = numpy.asarray(dm)
+        out_shape = dms.shape[:-2] + (3,) + dms.shape[-2:]
+        dms = dms.reshape(-1,nao,nao)
+        nset = dms.shape[0]
+        vj = numpy.zeros((nset,3,nao,nao))
+        if self.auxbasis_response:
+            vjaux = numpy.zeros((nset,nset,mol.natm,3))
+            vj = lib.tag_array(vj.reshape(out_shape), aux=numpy.array(vjaux))
+        else:
+            vj = vj.reshape(out_shape)
+        return vj
 
     def get_jk(self, mol=None, dm=None, hermi=0, with_j=True, with_k=True,
                omega=None):
@@ -34,17 +41,13 @@ class _SeparateJKDFGrad:
         return vj, vk
 
 
-def get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n, charge_product,
-                atmlst, max_memory, auxbasis_response=True):
-    """Calculate the cross J terms for molecular gradient calculations
-    in CNEO density-fitting.
+def get_j(mols, auxmol, dms, charges, atmlst, max_memory, df_nn=False,
+          auxbasis_response=True):
+    """Calculate the global density-fitting J gradient in CNEO.
 
-    This function computes the Coulomb contribution to the gradient arising from
-    the interaction between electrons and all quantum nuclei while
-    density-fitting is applied to electrons.  Electron-side derivative terms use
-    the charge-weighted sum of all nuclear auxiliary densities.  Nuclear-side
-    derivative terms are still evaluated per nuclear component because each
-    component has its own AO basis.
+    Each component projection and derivative three-center integral is evaluated
+    once.  Nuclear self-J is excluded; when ``df_nn`` is false, all nuclear-
+    nuclear terms are excluded.
 
     Returns
     -------
@@ -81,71 +84,56 @@ def get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n, charge_product,
             int3c = None
         return vj
 
-    assert isinstance(mol_n, dict)
-    assert isinstance(dm_n, dict)
-    assert isinstance(charge_product, dict)
-    nao_e = mol_e.nao
-    naux = auxmol_e.nao
-    dm_e = numpy.asarray(dm_e)
-
-    get_int3c_s2_e = _int3c_wrapper(mol_e, auxmol_e, 'int3c2e', 's2ij')
-    get_int3c_ip1_e = _int3c_wrapper(mol_e, auxmol_e, 'int3c2e_ip1', 's1')
-    get_int3c_ip2_e = _int3c_wrapper(mol_e, auxmol_e, 'int3c2e_ip2', 's2ij')
-    dm_tril_e = get_packed_dm(nao_e, dm_e)
-
-    aux_loc = auxmol_e.ao_loc
-    max_memory_ = max_memory - lib.current_memory()[0]
-    blksize = int(min(max(max_memory_ * .5e6/8 / (nao_e**2*3), 20), naux, 240))
-    ao_ranges_e = balance_partition(aux_loc, blksize)
-
-    # (i,j|P) for e
-    rhoj_e = process_rhoj_block(get_int3c_s2_e, mol_e, dm_tril_e, ao_ranges_e, aux_loc)
-
-    # (I,J|P) for n
-    dm_tril_n = {}
-    ao_ranges_n = {}
-    rhoj_n_raw = []
-    n_keys = list(mol_n)
-    for t in n_keys:
-        mol_t = mol_n[t]
-        dm_t = numpy.asarray(dm_n[t])
-        dm_tril_n[t] = get_packed_dm(mol_t.nao, dm_t)
+    assert mols.keys() == dms.keys() == charges.keys()
+    naux = auxmol.nao
+    aux_loc = auxmol.ao_loc
+    dm_tril = {}
+    ao_ranges = {}
+    get_int3c_ip1 = {}
+    get_int3c_ip2 = {}
+    rhoj_raw = []
+    keys = list(mols)
+    for t in keys:
+        mol_t = mols[t]
+        dm_t = numpy.asarray(dms[t])
+        dm_tril[t] = get_packed_dm(mol_t.nao, dm_t)
         max_memory_ = max_memory - lib.current_memory()[0]
         blksize = int(min(max(max_memory_ * .5e6/8 / (mol_t.nao**2*3), 20),
                           naux, 240))
-        ao_ranges_n[t] = balance_partition(aux_loc, blksize)
-        get_int3c_s2_n = _int3c_wrapper(mol_t, auxmol_e, 'int3c2e', 's2ij')
-        rhoj_n_raw.append(process_rhoj_block(get_int3c_s2_n, mol_t,
-                                             dm_tril_n[t], ao_ranges_n[t],
-                                             aux_loc))
+        ao_ranges[t] = balance_partition(aux_loc, blksize)
+        get_int3c_s2 = _int3c_wrapper(mol_t, auxmol, 'int3c2e', 's2ij')
+        get_int3c_ip1[t] = _int3c_wrapper(mol_t, auxmol, 'int3c2e_ip1', 's1')
+        get_int3c_ip2[t] = _int3c_wrapper(mol_t, auxmol, 'int3c2e_ip2', 's2ij')
+        rhoj_raw.append(process_rhoj_block(get_int3c_s2, mol_t, dm_tril[t],
+                                           ao_ranges[t], aux_loc))
 
     # (P|Q)
-    int2c = auxmol_e.intor('int2c2e', aosym='s1')
-    rhoj_e = scipy.linalg.solve(int2c, rhoj_e.T, assume_a='pos').T
-    rhoj_n_stack = scipy.linalg.solve(int2c, numpy.asarray(rhoj_n_raw).T,
-                                      assume_a='pos').T
+    int2c = auxmol.intor('int2c2e', aosym='s1')
+    rhoj = scipy.linalg.solve(int2c, numpy.asarray(rhoj_raw).T,
+                              assume_a='pos').T
     int2c = None
-    rhoj_n = {t: rhoj_n_stack[i] for i, t in enumerate(n_keys)}
-    rhoj_n_total = sum(charge_product[t] * rhoj_n[t] for t in n_keys)
+    rhoj = {t: rhoj[i] for i, t in enumerate(keys)}
+    rhoj_total = sum(charges[t] * rhoj[t] for t in keys)
+    rhoj_e = rhoj['e'] * charges['e']
+    # The potential for each nucleus excludes its own fitted density.  Without
+    # DF-NN, nuclei see only the electronic fitted density.
+    rhoj_out = {}
+    for t in keys:
+        if t == 'e':
+            rhoj_out[t] = rhoj_total
+        elif df_nn:
+            rhoj_out[t] = rhoj_total - charges[t] * rhoj[t]
+        else:
+            rhoj_out[t] = rhoj_e
 
     de = numpy.zeros((len(atmlst), 3))
     # (d/dX i,j|P)
-    vj = process_vj_block(get_int3c_ip1_e, mol_e, rhoj_n_total,
-                           ao_ranges_e, aux_loc)
-    aoslices = mol_e.aoslice_by_atom()
-
-    for k, ia in enumerate(atmlst):
-        p0, p1 = aoslices[ia, 2:]
-        de[k] -= 2 * lib.einsum('xij,ij->x', vj[:, p0:p1], dm_e[p0:p1])
-
-    # (d/dX I,J|P)
-    for t in n_keys:
-        mol_t = mol_n[t]
-        get_int3c_ip1_n = _int3c_wrapper(mol_t, auxmol_e, 'int3c2e_ip1', 's1')
-        vj = process_vj_block(get_int3c_ip1_n, mol_t, rhoj_e,
-                              ao_ranges_n[t], aux_loc) * charge_product[t]
+    for t in keys:
+        mol_t = mols[t]
+        vj = process_vj_block(get_int3c_ip1[t], mol_t, rhoj_out[t],
+                              ao_ranges[t], aux_loc) * charges[t]
         aoslices = mol_t.aoslice_by_atom()
-        dm_t = numpy.asarray(dm_n[t])
+        dm_t = numpy.asarray(dms[t])
         for k, ia in enumerate(atmlst):
             p0, p1 = aoslices[ia, 2:]
             de[k] -= 2 * lib.einsum('xij,ij->x', vj[:, p0:p1], dm_t[p0:p1])
@@ -153,33 +141,25 @@ def get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n, charge_product,
     vj = None
 
     if auxbasis_response:
-        # (i,j|d/dX P) and (I,J|d/dX P)
-        vjaux = numpy.empty((3, naux))
-        for shl0, shl1, _ in ao_ranges_e:
-            int3c = get_int3c_ip2_e((0, mol_e.nbas, 0, mol_e.nbas, shl0, shl1))  # (i,j|P)
-            p0, p1 = aux_loc[shl0], aux_loc[shl1]
-            vjaux[:, p0:p1] = lib.einsum('xwp,w,p->xp',
-                                         int3c, dm_tril_e,
-                                         rhoj_n_total[p0:p1])
-            int3c = None
-
-        for t in n_keys:
-            mol_t = mol_n[t]
-            get_int3c_ip2_n = _int3c_wrapper(mol_t, auxmol_e, 'int3c2e_ip2', 's2ij')
-            for shl0, shl1, _ in ao_ranges_n[t]:
-                int3c = get_int3c_ip2_n((0, mol_t.nbas, 0, mol_t.nbas, shl0, shl1))  # (I,J|P)
+        # (i,j|d/dX P)
+        vjaux = numpy.zeros((3, naux))
+        for t in keys:
+            mol_t = mols[t]
+            for shl0, shl1, _ in ao_ranges[t]:
+                int3c = get_int3c_ip2[t]((0, mol_t.nbas, 0, mol_t.nbas, shl0, shl1))
                 p0, p1 = aux_loc[shl0], aux_loc[shl1]
                 vjaux[:, p0:p1] += lib.einsum('xwp,w,p->xp',
-                                              int3c, dm_tril_n[t],
-                                              rhoj_e[p0:p1]) * charge_product[t]
+                                              int3c, dm_tril[t],
+                                              rhoj_out[t][p0:p1]) * charges[t]
                 int3c = None
 
         # (d/dX P|Q)
-        int2c_e1 = auxmol_e.intor('int2c2e_ip1', aosym='s1')
-        vjaux -= lib.einsum('xpq,p,q->xp', int2c_e1, rhoj_e, rhoj_n_total) +\
-                 lib.einsum('xpq,p,q->xp', int2c_e1, rhoj_n_total, rhoj_e)
+        int2c_e1 = auxmol.intor('int2c2e_ip1', aosym='s1')
+        vjaux -= lib.einsum('xpq,tp,tq->xp', int2c_e1,
+                            numpy.asarray([charges[t] * rhoj[t] for t in keys]),
+                            numpy.asarray([rhoj_out[t] for t in keys]))
 
-        auxslices = auxmol_e.aoslice_by_atom()
+        auxslices = auxmol.aoslice_by_atom()
         de -= numpy.array([vjaux[:, p0:p1].sum(axis=1)
                            for p0, p1 in auxslices[:, 2:]])[list(atmlst)]
     return de
@@ -204,10 +184,18 @@ def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         atmlst = range(mol.natm)
 
     de = numpy.zeros((len(atmlst), 3))
-    mol_n = {}
-    dm_n = {}
-    charge_product = {}
-    mol_e = dm_e = None
+    mols = {}
+    dms = {}
+    charges = {}
+    if mf.df_ne:
+        for t, comp in mf.components.items():
+            dm_t = dm0[t]
+            if mf.with_df._unrestricted[t]:
+                assert dm_t.ndim > 2 and dm_t.shape[0] == 2
+                dm_t = dm_t[0] + dm_t[1]
+            mols[t] = comp.mol
+            dms[t] = dm_t
+            charges[t] = comp.charge
 
     for (t1, t2), interaction in mf.interactions.items():
         comp1 = mf.components[t1]
@@ -223,41 +211,21 @@ def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         mol1 = comp1.mol
         mol2 = comp2.mol
 
-        check_ne = 0  # 0: not ne; 1: t1 is e t2 is n; 2: t1 is n t2 is e
-        if mf_grad.base.df_ne:
-            if t1 == 'e' and t2.startswith('n'):
-                check_ne = 1
-            elif t2 == 'e' and t1.startswith('n'):
-                check_ne = 2
-
-        if check_ne != 0:
-            if check_ne == 1:
-                mol_e = mol1
-                dm_e = dm1
-                mol_n[t2] = mol2
-                dm_n[t2] = dm2
-                charge_product[t2] = comp1.charge * comp2.charge
-            else:
-                mol_e = mol2
-                dm_e = dm2
-                mol_n[t1] = mol1
-                dm_n[t1] = dm1
-                charge_product[t1] = comp1.charge * comp2.charge
-        else:
+        if not (mf.df_ne and ('e' in (t1, t2) or mf.df_nn)):
             de += grad.grad_pair_int(mol1, mol2, dm1, dm2,
                                      comp1.charge, comp2.charge, atmlst)
 
-    if mol_n:
+    if mf.df_ne:
         t0 = (logger.process_clock(), logger.perf_counter())
         with_df = mf.with_df
         if with_df._auxmol_atom_major is None:
             with_df._auxmol_atom_major = with_df.make_auxmol_atom_major()
-        auxmol_e = with_df._auxmol_atom_major
+        auxmol = with_df._auxmol_atom_major
 
-        de += get_cross_j(mol_e, mol_n, auxmol_e, dm_e, dm_n,
-                          charge_product, atmlst, mf_grad.max_memory,
-                          mf_grad.auxbasis_response)
-        logger.timer(mf_grad, 'df grad vj_ne', *t0)
+        de += get_j(mols, auxmol, dms, charges, atmlst,
+                    mf_grad.max_memory, mf.df_nn,
+                    mf_grad.auxbasis_response)
+        logger.timer(mf_grad, 'df grad vj', *t0)
 
     if log.verbose >= logger.DEBUG:
         log.debug('gradients of Coulomb interaction')
@@ -275,13 +243,11 @@ class Gradients(grad.Gradients):
     def __init__(self, mf):
         super().__init__(mf)
         comp_e = self.components.get('e', None)
-        # pyscf.df.grad.rhf reads base.with_df directly.  Match the SCF split:
-        # J temporarily points base.with_df to the global-J cderi block, while
-        # K keeps using base.with_df as the ordinary e-only DF object.
-        if (comp_e is not None and
-            getattr(comp_e.base.with_df, '_global_aux_j_with_df', None) is not None and
-            not isinstance(comp_e, _SeparateJKDFGrad)):
+        # Global J is evaluated with all components in grad_int.  The
+        # electronic component keeps using its ordinary e-only DF object for K.
+        if (comp_e is not None and mf.df_ne and
+            not isinstance(comp_e, _ElectronicGradWithoutJ)):
             self.components['e'] = comp_e.view(lib.make_class(
-                (_SeparateJKDFGrad, comp_e.__class__)))
+                (_ElectronicGradWithoutJ, comp_e.__class__)))
 
 Grad = Gradients

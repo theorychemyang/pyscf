@@ -528,9 +528,10 @@ def cholesky_eri_b_outcore(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
 class DF(df.DF):
     '''build all e-e and e-n cderi'''
     _keys = df.DF._keys.union(['df_ne_scheme', 'nuc_auxbasis',
-                               'nuc_auxbasis_beta', 'df_ne_component_vint'])
+                               'nuc_auxbasis_beta', 'df_ne_component_vint',
+                               'df_nn'])
 
-    def __init__(self, mol, auxbasis=None, df_ne_scheme='global',
+    def __init__(self, mol, auxbasis=None, df_ne_scheme='global', df_nn=False,
                  nuc_auxbasis=None, nuc_auxbasis_beta=2.0,
                  df_ne_component_vint=False):
         super().__init__(mol, auxbasis)
@@ -541,6 +542,7 @@ class DF(df.DF):
         self.nuc_auxbasis = nuc_auxbasis
         self.nuc_auxbasis_beta = nuc_auxbasis_beta
         self.df_ne_component_vint = df_ne_component_vint
+        self.df_nn = df_nn
         # Non-owning reference to the electronic component's ordinary DF
         # object.  It is used when the global NEO DF build can also produce or
         # reuse the smaller e-only cderi for electronic K.
@@ -857,6 +859,11 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
     '''vj returned is already combined for alpha and beta spins'''
     assert (with_j or with_k)
     with_vint = getattr(dfobj, 'df_ne_component_vint', False)
+    if getattr(dfobj, 'df_nn', False):
+        if with_k:
+            raise NotImplementedError('df_nn is only supported by direct DF-J')
+        if dfobj._cderi is not None or dfobj.mol.incore_anyway:
+            raise NotImplementedError('df_nn is only supported by direct DF-J')
     if (not with_k and not dfobj.mol.incore_anyway and
         # 3-center integral tensor is not initialized
         dfobj._cderi is None):
@@ -1143,6 +1150,9 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
     from pyscf.scf import jk
     t0 = t1 = (logger.process_clock(), logger.perf_counter())
     with_vint = getattr(dfobj, 'df_ne_component_vint', False)
+    df_nn = getattr(dfobj, 'df_nn', False)
+    if df_nn and with_vint:
+        raise NotImplementedError('df_nn does not support component vint')
 
     mol = dfobj.mol
     assert 'e' in dm
@@ -1195,8 +1205,10 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
         dfobj._vjopt = opt
         t1 = logger.timer_debug1(dfobj, 'df-vj init_direct_scf', *t1)
 
-    if with_e:
+    if with_e or df_nn:
         jaux_e_n = 0
+    if df_nn:
+        jaux_n = {}
     opt = dfobj._vjopt
     n_dm = None
     dm_shape = {}
@@ -1232,7 +1244,9 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
         jaux = numpy.array(jaux)[:,:,0]
         if t == 'e':
             jaux_e = jaux * dfobj._charges[t]
-        if with_e:
+        elif df_nn:
+            jaux_n[t] = jaux * dfobj._charges[t]
+        if with_e or df_nn:
             jaux_e_n += jaux * dfobj._charges[t]
     t1 = logger.timer_debug1(dfobj, 'df-vj pass 1', *t1)
     for t in output_components:
@@ -1240,31 +1254,56 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
             nao = mol.components[t].nao_nr()
             dm_shape[t] = dm_shape['e'][:-2] + (nao, nao)
 
-    if opt['e'].j2c_type == 'cd':
-        rho_e = scipy.linalg.cho_solve(opt['e'].j2c, jaux_e.T)
-        if with_e:
-            rho_e_n = scipy.linalg.cho_solve(opt['e'].j2c, jaux_e_n.T)
+    if df_nn:
+        nuc_outputs = [t for t in output_components if t != 'e']
+        jaux = [jaux_e_n]
+        for t in nuc_outputs:
+            jaux.append(jaux_e_n - jaux_n.get(t, 0))
+        jaux = numpy.asarray(jaux)
+        jaux_shape = jaux.shape
+        jaux = jaux.reshape(-1, jaux_shape[-1])
+        if opt['e'].j2c_type == 'cd':
+            rho = scipy.linalg.cho_solve(opt['e'].j2c, jaux.T).T
+        else:
+            rho = scipy.linalg.solve(opt['e'].j2c, jaux.T).T
+        rho = rho.reshape(jaux_shape)
+        rho_tot = rho[0]
+        rho_out = {t: rho[i+1] for i, t in enumerate(nuc_outputs)}
     else:
-        rho_e = scipy.linalg.solve(opt['e'].j2c, jaux_e.T)
+        if opt['e'].j2c_type == 'cd':
+            rho_e = scipy.linalg.cho_solve(opt['e'].j2c, jaux_e.T)
+            if with_e:
+                rho_tot = scipy.linalg.cho_solve(opt['e'].j2c, jaux_e_n.T)
+        else:
+            rho_e = scipy.linalg.solve(opt['e'].j2c, jaux_e.T)
+            if with_e:
+                rho_tot = scipy.linalg.solve(opt['e'].j2c, jaux_e_n.T)
+        rho_e = rho_e.T
         if with_e:
-            rho_e_n = scipy.linalg.solve(opt['e'].j2c, jaux_e_n.T)
+            rho_tot = rho_tot.T
     # transform rho to shape (:,1,naux), to adapt to 3c2e integrals (ij|k)
-    rho_e = rho_e.T[:,numpy.newaxis,:]
-    if with_e:
-        rho_e_n = rho_e_n.T[:,numpy.newaxis,:]
+    if df_nn:
+        rho_tot = rho_tot[:,numpy.newaxis,:]
+        rho_out = {t: rho_t[:,numpy.newaxis,:]
+                   for t, rho_t in rho_out.items()}
+    else:
+        rho_e = rho_e[:,numpy.newaxis,:]
+        if with_e:
+            rho_tot = rho_tot[:,numpy.newaxis,:]
     if with_e and with_vint:
-        rho_n = rho_e_n - rho_e
+        rho_n = rho_tot - rho_e
     t1 = logger.timer_debug1(dfobj, 'df-vj solve ', *t1)
 
     vj = {}
     vj_inter_e = None
     # CVHFnr3c2e_vj_pass2_prescreen requires custom dm_cond
     aux_loc = dfobj.auxmol.ao_loc
-    dm_cond_e = numpy.array([abs(rho_e[:,:,i0:i1]).max()
-                             for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
+    if not df_nn:
+        dm_cond_e = numpy.array([abs(rho_e[:,:,i0:i1]).max()
+                                 for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
     if with_e:
-        dm_cond_e_n = numpy.array([abs(rho_e_n[:,:,i0:i1]).max()
-                                   for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
+        dm_cond_tot = numpy.array([abs(rho_tot[:,:,i0:i1]).max()
+                                  for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
     if with_e and with_vint:
         dm_cond_n = numpy.array([abs(rho_n[:,:,i0:i1]).max()
                                  for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
@@ -1282,8 +1321,8 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
         with lib.temporary_env(opt_, prescreen='CVHFnr3c2e_vj_pass2_prescreen',
                                _dmcondname=None):
             if t == 'e':
-                opt_.dm_cond = dm_cond_e_n
-                vj[t] = jk.get_jk(fakemol, rho_e_n, ['ijkl,lk->ij']*n_dm, 'int3c2e',
+                opt_.dm_cond = dm_cond_tot
+                vj[t] = jk.get_jk(fakemol, rho_tot, ['ijkl,lk->ij']*n_dm, 'int3c2e',
                                   aosym='s2ij', hermi=1, shls_slice=shls_slice,
                                   vhfopt=opt_)
                 if with_vint:
@@ -1292,8 +1331,14 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
                                            aosym='s2ij', hermi=1, shls_slice=shls_slice,
                                            vhfopt=opt_)
             else:
-                opt_.dm_cond = dm_cond_e
-                vj[t] = jk.get_jk(fakemol, rho_e, ['ijkl,lk->ij']*n_dm, 'int3c2e',
+                if df_nn:
+                    rho_t = rho_out[t]
+                    opt_.dm_cond = numpy.array([abs(rho_t[:,:,i0:i1]).max()
+                                                for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
+                else:
+                    rho_t = rho_e
+                    opt_.dm_cond = dm_cond_e
+                vj[t] = jk.get_jk(fakemol, rho_t, ['ijkl,lk->ij']*n_dm, 'int3c2e',
                                   aosym='s2ij', hermi=1, shls_slice=shls_slice,
                                   vhfopt=opt_)
         vj[t] = numpy.asarray(vj[t]).reshape(dm_shape[t])
@@ -1310,7 +1355,7 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
     return vj
 
 def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
-                df_ne=False, df_ne_scheme='global', nuc_auxbasis=None,
+                df_ne=False, df_nn=False, df_ne_scheme='global', nuc_auxbasis=None,
                 nuc_auxbasis_beta=2.0, df_ne_component_vint=False):
     '''Apply density fitting to NEO SCF objects.
 
@@ -1318,6 +1363,10 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
     fitted and ``with_df`` is the normal :class:`pyscf.df.DF` object.  If
     ``df_ne`` is true, ``with_df`` is :class:`pyscf.neo.df.DF` and the DF
     tensor also covers electron-nuclear Coulomb interactions.
+
+    ``df_nn`` applies the same direct global density fitting to Coulomb
+    interactions between distinguishable quantum nuclei.  Nuclear self-J is
+    excluded.  This option requires ``df_ne=True`` and the global scheme.
 
     ``df_ne_scheme='electron'`` uses the electronic auxiliary basis for the
     e-n fit.  It is kept for comparison and backward compatibility, but it can
@@ -1361,6 +1410,10 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
             logger.warn(mf, 'df_ne_scheme="electron" uses the electronic '
                         'auxiliary basis for electron-nuclear fitting and can '
                         'have large electron-nuclear fitting errors.')
+    if df_nn and (not df_ne or df_ne_scheme != 'global'):
+        raise ValueError('df_nn requires df_ne=True and df_ne_scheme="global"')
+    if df_nn and df_ne_component_vint:
+        raise NotImplementedError('df_nn does not support component vint')
 
     if with_df is None and df_ne:
         mol = mf.mol
@@ -1378,7 +1431,7 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
             else:
                 auxbasis = addons.predefined_auxbasis(mol_e, mol_e.basis, xc)
         # e-e and e-n with_df
-        with_df = DF(mol, auxbasis, df_ne_scheme=df_ne_scheme,
+        with_df = DF(mol, auxbasis, df_ne_scheme=df_ne_scheme, df_nn=df_nn,
                      nuc_auxbasis=nuc_auxbasis,
                      nuc_auxbasis_beta=nuc_auxbasis_beta,
                      df_ne_component_vint=df_ne_component_vint)
@@ -1394,6 +1447,7 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
         with_df.nuc_auxbasis = nuc_auxbasis
         with_df.nuc_auxbasis_beta = nuc_auxbasis_beta
         with_df.df_ne_component_vint = df_ne_component_vint
+        with_df.df_nn = df_nn
         with_df.max_memory = mf.max_memory
         with_df.stdout = mf.stdout
         with_df.verbose = mf.verbose
@@ -1421,6 +1475,7 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
         mf.ee_only_dfj = ee_only_dfj
         mf.df_ne = df_ne
         mf.df_ne_component_vint = df_ne_component_vint
+        mf.df_nn = df_nn
 
     # NOTE: RSH is handled by with_df in elec component
     _charge = mf.components['e'].charge
@@ -1466,7 +1521,8 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
     if isinstance(mf, _DFNEO):
         return mf
 
-    dfmf = _DFNEO(mf, with_df, ee_only_dfj, df_ne, df_ne_component_vint)
+    dfmf = _DFNEO(mf, with_df, ee_only_dfj, df_ne, df_nn,
+                  df_ne_component_vint)
     if df_ne:
         name = _DFNEO.__name_mixin__ + '-EE&NE-' + mf.__class__.__name__
     else:
@@ -1495,9 +1551,10 @@ class _SeparateJKDF:
 class _DFNEO:
     __name_mixin__ = 'DF'
 
-    _keys = {'with_df', 'ee_only_dfj', 'df_ne', 'df_ne_component_vint'}
+    _keys = {'with_df', 'ee_only_dfj', 'df_ne', 'df_nn',
+             'df_ne_component_vint'}
 
-    def __init__(self, mf, df=None, ee_only_dfj=None, df_ne=None,
+    def __init__(self, mf, df=None, ee_only_dfj=None, df_ne=None, df_nn=False,
                  df_ne_component_vint=False):
         self.__dict__.update(mf.__dict__)
         self._eri = None
@@ -1505,6 +1562,7 @@ class _DFNEO:
         self.ee_only_dfj = ee_only_dfj
         self.df_ne = df_ne
         self.df_ne_component_vint = df_ne_component_vint
+        self.df_nn = df_nn
         # Unless DF is used only for J matrix, disable direct_scf for K build.
         # It is more efficient to construct K matrix with MO coefficients than
         # the incremental method in direct_scf.
@@ -1543,7 +1601,8 @@ class _DFNEO:
                                                             obj.direct_scf_tol)
         if hasattr(self, 'f') and self.f is not None:
             obj.f = numpy.array(self.f, copy=True)
-        del obj.with_df, obj.ee_only_dfj, obj.df_ne, obj.df_ne_component_vint
+        del obj.with_df, obj.ee_only_dfj, obj.df_ne
+        del obj.df_ne_component_vint, obj.df_nn
         return obj
 
     def reset(self, mol=None):
@@ -1579,6 +1638,8 @@ class _DFNEO:
         for t in self.components:
             nn_vint_full[t] = 0
             nn_vint_delta[t] = 0
+        if self.df_nn:
+            return nn_vint_full, nn_vint_delta
         if incremental_j:
             ddm = {}
             for t, dm_ in dm.items():
