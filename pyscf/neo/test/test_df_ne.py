@@ -375,6 +375,22 @@ class KnownValues(unittest.TestCase):
 
         self.assertAlmostEqual(de[0,2], (e2-e1)/0.002*lib.param.BOHR, 5)
 
+    def test_pure_dft_grad(self):
+        mol = neo.M(atom='O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587',
+                    basis='6-31g', nuc_basis='pb4d', quantum_nuc=[1])
+        mf = neo.CDFT(mol, xc='PBE').density_fit(auxbasis='weigend',
+                                                 df_ne=True)
+        mf.components['e'].grids.atom_grid = (99, 590)
+        mf.conv_tol = 1e-11
+        mf.scf()
+        de = mf.Gradients().kernel()
+
+        e_scanner = mf.as_scanner()
+        e1 = e_scanner('O 0 0 0; H 0 -0.758 0.587; H 0 0.757 0.587')
+        e2 = e_scanner('O 0 0 0; H 0 -0.756 0.587; H 0 0.757 0.587')
+
+        self.assertAlmostEqual(de[1,1], (e2-e1)/0.002*lib.param.BOHR, 5)
+
     def test_hf_grad(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
                     quantum_nuc=[0])

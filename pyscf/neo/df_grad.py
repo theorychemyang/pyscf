@@ -7,7 +7,6 @@ Analytic gradient for density-fitting interaction Coulomb in CDFT
 import numpy
 import scipy
 from pyscf import lib
-from pyscf.df.grad import rhf as df_rhf_grad
 from pyscf.grad import rhf as rhf_grad
 from pyscf.neo import grad
 from pyscf.lib import logger
@@ -16,17 +15,20 @@ from pyscf.df.grad.rhf import _int3c_wrapper, balance_partition
 class _SeparateJKDFGrad:
     '''Electronic component gradient with a separate J DF object.'''
 
+    def get_j(self, mol=None, dm=None, hermi=0, omega=None):
+        global_with_df = self.base.with_df._global_aux_j_with_df
+        if global_with_df._auxmol_atom_major is None:
+            global_with_df._auxmol_atom_major = (
+                global_with_df.make_auxmol_atom_major())
+        with lib.temporary_env(self.base.with_df,
+                               auxmol=global_with_df._auxmol_atom_major):
+            return super().get_j(mol, dm, hermi, omega)
+
     def get_jk(self, mol=None, dm=None, hermi=0, with_j=True, with_k=True,
                omega=None):
         vj = vk = None
         if with_j:
-            global_with_df = self.base.with_df._global_aux_j_with_df
-            if global_with_df._auxmol_atom_major is None:
-                global_with_df._auxmol_atom_major = (
-                    global_with_df.make_auxmol_atom_major())
-            with lib.temporary_env(self.base.with_df,
-                                   auxmol=global_with_df._auxmol_atom_major):
-                vj = df_rhf_grad.get_j(self, mol, dm, hermi)
+            vj = self.get_j(mol, dm, hermi)
         if with_k:
             vk = super().get_jk(mol, dm, hermi, False, True, omega)[1]
         return vj, vk
