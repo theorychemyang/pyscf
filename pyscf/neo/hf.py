@@ -1265,6 +1265,7 @@ class HF(scf.hf.SCF):
         self.f_step = f_step
         self.error_scale = error_scale
         self._diis_buffer = None
+        self.f_jacobian_check = False
 
     # mf_elec and mf_nuc for backward compatibility
     @property
