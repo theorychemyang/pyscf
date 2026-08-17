@@ -549,12 +549,9 @@ class KS(hf.HF):
         for t in vint:
             vint_inc = getattr(vint[t], 'vint_inc', 0)
             coul_vint = numpy.asarray(vint[t])
+            vint[t] = lib.tag_array(coul_vint + epc[t], vint_inc=vint_inc)
             if hasattr(epc[t], 'exc'):
-                vint[t] = lib.tag_array(coul_vint + epc[t], exc=epc[t].exc,
-                                        vj=coul_vint, vint_inc=vint_inc)
-            else:
-                vint[t] = lib.tag_array(coul_vint + epc[t],
-                                        vint_inc=vint_inc)
+                vint[t] = lib.tag_array(vint[t], exc=epc[t].exc, vj=coul_vint)
         return vint
 
     _get_vint = _get_vint_fast

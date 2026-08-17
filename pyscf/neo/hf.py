@@ -1640,9 +1640,7 @@ class HF(scf.hf.SCF):
                                        vhf_self=vhf_self, vint=comp._vint,
                                        vint_inc=vint_inc)
             else:
-                tags = vhf[t].__dict__.copy()
-                tags['vint_inc'] = vint_inc
-                vhf[t] = lib.tag_array(vhf[t], **tags)
+                vhf[t] = lib.tag_array(vhf[t], vint_inc=vint_inc)
         return vhf
 
     def _get_vint(self, mol=None, dm=None, dm_last=None, vhf_last=None, **kwargs):
