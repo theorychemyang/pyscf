@@ -29,6 +29,19 @@ class KnownValues(unittest.TestCase):
                     self.assertTrue(mf.converged)
                     self.assertAlmostEqual(mf.mo_occ['n0'].sum(), 1.)
                 self.assertAlmostEqual(energies[0], energies[1], 7)
+    def test_diis_type(self):
+        def run(diis_type):
+            mf = neo.CDFT(mol, xc='b3lyp5', epc=None,
+                          diis_type=diis_type)
+            mf.conv_tol = 1e-11
+            mf.conv_tol_grad = 1e-6
+            energy = mf.kernel()
+            self.assertTrue(mf.converged)
+            return mf, energy
+        reference, reference_energy = run(3)
+        mf, energy = run(4)
+        self.assertAlmostEqual(energy, reference_energy, 7)
+        self.assertAlmostEqual(mf.f[0][-1], reference.f[0][-1], 5)
 
     def test_scf_noepc(self):
         mf = neo.CDFT(mol, xc='b3lyp5', epc=None)

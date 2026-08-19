@@ -828,24 +828,11 @@ def _component_factors(factor, components):
     if not all(isinstance(x, numbers.Number) for x in factors.values()):
         raise TypeError('Component factors must be numbers')
     return factors
-def _solve_constraint_for_diis(mf, component, fock0, s1e,
-                               f_lagrange_guess, diis_type):
-    """Run the original or analytic-Jacobian least-squares constraint solve."""
-    jacobian_method = 'numeric'
-    if diis_type == 3 and getattr(mf, 'diis_type', diis_type) == 3:
-        jacobian_method = getattr(mf, 'diis3_jacobian', 'numeric')
-    return neo.cdft.solve_constraint(
-        component, fock0, s1e, f_lagrange_guess,
-        jacobian_method=jacobian_method,
-        jacobian_gap_tol=getattr(mf, 'f_jacobian_gap_tol', 1e-10),
-    )
-
 
 def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
              diis=None, diis_start_cycle=None, level_shift_factor=None,
              damp_factor=None, fock_last=None, diis_pos='both', diis_type=3,
-             skip_constraint=False, diis_buffer=None):
-
+             constraint_update=True):
     if h1e is None: h1e = mf.get_hcore()
     if vhf is None: vhf = mf.get_veff(mf.mol, dm)
     f = {}
@@ -860,29 +847,33 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
     f0 = None
     if isinstance(mf, neo.CDFT):
         if diis_pos == 'pre' or diis_pos == 'both' or (cycle < 0 and diis is None):
-            if not skip_constraint and diis_type != 4:
-                # optimize the Lagrange multiplier in CNEO
-                for t, comp in mf.components.items():
-                    if t.startswith('n'):
-                        ia = comp.mol.atom_index
-                        opt = _solve_constraint_for_diis(
-                            mf, comp, f[t], s1e[t], mf.f[ia], diis_type
-                        )
-                        mf.f[ia] = opt.x
-                        if opt.success:
-                            logger.debug(mf, 'CNEO NUC constraint optimization succeeded.')
-                            logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
-                                        (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
-                            logger.debug(mf, 'Position deviation: %s', opt.fun)
-                        else:
-                            logger.warn(mf, 'CNEO NUC constraint optimization failed!')
-                            logger.warn(mf, f'scipy.optimize.least_squares message: {opt.message}')
-                            logger.warn(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
-                                        (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
-                            logger.warn(mf, 'Position deviation: %s', opt.fun)
-            elif not skip_constraint and diis_type == 4:
-                neo.diis_util.update_f(mf, f, s1e, mf.f_step)
-
+            if constraint_update:
+                if diis_type == 4:
+                    neo.cdft.update_lagrange_multipliers(
+                        mf, f, s1e, mf.constraint_max_cycle
+                    )
+                else:
+                    # optimize the Lagrange multiplier in CNEO
+                    for t, comp in mf.components.items():
+                        if t.startswith('n'):
+                            ia = comp.mol.atom_index
+                            opt = neo.cdft.solve_constraint(
+                                comp, f[t], s1e[t], mf.f[ia],
+                                jacobian_gap_tol=mf.constraint_jacobian_gap_tol,
+                            )
+                            mf.f[ia] = opt.x
+                            if opt.success:
+                                logger.debug(mf, 'CNEO NUC constraint optimization succeeded.')
+                                logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                                             (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
+                                logger.debug(mf, 'Position deviation: %s', opt.fun)
+                            else:
+                                logger.warn(mf, 'CNEO NUC constraint optimization failed!')
+                                logger.warn(mf, 'scipy.optimize.least_squares message: %s',
+                                            opt.message)
+                                logger.warn(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                                            (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
+                                logger.warn(mf, 'Position deviation: %s', opt.fun)
 
         # For DIIS type 1, preserve original matrices
         if diis_type == 1:
@@ -922,12 +913,13 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
             if diis.damp:
                 raise NotImplementedError('DIIS damping for CDFT is not implemented.')
             if diis_type != 1:
-                f_flat = numpy.concatenate([f[k].ravel() for k in keys])
+                variables = [f[k].ravel() for k in keys]
                 if diis_type == 4:
-                    for t, comp in mf.components.items():
+                    for t in sorted(mf.components):
                         if t.startswith('n'):
-                            ia = comp.mol.atom_index
-                            f_flat = numpy.concatenate((f_flat, mf.f[ia]))
+                            ia = mf.components[t].mol.atom_index
+                            variables.append(mf.f[ia])
+                f_flat = numpy.concatenate(variables)
 
             if diis_type == 1:
                 f0_flat = numpy.concatenate([f0[k].ravel() for k in keys])
@@ -936,38 +928,18 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
             elif diis_type == 2:
                 f_flat = lib.diis.DIIS.update(diis, f_flat)
             elif diis_type == 3:
-                errvec_n = []
-                for t in sorted(s1e.keys()):
-                    if t.startswith('e'):
-                        errvec_e = scf.diis.get_err_vec(s1e[t], dm[t], f[t])
-                    else:
-                        errvec_n.append(scf.diis.get_err_vec(s1e[t], dm[t], f[t]))
-
-                errvec_n = numpy.concatenate(errvec_n)
-                err_fock = numpy.concatenate((errvec_e, errvec_n))
-                # err_fock = scf.diis.get_err_vec(s1e, dm, f)
-                f_flat = diis.update(f_flat, err_fock)
-                if diis_buffer is not None:
-                    diis_buffer['diis_err'].append([cycle, abs(errvec_e).max(), abs(errvec_n).max()])
-
+                # Equivalent to packing f and calling
+                # lib.diis.DIIS.update(diis, f_flat,
+                #                      scf.diis.get_err_vec(s1e, dm, f, diis.Corth)).
+                f = diis.update(s1e, dm, f)
+                f_flat = None
             elif diis_type == 4:
-                errvec_n = []
-                for t in sorted(s1e.keys()):
-                    if t.startswith('e'):
-                        errvec_e = scf.diis.get_err_vec(s1e[t], dm[t], f[t])
-                    else:
-                        errvec_n.append(scf.diis.get_err_vec(s1e[t], dm[t], f[t]))
-
-                errvec_n = numpy.concatenate(errvec_n)
-                err_pos = neo.diis_util.get_pos_err(mf, f, s1e) * mf.error_scale
-                f_flat = diis.update(f_flat, numpy.concatenate((errvec_e, errvec_n, err_pos)))
-
-                if diis_buffer is not None:
-                    diis_buffer['diis_err'].append([cycle, abs(errvec_e).max(),
-                                                    abs(errvec_n).max(), abs(err_pos).max()])
-
+                fock_error = scf.diis.get_err_vec(s1e, dm, f, diis.Corth)
+                position_error = neo.cdft.get_position_error(mf, f, s1e) * mf.position_error_scale
+                error = numpy.concatenate((fock_error, position_error))
+                f_flat = lib.diis.DIIS.update(diis, f_flat, error)
             else:
-                print("\nWARN: Unknow CDFT DIIS type, NO DIIS IS USED!!!\n")
+                logger.warn(mf, 'Unknown CDFT DIIS type %s; DIIS is disabled', diis_type)
                 f_flat = None
 
             if f_flat is not None:
@@ -985,13 +957,13 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
                     offset += size
                 f = f_new
 
-            if diis_type == 4:
-                for t, comp in mf.components.items():
-                    if t.startswith('n'):
-                        ia = comp.mol.atom_index
-                        mf.f[ia] = f_flat[offset:offset+3]
-                        offset += 3
-                fock_add = mf.get_fock_add_cdft()
+                if diis_type == 4:
+                    for t in sorted(mf.components):
+                        if t.startswith('n'):
+                            ia = mf.components[t].mol.atom_index
+                            mf.f[ia] = f_flat[offset:offset+3]
+                            offset += 3
+                    fock_add = mf.get_fock_add_cdft()
 
             if diis_type == 1:
                 for t in fock_add:
@@ -1011,7 +983,8 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
                                       for dm_spin, f_spin in zip(dm[t], f[t])])
 
     # Post-DIIS CDFT optimization
-    if isinstance(mf, neo.CDFT) and (diis_pos == 'post' or diis_pos == 'both'):
+    if (isinstance(mf, neo.CDFT) and constraint_update and
+            (diis_pos == 'post' or diis_pos == 'both')):
         f0 = {}
         for t in f:
             if t.startswith('n'):
@@ -1020,24 +993,23 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
                 f0[t] = f[t]
 
         if diis_type == 4:
-            neo.diis_util.update_f(mf, f0, s1e, mf.f_step)
-
+            neo.cdft.update_lagrange_multipliers(mf, f0, s1e, mf.constraint_max_cycle)
         else:
             for t, comp in mf.components.items():
                 if t.startswith('n'):
                     ia = comp.mol.atom_index
-                    opt = _solve_constraint_for_diis(
-                        mf, comp, f0[t], s1e[t], mf.f[ia], diis_type
-                    )
+                    opt = neo.cdft.solve_constraint(comp, f0[t], s1e[t], mf.f[ia],
+                                                    jacobian_gap_tol=mf.constraint_jacobian_gap_tol)
                     mf.f[ia] = opt.x
                     if opt.success:
                         logger.debug(mf, 'CNEO NUC constraint optimization succeeded.')
                         logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
-                                    (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
+                                     (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
                         logger.debug(mf, 'Position deviation: %s', opt.fun)
                     else:
                         logger.warn(mf, 'CNEO NUC constraint optimization failed!')
-                        logger.warn(mf, f'scipy.optimize.least_squares message: {opt.message}')
+                        logger.warn(mf, 'scipy.optimize.least_squares message: %s',
+                                    opt.message)
                         logger.warn(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
                                     (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
                         logger.warn(mf, 'Position deviation: %s', opt.fun)
@@ -1099,15 +1071,6 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     # A preprocessing hook before the SCF iteration
     mf.pre_kernel(locals())
 
-    diis_buffer = None
-    if mf_diis is not None:
-        diis_buffer = {}
-        diis_buffer['diis_err'] = []
-        diis_buffer['pos_err'] = []
-        diis_buffer['f'] = []
-        diis_buffer['scf_energy'] = []
-        diis_buffer['scf_dm'] = []
-
     fock_last = None
     cput1 = log.timer('initialize scf', *cput0)
     mf.cycles = 0
@@ -1115,32 +1078,22 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         dm_last = dm
         last_hf_e = e_tot
 
-        cput2 = (logger.process_clock(), logger.perf_counter())
-
-        fock = mf.get_fock(h1e, s1e, vhf, vint, dm, cycle, mf_diis,
-                           fock_last=fock_last, diis_type=mf.diis_type,
-                           diis_pos=mf.diis_pos, diis_buffer=diis_buffer)
-
-        if diis_buffer is not None:
-            if isinstance(mf, neo.CDFT):
-                diis_buffer['f'].append(mf.f.copy())
-
+        fock = mf.get_fock(h1e, s1e, vhf, dm, cycle, mf_diis,
+                           fock_last=fock_last,diis_pos=mf.diis_pos,
+                           diis_type=mf.diis_type)
         mo_energy, mo_coeff = mf.eig(fock, s1e, x=x_orth)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         dm = mf.make_rdm1(mo_coeff, mo_occ)
-        # vint = mf.get_vint(mol, dm)
         vhf = mf.get_veff(mol, dm, dm_last, vhf)
-        cput2 = logger.timer(mf, 'cycle= %d-vhf'%(cycle+1), *cput2)
-        e_tot = mf.energy_tot(dm, h1e, vhf, vint)
+        e_tot = mf.energy_tot(dm, h1e, vhf)
 
         # Here Fock matrix is h1e + vhf, without DIIS.  Calling get_fock
         # instead of the statement "fock = h1e + vhf" because Fock matrix may
         # be modified in some methods.
         fock_last = fock
-        skip_constraint = False
-        if mf.diis_type == 4:
-            skip_constraint = True
-        fock = mf.get_fock(h1e, s1e, vhf, vint, dm, skip_constraint=skip_constraint)  # = h1e + vhf + vint, no DIIS
+        fock = mf.get_fock(h1e, s1e, vhf, dm, diis_pos=mf.diis_pos,
+                           diis_type=mf.diis_type,
+                           constraint_update=mf.diis_type != 4)
         grad = mf.get_grad(mo_coeff, mo_occ, fock)
         norm_gorb = {}
         for t in grad.keys():
@@ -1150,17 +1103,11 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         norm_ddm = {}
         for t in dm.keys():
             norm_ddm[t] = numpy.linalg.norm(dm[t]-dm_last[t])
-        logger.info(mf, 'cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g  max|pos_err|=%4.3g',
-                    cycle+1, e_tot, e_tot-last_hf_e, norm_gorb['e'], norm_ddm['e'], abs(pos_err).max())
+        log.info('cycle= %d E= %.15g  delta_E= %4.3g  |g_e|= %4.3g  |ddm_e|= %4.3g',
+                 cycle+1, e_tot, e_tot-last_hf_e, norm_gorb['e'], norm_ddm['e'])
         for t in grad.keys():
             if not t.startswith('e'):
                 log.info(f'    |g_{t}|= %4.3g  |ddm_{t}|= %4.3g', norm_gorb[t], norm_ddm[t])
-
-        cput2 = logger.timer(mf, 'cycle= %d-convergence'%(cycle+1), *cput2)
-
-        if diis_buffer is not None:
-            diis_buffer['scf_energy'].append([cycle, e_tot])
-            diis_buffer['scf_dm'].append([dm[t] for t in dm.keys() if t.startswith('n')])
 
         if callable(mf.check_convergence):
             scf_conv = mf.check_convergence(locals())
@@ -1218,7 +1165,6 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     log.timer('scf_cycle', *cput0)
     # A post-processing hook before return
     mf.post_kernel(locals())
-    mf._diis_buffer = diis_buffer
     return scf_conv, e_tot, mo_energy, mo_coeff, mo_occ
 
 class HF(scf.hf.SCF):
@@ -1233,10 +1179,13 @@ class HF(scf.hf.SCF):
     >>> mf.scf()
     -99.98104139461894
     '''
-    def __init__(self, mol, unrestricted=False,
-                 diis_type=3, diis_pos='both',
-                 f_step=1, error_scale=1.0,
-                 diis3_jacobian='numeric'):
+    _keys = {'diis_type', 'diis_pos', 'constraint_max_cycle',
+             'position_error_scale', 'constraint_jacobian_gap_tol',
+             'constraint_line_search_min_step'}
+
+    def __init__(self, mol, unrestricted=False, diis_type=3,
+                 diis_pos='both', constraint_max_cycle=1,
+                 position_error_scale=1.0):
         super().__init__(mol)
         # NOTE: unrestricted should be understood as "force unrestricted".
         # With unrestricted=False, each component will still be RHF/UHF depending on the spin
@@ -1270,18 +1219,16 @@ class HF(scf.hf.SCF):
                 self.components[t] = general_scf(mf, charge=charge)
         self.interactions = generate_interactions(self.components, InteractionCoulomb,
                                                   self.max_memory, self.direct_scf_tol)
+        if diis_type not in (1, 2, 3, 4):
+            raise ValueError('diis_type must be 1, 2, 3, or 4')
+        if diis_pos not in ('pre', 'post', 'both'):
+            raise ValueError("diis_pos must be 'pre', 'post', or 'both'")
         self.diis_type = diis_type
         self.diis_pos = diis_pos
-        self.f_step = f_step
-        self.error_scale = error_scale
-        if diis3_jacobian not in ('numeric', 'analytic'):
-            raise ValueError(
-                "diis3_jacobian must be either 'numeric' or 'analytic'"
-            )
-        self.diis3_jacobian = diis3_jacobian
-        self._diis_buffer = None
-        self.f_jacobian_check = False
-        self.f_jacobian_gap_tol = 1e-10
+        self.constraint_max_cycle = constraint_max_cycle
+        self.position_error_scale = position_error_scale
+        self.constraint_jacobian_gap_tol = 1e-14
+        self.constraint_line_search_min_step = 0.01
 
     # mf_elec and mf_nuc for backward compatibility
     @property

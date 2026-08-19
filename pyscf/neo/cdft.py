@@ -9,7 +9,7 @@ import scipy.optimize
 from pyscf import symm
 from pyscf.data import nist
 from pyscf.lib import logger
-from pyscf.neo import diis_util, ks
+from pyscf.neo import ks
 
 def _get_mo_energy_coeff_occ(mf, fock, s1e):
     mo_energy, mo_coeff = mf.eig(fock, s1e)
@@ -32,25 +32,151 @@ def _get_mo_coeff_occ(mf, fock, s1e):
     return mo_coeff, mo_occ
 
 
+def analytic_position_jacobian(mo_energy, mo_coeff, mo_occ, int1e_r,
+                               gap_tol=1e-14):
+    r'''Frozen-Fock derivative of the position constraint with respect to f.
+
+    For H(f) = H0 + sum_y f_y R_y and occupied nuclear orbital i,
+
+        J_xy = 2 n_i Re sum_(a != i)
+               (R_x)_ia (R_y)_ai / (epsilon_i - epsilon_a).
+
+    The expression assumes one non-degenerate occupied nuclear orbital.
+    '''
+    mo_energy = numpy.asarray(mo_energy)
+    mo_coeff = numpy.asarray(mo_coeff)
+    mo_occ = numpy.asarray(mo_occ)
+    int1e_r = numpy.asarray(int1e_r)
+
+    occupied = numpy.flatnonzero(mo_occ > 0)
+    if occupied.size != 1:
+        raise RuntimeError(
+            'Analytic CNEO position Jacobian requires exactly one occupied '
+            f'nuclear orbital; found {occupied.size}.'
+        )
+
+    occ = occupied[0]
+    other = numpy.arange(mo_energy.size) != occ
+    energy_gap = mo_energy[occ] - mo_energy[other]
+    if numpy.any(numpy.abs(energy_gap) <= gap_tol):
+        raise numpy.linalg.LinAlgError(
+            'The occupied nuclear orbital is degenerate or nearly degenerate '
+            'with another orbital; the analytic position Jacobian is not '
+            'valid.'
+        )
+
+    int1e_r_mo = numpy.einsum('pi,xpq,qj->xij', mo_coeff.conj(), int1e_r,
+                              mo_coeff, optimize=True)
+    coupling = int1e_r_mo[:, occ, other]
+    occupation = float(numpy.real(mo_occ[occ]))
+    jacobian = 2.0 * occupation * \
+        numpy.real(numpy.einsum('xa,ya,a->xy', coupling, coupling.conj(),
+                                1.0 / energy_gap, optimize=True))
+    return 0.5 * (jacobian + jacobian.T)
+
+
+def _position_deviation(mf, mo_coeff, mo_occ, position_matrices=None):
+    if position_matrices is None:
+        position_matrices = mf.int1e_r
+    dm = mf.make_rdm1(mo_coeff, mo_occ)
+    return numpy.einsum('xij,ji->x', position_matrices, dm).real
+
+
+def _position_deviation_and_jacobian(mf, fock, s1e,
+                                     position_matrices=None,
+                                     gap_tol=1e-14):
+    if position_matrices is None:
+        position_matrices = mf.int1e_r
+    mo_energy, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)
+    deviation = _position_deviation(mf, mo_coeff, mo_occ, position_matrices)
+    jacobian = analytic_position_jacobian(mo_energy, mo_coeff, mo_occ,
+                                          position_matrices, gap_tol)
+    return deviation, jacobian
+
+
+def get_position_error(mf, fock, s1e):
+    '''Return concatenated position-constraint errors for quantum nuclei.'''
+    deviations = []
+    for t in sorted(mf.components):
+        if t.startswith('n'):
+            comp = mf.components[t]
+            _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp, fock[t], s1e[t])
+            deviations.append(_position_deviation(comp, mo_coeff, mo_occ))
+    return numpy.concatenate(deviations)
+
+
+def update_lagrange_multipliers(mf, fock0, s1e, max_cycle, tol=1e-15):
+    '''Apply analytic Newton updates to the CNEO Lagrange multipliers.'''
+    gap_tol = mf.constraint_jacobian_gap_tol
+    minimum_step = mf.constraint_line_search_min_step
+
+    for t in sorted(mf.components):
+        if not t.startswith('n'):
+            continue
+
+        comp = mf.components[t]
+        ia = comp.mol.atom_index
+
+        def evaluate(f_lagrange):
+            fock = fock0[t] + numpy.einsum('xij,x->ij', comp.int1e_r, f_lagrange)
+            return _position_deviation_and_jacobian(comp, fock, s1e[t], gap_tol=gap_tol)
+
+        f_lagrange = numpy.asarray(mf.f[ia], dtype=float).copy()
+        deviation, jacobian = evaluate(f_lagrange)
+
+        for cycle in range(max_cycle):
+            if numpy.max(numpy.abs(deviation)) < tol:
+                logger.debug(mf, 'CNEO constraint Newton update converged at '
+                             'cycle %d', cycle)
+                break
+
+            deviation_norm = numpy.linalg.norm(deviation)
+            try:
+                step_direction = numpy.linalg.solve(jacobian, -deviation)
+            except numpy.linalg.LinAlgError:
+                step_direction = numpy.linalg.lstsq(jacobian, -deviation, rcond=gap_tol)[0]
+
+            direction_norm = numpy.linalg.norm(step_direction)
+            if direction_norm == 0.0 or not numpy.isfinite(direction_norm):
+                logger.warn(mf, 'Invalid CNEO constraint Newton step for %s; '
+                            'keeping the previous Lagrange multiplier', t)
+                break
+
+            step_size = 1.0
+            f_trial = f_lagrange + step_direction
+            trial_deviation, trial_jacobian = evaluate(f_trial)
+            trial_norm = numpy.linalg.norm(trial_deviation)
+
+            while trial_norm >= deviation_norm:
+                if step_size < minimum_step:
+                    break
+
+                slope = -deviation_norm / (step_size * direction_norm)
+                denominator = 2.0 * (trial_norm - deviation_norm - slope)
+                if denominator == 0.0 or not numpy.isfinite(denominator):
+                    step_size *= 0.5
+                else:
+                    step_size *= max(-slope / denominator, 0.1)
+
+                f_trial = f_lagrange + step_size * step_direction
+                trial_deviation, trial_jacobian = evaluate(f_trial)
+                trial_norm = numpy.linalg.norm(trial_deviation)
+
+            f_lagrange = f_trial
+            deviation = trial_deviation
+            jacobian = trial_jacobian
+
+        mf.f[ia] = f_lagrange
+
+
 def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
-                     jacobian_method='numeric', jacobian_gap_tol=1e-10):
+                     jacobian_gap_tol=1e-14):
     '''Solve the Kohn-Sham equation with position constraint
         [H + f_lagrange * (r - R)] y = e y, <y|r - R|y> = 0.
 
-    Args:
-        jacobian_method : {'numeric', 'analytic'}
-            ``'numeric'`` preserves the original ``least_squares`` finite-
-            difference Jacobian.  ``'analytic'`` supplies the frozen-Fock
-            orbital-response Jacobian from :mod:`pyscf.neo.diis_util`.
-        jacobian_gap_tol : float
-            Minimum occupied--virtual energy gap accepted by the analytic
-            non-degenerate response expression.
+    The least-squares optimization uses the analytic frozen-Fock
+    orbital-response Jacobian.
     '''
-    if jacobian_method not in ('numeric', 'analytic'):
-        raise ValueError(
-            "jacobian_method must be either 'numeric' or 'analytic'; "
-            f"got {jacobian_method!r}"
-        )
     if s1e is None:
         s1e = mf.get_ovlp()
     if f_lagrange_guess is None:
@@ -92,61 +218,32 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
     else:
         position_matrices = mf.int1e_r
 
-    # scipy.optimize.least_squares normally requests fun(x) and jac(x) at the
-    # same x.  Cache both results so the analytic path performs only one eig
-    # call at that point rather than one in each callable.
-    cache = {'f': None, 'deviation': None, 'jacobian': None}
+    cache = {'f_lagrange': None, 'deviation': None, 'jacobian': None}
 
-    def evaluate_position(f_lagrange):
-        '''Return the position deviation and, when requested, its Jacobian.'''
+    def evaluate(f_lagrange):
         f_lagrange = numpy.asarray(f_lagrange)
-        if (jacobian_method == 'analytic' and cache['f'] is not None and
-                numpy.array_equal(f_lagrange, cache['f'])):
+        if (cache['f_lagrange'] is not None and
+                numpy.array_equal(f_lagrange, cache['f_lagrange'])):
             return cache['deviation'], cache['jacobian']
 
-        # Get Fock matrix with constraint
-        fock = fock0 + numpy.einsum(
-            'xij,x->ij', position_matrices, f_lagrange
-        )
-
-        # Calculate expectation position deviation
-        mo_energy, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)
-        dm = mf.make_rdm1(mo_coeff, mo_occ)
-        deviation = numpy.einsum(
-            'xij,ji->x', position_matrices, dm
-        )
-
-        jacobian = None
-        if jacobian_method == 'analytic':
-            jacobian = diis_util.analytic_position_jacobian(
-                mo_energy, mo_coeff, mo_occ, position_matrices,
-                gap_tol=jacobian_gap_tol,
-            )
-            cache['f'] = numpy.array(f_lagrange, copy=True)
-            cache['deviation'] = deviation
-            cache['jacobian'] = jacobian
+        fock = fock0 + numpy.einsum('xij,x->ij', position_matrices, f_lagrange)
+        deviation, jacobian = _position_deviation_and_jacobian(mf, fock, s1e,
+                                                               position_matrices,
+                                                               jacobian_gap_tol)
+        cache['f_lagrange'] = f_lagrange.copy()
+        cache['deviation'] = deviation
+        cache['jacobian'] = jacobian
         return deviation, jacobian
 
     def position_deviation(f_lagrange):
-        '''Calculate the constrained-orbital position deviation.'''
-        deviation, _ = evaluate_position(f_lagrange)
-        return deviation
+        return evaluate(f_lagrange)[0]
+
+    def position_jacobian(f_lagrange):
+        return evaluate(f_lagrange)[1]
 
     #opt = scipy.optimize.root(position_deviation, f_lagrange_guess, method='hybr')
-    if jacobian_method == 'analytic':
-        def position_jacobian(f_lagrange):
-            _, jacobian = evaluate_position(f_lagrange)
-            return jacobian
-
-        opt = scipy.optimize.least_squares(
-            position_deviation, f_lagrange_guess,
-            jac=position_jacobian, gtol=1e-15,
-        )
-    else:
-        # Keep the original call unchanged for reproducible type-3 baselines.
-        opt = scipy.optimize.least_squares(
-            position_deviation, f_lagrange_guess, gtol=1e-15
-        )
+    opt = scipy.optimize.least_squares(position_deviation, f_lagrange_guess,
+                                       jac=position_jacobian, gtol=1e-15)
 
     if mf.int1e_r_symm is not None:
         # Recover the full dimensional f_lagrange

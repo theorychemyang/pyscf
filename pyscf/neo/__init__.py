@@ -18,7 +18,6 @@ from pyscf.neo import pcm
 from pyscf.neo.addons import *
 from pyscf.neo.ctddft import CTDDirect, CTDDFT
 from pyscf.neo.tdgrad import Gradients as TDGradients
-from pyscf.neo import diis_util
 
 def PCM(method_or_mol, solvent_obj=None, dm=None):
     if isinstance(method_or_mol, Mole):
