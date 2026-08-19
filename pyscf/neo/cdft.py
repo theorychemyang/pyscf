@@ -5,6 +5,7 @@ Constrained nuclear-electronic orbital density functional theory
 '''
 
 import numpy
+import scipy
 import scipy.optimize
 from pyscf import symm
 from pyscf.data import nist
@@ -34,14 +35,8 @@ def _get_mo_coeff_occ(mf, fock, s1e):
 
 def analytic_position_jacobian(mo_energy, mo_coeff, mo_occ, int1e_r,
                                gap_tol=1e-14):
-    r'''Frozen-Fock derivative of the position constraint with respect to f.
-
-    For H(f) = H0 + sum_y f_y R_y and occupied nuclear orbital i,
-
-        J_xy = 2 n_i Re sum_(a != i)
-               (R_x)_ia (R_y)_ai / (epsilon_i - epsilon_a).
-
-    The expression assumes one non-degenerate occupied nuclear orbital.
+    '''
+    Frozen-Fock derivative of the position constraint with respect to f.
     '''
     mo_energy = numpy.asarray(mo_energy)
     mo_coeff = numpy.asarray(mo_coeff)
@@ -106,7 +101,7 @@ def get_position_error(mf, fock, s1e):
 
 
 def update_lagrange_multipliers(mf, fock0, s1e, max_cycle, tol=1e-15):
-    '''Apply analytic Newton updates to the CNEO Lagrange multipliers.'''
+    '''Apply Newton updates to the CNEO Lagrange multipliers.'''
     gap_tol = mf.constraint_jacobian_gap_tol
     minimum_step = mf.constraint_line_search_min_step
 
@@ -117,9 +112,33 @@ def update_lagrange_multipliers(mf, fock0, s1e, max_cycle, tol=1e-15):
         comp = mf.components[t]
         ia = comp.mol.atom_index
 
+        def residual(f_lagrange):
+            fock = fock0[t] + numpy.einsum('xij,x->ij', comp.int1e_r, f_lagrange)
+            _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp, fock, s1e[t])
+            return _position_deviation(comp, mo_coeff, mo_occ)
+
+        def residual_vectorize(x):
+            x = numpy.asarray(x)
+            if x.ndim == 1:
+                return residual(x)
+            return numpy.apply_along_axis(residual, axis=0, arr=x)
+
         def evaluate(f_lagrange):
             fock = fock0[t] + numpy.einsum('xij,x->ij', comp.int1e_r, f_lagrange)
-            return _position_deviation_and_jacobian(comp, fock, s1e[t], gap_tol=gap_tol)
+            mo_energy, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp,
+                                                                   fock,
+                                                                   s1e[t])
+            deviation = _position_deviation(comp, mo_coeff, mo_occ)
+            try:
+                jacobian = analytic_position_jacobian(mo_energy, mo_coeff,
+                                                      mo_occ, comp.int1e_r,
+                                                      gap_tol)
+            except (RuntimeError, numpy.linalg.LinAlgError) as err:
+                logger.warn(mf, '%s Falling back to numerical position Jacobian.', err)
+                result = scipy.differentiate.jacobian(residual_vectorize, f_lagrange,
+                                                      maxiter=1, order=2,initial_step=1e-3)
+                jacobian = result.df
+            return deviation, jacobian
 
         f_lagrange = numpy.asarray(mf.f[ia], dtype=float).copy()
         deviation, jacobian = evaluate(f_lagrange)
@@ -173,9 +192,6 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
                      jacobian_gap_tol=1e-14):
     '''Solve the Kohn-Sham equation with position constraint
         [H + f_lagrange * (r - R)] y = e y, <y|r - R|y> = 0.
-
-    The least-squares optimization uses the analytic frozen-Fock
-    orbital-response Jacobian.
     '''
     if s1e is None:
         s1e = mf.get_ovlp()
@@ -192,19 +208,21 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
         fock = fock0 + numpy.einsum('xij,x->ij', mf.int1e_r, f_lagrange_guess)
         mo_coeff, mo_occ = _get_mo_coeff_occ(mf, fock, s1e)
         mocc = mo_coeff[:,mo_occ>0]
-        assert mocc.shape[1] == 1 # singly occupied
-        orbsym = mo_coeff.orbsym[mo_occ>0][0]
-        # For this symmetry, test SO matrix
-        symm_orb = mf.mol.symm_orb
-        irrep_id = mf.mol.irrep_id
-        nirrep = symm_orb.__len__()
-        important_axes = []
-        for idx, int1e_x in enumerate(mf.int1e_r_symm):
-            int1e_x_so = symm.symmetrize_matrix(int1e_x, symm_orb)
-            for ir in range(nirrep):
-                if irrep_id[ir] == orbsym:
-                    if numpy.abs(int1e_x_so[ir]).max() > 1e-12: # NOTE: can adjust 1e-12
-                        important_axes.append(idx)
+        if mocc.shape[1] == 1: # singly occupied
+            orbsym = mo_coeff.orbsym[mo_occ>0][0]
+            # For this symmetry, test SO matrix
+            symm_orb = mf.mol.symm_orb
+            irrep_id = mf.mol.irrep_id
+            nirrep = symm_orb.__len__()
+            important_axes = []
+            for idx, int1e_x in enumerate(mf.int1e_r_symm):
+                int1e_x_so = symm.symmetrize_matrix(int1e_x, symm_orb)
+                for ir in range(nirrep):
+                    if irrep_id[ir] == orbsym:
+                        if numpy.abs(int1e_x_so[ir]).max() > 1e-12: # NOTE: can adjust 1e-12
+                            important_axes.append(idx)
+        else:
+            important_axes = [x for x in range(mf.int1e_r.shape[0])]
         if len(important_axes) == 0:
             logger.warn(mf, 'No important symmetry axes found! Fallback to no symm')
             important_axes = [x for x in range(mf.int1e_r.shape[0])]
@@ -241,9 +259,19 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
     def position_jacobian(f_lagrange):
         return evaluate(f_lagrange)[1]
 
+    def position_deviation_numeric(f_lagrange):
+        fock = fock0 + numpy.einsum('xij,x->ij', position_matrices, f_lagrange)
+        mo_coeff, mo_occ = _get_mo_coeff_occ(mf, fock, s1e)
+        return _position_deviation(mf, mo_coeff, mo_occ, position_matrices)
+
     #opt = scipy.optimize.root(position_deviation, f_lagrange_guess, method='hybr')
-    opt = scipy.optimize.least_squares(position_deviation, f_lagrange_guess,
-                                       jac=position_jacobian, gtol=1e-15)
+    try:
+        opt = scipy.optimize.least_squares(position_deviation, f_lagrange_guess,
+                                           jac=position_jacobian, gtol=1e-15)
+    except (RuntimeError, numpy.linalg.LinAlgError) as err:
+        logger.warn(mf, '%s Falling back to numerical position Jacobian.', err)
+        opt = scipy.optimize.least_squares(position_deviation_numeric,
+                                           f_lagrange_guess, gtol=1e-15)
 
     if mf.int1e_r_symm is not None:
         # Recover the full dimensional f_lagrange
