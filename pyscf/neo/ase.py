@@ -56,6 +56,8 @@ class Pyscf_NEO(Calculator):
                  den_fit=False,            # density-fitting
                  den_fit_basis=None,       # DF aux basis
                  den_fit_ne=False,         # if density fit the nuclear-electronic Coulomb
+                 den_fit_nn=False,         # if density fit the nuclear-nuclear Coulomb
+                 to_gpu=False,             # use GPU4PySCF
                  force_unrestricted=False, # can force mf to be unrestricted
                  stable_opt=False,         # if check stability
                  **kwargs):
@@ -75,6 +77,8 @@ class Pyscf_NEO(Calculator):
         self.den_fit = den_fit
         self.den_fit_basis = den_fit_basis
         self.den_fit_ne = den_fit_ne
+        self.den_fit_nn = den_fit_nn
+        self.to_gpu = to_gpu
         self.init_guess = init_guess
         ###
         self.unrestricted = force_unrestricted
@@ -92,8 +96,8 @@ class Pyscf_NEO(Calculator):
             # initialize a fake mol then create scanners
             mol = neo.M(atom='H 0 0 0; F 0 0 0.9')
             mf = self.create_mf(mol)
-            self.mf_scanner = mf.as_scanner()
             self.mf_grad_scanner = mf.nuc_grad_method().set(grid_response=self.grid_response).as_scanner()
+            self.mf_scanner = self.mf_grad_scanner.base
             self.scanner_available = True
 
     def get_mol_from_atoms(self, atoms):
@@ -126,7 +130,8 @@ class Pyscf_NEO(Calculator):
         if self.den_fit:
             mf = neo.CDFT(mol, xc=self.xc, unrestricted=self.unrestricted,
                           epc=self.epc).density_fit(auxbasis=self.den_fit_basis,
-                                                    df_ne=self.den_fit_ne)
+                                                    df_ne=self.den_fit_ne,
+                                                    df_nn=self.den_fit_nn)
         else:
             mf = neo.CDFT(mol, xc=self.xc, unrestricted=self.unrestricted,
                           epc=self.epc)
@@ -151,6 +156,8 @@ class Pyscf_NEO(Calculator):
             mf.conv_tol = self.conv_tol
         if self.conv_tol_grad is not None:
             mf.conv_tol_grad = self.conv_tol_grad
+        if self.to_gpu:
+            mf = mf.to_gpu()
         return mf
 
     def calculate(self, atoms, properties, system_changes):
@@ -214,8 +221,8 @@ class Pyscf_TDNEO(Pyscf_NEO):
 
         mol = neo.M(atom='H 0 0 0; F 0 0 0.9')
         td_mf, td_grad = self.create_tdmf(mol)
-        self.td_scanner = td_mf.as_scanner()
         self.td_grad_scanner = td_grad.as_scanner(state=self.state)
+        self.td_scanner = self.td_grad_scanner.base
         self.scanner_available = True
 
     def create_tdmf(self, mol):
@@ -275,6 +282,7 @@ class Pyscf_DFT(Calculator):
                  conv_tol_grad=None,       # 1e-7~1e-8 for tight convergence
                  den_fit=False,            # density-fitting
                  den_fit_basis=None,       # DF aux basis
+                 to_gpu=False,             # use GPU4PySCF
                  force_unrestricted=False, # can force mf to be unrestricted
                  stable_opt=False,         # if check stability
                  **kwargs):
@@ -290,6 +298,7 @@ class Pyscf_DFT(Calculator):
         self.conv_tol_grad = conv_tol_grad
         self.den_fit = den_fit
         self.den_fit_basis = den_fit_basis
+        self.to_gpu = to_gpu
         self.init_guess = init_guess
         ###
         self.unrestricted = force_unrestricted
@@ -307,8 +316,8 @@ class Pyscf_DFT(Calculator):
             # initialize a fake mol then create scanners
             mol = gto.M(atom='H 0 0 0; F 0 0 0.9')
             mf = self.create_mf(mol)
-            self.mf_scanner = mf.as_scanner()
             self.mf_grad_scanner = mf.nuc_grad_method().set(grid_response=self.grid_response).as_scanner()
+            self.mf_scanner = self.mf_grad_scanner.base
             self.scanner_available = True
 
     def get_mol_from_atoms(self, atoms):
@@ -369,6 +378,8 @@ class Pyscf_DFT(Calculator):
             mf.conv_tol = self.conv_tol
         if self.conv_tol_grad is not None:
             mf.conv_tol_grad = self.conv_tol_grad
+        if self.to_gpu:
+            mf = mf.to_gpu()
         return mf
 
     def calculate(self, atoms, properties, system_changes):
