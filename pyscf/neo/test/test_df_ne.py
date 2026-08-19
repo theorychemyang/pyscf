@@ -454,19 +454,40 @@ class KnownValues(unittest.TestCase):
         mol = neo.M(atom='H 0 0 0; F 0 0 0.94', basis='aug-ccpvdz')
         mf = neo.CDFT(mol, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
         grad_scanner = mf.nuc_grad_method().as_scanner()
+        grad_scanner(mol)
 
         mol2 = neo.M(atom='H 0 0 0; F 0 0 1.1', basis='aug-ccpvdz')
         mf2 = neo.CDFT(mol2, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
-        mf2.scf()
+        e2 = mf2.scf()
         grad2 = mf2.Gradients().grad()
-        _, grad = grad_scanner(mol2)
+        e, grad = grad_scanner(mol2)
+        self.assertAlmostEqual(e, e2, 9)
         self.assertTrue(abs(grad-grad2).max() < 1e-6)
 
         mol2 = neo.M(atom='H 0 0 0; F 0 0 1.2', basis='aug-ccpvdz')
         mf2 = neo.CDFT(mol2, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
-        mf2.scf()
+        e2 = mf2.scf()
         grad2 = mf2.Gradients().grad()
-        _, grad = grad_scanner(mol2)
+        e, grad = grad_scanner(mol2)
+        self.assertAlmostEqual(e, e2, 9)
+        self.assertTrue(abs(grad-grad2).max() < 1e-6)
+
+    def test_df_nn_scanner(self):
+        mol = neo.M(atom='H 0 0 0; H 0 0 0.94', basis='aug-ccpvdz',
+                    nuc_basis='pb4d', quantum_nuc=[0,1])
+        mf = neo.CDFT(mol, xc='PBE0').density_fit(auxbasis='weigend',
+                                                  df_ne=True, df_nn=True)
+        grad_scanner = mf.nuc_grad_method().as_scanner()
+        grad_scanner(mol)
+
+        mol2 = neo.M(atom='H 0 0 0; H 0 0 1.1', basis='aug-ccpvdz',
+                     nuc_basis='pb4d', quantum_nuc=[0,1])
+        mf2 = neo.CDFT(mol2, xc='PBE0').density_fit(auxbasis='weigend',
+                                                    df_ne=True, df_nn=True)
+        e2 = mf2.scf()
+        grad2 = mf2.Gradients().grad()
+        e, grad = grad_scanner(mol2)
+        self.assertAlmostEqual(e, e2, 9)
         self.assertTrue(abs(grad-grad2).max() < 1e-6)
 
 if __name__ == "__main__":
