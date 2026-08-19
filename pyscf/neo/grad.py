@@ -469,13 +469,6 @@ class CNEO_GradScanner(lib.GradScanner):
         else:
             e_tot = mf_scanner(mol)
 
-        for t in mf_scanner.components.keys():
-            if isinstance(mf_scanner.components[t], hf.KohnShamDFT):
-                if getattr(self.components[t], 'grids', None):
-                    self.components[t].grids.reset(mol.components[t])
-                if getattr(self.components[t], 'nlcgrids', None):
-                    self.components[t].nlcgrids.reset(mol.components[t])
-
         de = self.kernel(**kwargs)
         return e_tot, de
 

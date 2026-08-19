@@ -1606,9 +1606,23 @@ class _DFNEO:
         return obj
 
     def reset(self, mol=None):
+        component_keys = set(self.components)
         if self.with_df is not None:
             self.with_df.reset(mol)
-        return super().reset(mol)
+        super().reset(mol)
+        if component_keys != set(self.components):
+            mf = density_fit(self, auxbasis=self.with_df.auxbasis,
+                             with_df=self.with_df,
+                             ee_only_dfj=self.ee_only_dfj,
+                             df_ne=self.df_ne,
+                             df_ne_scheme=self.with_df.df_ne_scheme,
+                             nuc_auxbasis=self.with_df.nuc_auxbasis,
+                             nuc_auxbasis_beta=self.with_df.nuc_auxbasis_beta,
+                             df_ne_component_vint=self.df_ne_component_vint,
+                             df_nn=self.df_nn)
+            self.components = mf.components
+            self.interactions = mf.interactions
+        return self
 
     def _get_init_guess_vint(self, output_components, dm_guess):
         if not self.with_df or not self.df_ne:

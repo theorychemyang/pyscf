@@ -147,7 +147,7 @@ class CNEO_Scanner(lib.SinglePointScanner):
         else:
             mol = self.mol.set_geom_(mol_or_geom, inplace=False)
 
-        # Cleanup intermediates associated to the pervious mol object
+        # Cleanup intermediates associated to the previous mol object
         self.reset(mol)
 
         if 'dm0' in kwargs:
@@ -156,7 +156,7 @@ class CNEO_Scanner(lib.SinglePointScanner):
             dm0 = None
         else:
             dm0 = None
-            # dm0 form last calculation cannot be used in the current
+            # dm0 form last calculation may not be used in the current
             # calculation if a completely different system is given.
             # Obviously, the systems are very different if the number of
             # basis functions are different.
@@ -169,6 +169,7 @@ class CNEO_Scanner(lib.SinglePointScanner):
             # Currently mo_coeff dumped is a dict, can't go through from_chk
             #elif self.chkfile and h5py.is_hdf5(self.chkfile):
             #    dm0 = self.from_chk(self.chkfile)
+        self.mo_coeff = None  # To avoid last mo_coeff being used by SOSCF
         for _, comp in self.components.items():
             comp.mo_coeff = None
         e_tot = self.kernel(dm0=dm0, **kwargs)

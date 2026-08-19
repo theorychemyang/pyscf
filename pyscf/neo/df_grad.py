@@ -250,4 +250,13 @@ class Gradients(grad.Gradients):
             self.components['e'] = comp_e.view(lib.make_class(
                 (_ElectronicGradWithoutJ, comp_e.__class__)))
 
+    def reset(self, mol=None):
+        super().reset(mol)
+        comp_e = self.components.get('e', None)
+        if (comp_e is not None and self.base.df_ne and
+            not isinstance(comp_e, _ElectronicGradWithoutJ)):
+            self.components['e'] = comp_e.view(lib.make_class(
+                (_ElectronicGradWithoutJ, comp_e.__class__)))
+        return self
+
 Grad = Gradients

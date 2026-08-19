@@ -472,6 +472,27 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e, e2, 9)
         self.assertTrue(abs(grad-grad2).max() < 1e-6)
 
+    def test_scanner_different_mol(self):
+        mol = neo.M(atom='H 0 0 0; F 0 0 0.9', basis='sto-3g',
+                    nuc_basis='pb4d', quantum_nuc=[0])
+        mf = neo.CDFT(mol, xc='LDA,VWN').density_fit(auxbasis='weigend',
+                                                     df_ne=True)
+        mf.conv_tol = 1e-10
+        grad_scanner = mf.nuc_grad_method().as_scanner()
+        grad_scanner(mol)
+
+        mol2 = neo.M(atom='O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587',
+                     basis='sto-3g', nuc_basis='pb4d', quantum_nuc=[1,2])
+        for mol_test in (mol2, mol):
+            mf_ref = neo.CDFT(mol_test, xc='LDA,VWN').density_fit(
+                auxbasis='weigend', df_ne=True)
+            mf_ref.conv_tol = 1e-10
+            e_ref = mf_ref.scf()
+            grad_ref = mf_ref.Gradients().grad()
+            e, grad = grad_scanner(mol_test)
+            self.assertAlmostEqual(e, e_ref, 9)
+            self.assertTrue(abs(grad-grad_ref).max() < 1e-8)
+
     def test_df_nn_scanner(self):
         mol = neo.M(atom='H 0 0 0; H 0 0 0.94', basis='aug-ccpvdz',
                     nuc_basis='pb4d', quantum_nuc=[0,1])
