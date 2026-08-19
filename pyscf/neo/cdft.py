@@ -9,9 +9,9 @@ import scipy.optimize
 from pyscf import symm
 from pyscf.data import nist
 from pyscf.lib import logger
-from pyscf.neo import ks
+from pyscf.neo import diis_util, ks
 
-def _get_mo_coeff_occ(mf, fock, s1e):
+def _get_mo_energy_coeff_occ(mf, fock, s1e):
     mo_energy, mo_coeff = mf.eig(fock, s1e)
     verbose = mf.verbose
     nnuc = mf.mol.nnuc
@@ -25,12 +25,32 @@ def _get_mo_coeff_occ(mf, fock, s1e):
     finally:
         mf.mol.nnuc = nnuc
         mf.verbose = verbose
+    return mo_energy, mo_coeff, mo_occ
+
+def _get_mo_coeff_occ(mf, fock, s1e):
+    _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)
     return mo_coeff, mo_occ
 
-def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None):
+
+def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
+                     jacobian_method='numeric', jacobian_gap_tol=1e-10):
     '''Solve the Kohn-Sham equation with position constraint
         [H + f_lagrange * (r - R)] y = e y, <y|r - R|y> = 0.
+
+    Args:
+        jacobian_method : {'numeric', 'analytic'}
+            ``'numeric'`` preserves the original ``least_squares`` finite-
+            difference Jacobian.  ``'analytic'`` supplies the frozen-Fock
+            orbital-response Jacobian from :mod:`pyscf.neo.diis_util`.
+        jacobian_gap_tol : float
+            Minimum occupied--virtual energy gap accepted by the analytic
+            non-degenerate response expression.
     '''
+    if jacobian_method not in ('numeric', 'analytic'):
+        raise ValueError(
+            "jacobian_method must be either 'numeric' or 'analytic'; "
+            f"got {jacobian_method!r}"
+        )
     if s1e is None:
         s1e = mf.get_ovlp()
     if f_lagrange_guess is None:
@@ -67,26 +87,66 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None):
         # Only keep the axes with non-trivial contributions
         f_lagrange_guess = f_lagrange_guess[important_axes]
 
-    def position_deviation(f_lagrange):
-        '''Calculate position deviation from the Kohn-Sham orbital with
-        frozen unconstrained NEO Fock and provided Lagrange multiplier'''
+    if mf.int1e_r_symm is not None:
+        position_matrices = mf.int1e_r_symm[important_axes]
+    else:
+        position_matrices = mf.int1e_r
+
+    # scipy.optimize.least_squares normally requests fun(x) and jac(x) at the
+    # same x.  Cache both results so the analytic path performs only one eig
+    # call at that point rather than one in each callable.
+    cache = {'f': None, 'deviation': None, 'jacobian': None}
+
+    def evaluate_position(f_lagrange):
+        '''Return the position deviation and, when requested, its Jacobian.'''
+        f_lagrange = numpy.asarray(f_lagrange)
+        if (jacobian_method == 'analytic' and cache['f'] is not None and
+                numpy.array_equal(f_lagrange, cache['f'])):
+            return cache['deviation'], cache['jacobian']
+
         # Get Fock matrix with constraint
-        if mf.int1e_r_symm is not None:
-            fock = fock0 + numpy.einsum('xij,x->ij', mf.int1e_r_symm[important_axes], f_lagrange)
-        else:
-            fock = fock0 + numpy.einsum('xij,x->ij', mf.int1e_r, f_lagrange)
+        fock = fock0 + numpy.einsum(
+            'xij,x->ij', position_matrices, f_lagrange
+        )
 
         # Calculate expectation position deviation
-        mo_coeff, mo_occ = _get_mo_coeff_occ(mf, fock, s1e)
+        mo_energy, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)
         dm = mf.make_rdm1(mo_coeff, mo_occ)
-        if mf.int1e_r_symm is not None:
-            deviation = numpy.einsum('xij,ji->x', mf.int1e_r_symm[important_axes], dm)
-        else:
-            deviation = numpy.einsum('xij,ji->x', mf.int1e_r, dm)
+        deviation = numpy.einsum(
+            'xij,ji->x', position_matrices, dm
+        )
+
+        jacobian = None
+        if jacobian_method == 'analytic':
+            jacobian = diis_util.analytic_position_jacobian(
+                mo_energy, mo_coeff, mo_occ, position_matrices,
+                gap_tol=jacobian_gap_tol,
+            )
+            cache['f'] = numpy.array(f_lagrange, copy=True)
+            cache['deviation'] = deviation
+            cache['jacobian'] = jacobian
+        return deviation, jacobian
+
+    def position_deviation(f_lagrange):
+        '''Calculate the constrained-orbital position deviation.'''
+        deviation, _ = evaluate_position(f_lagrange)
         return deviation
 
     #opt = scipy.optimize.root(position_deviation, f_lagrange_guess, method='hybr')
-    opt = scipy.optimize.least_squares(position_deviation, f_lagrange_guess, gtol=1e-15)
+    if jacobian_method == 'analytic':
+        def position_jacobian(f_lagrange):
+            _, jacobian = evaluate_position(f_lagrange)
+            return jacobian
+
+        opt = scipy.optimize.least_squares(
+            position_deviation, f_lagrange_guess,
+            jac=position_jacobian, gtol=1e-15,
+        )
+    else:
+        # Keep the original call unchanged for reproducible type-3 baselines.
+        opt = scipy.optimize.least_squares(
+            position_deviation, f_lagrange_guess, gtol=1e-15
+        )
 
     if mf.int1e_r_symm is not None:
         # Recover the full dimensional f_lagrange

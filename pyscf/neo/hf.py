@@ -828,6 +828,17 @@ def _component_factors(factor, components):
     if not all(isinstance(x, numbers.Number) for x in factors.values()):
         raise TypeError('Component factors must be numbers')
     return factors
+def _solve_constraint_for_diis(mf, component, fock0, s1e,
+                               f_lagrange_guess, diis_type):
+    """Run the original or analytic-Jacobian least-squares constraint solve."""
+    jacobian_method = 'numeric'
+    if diis_type == 3 and getattr(mf, 'diis_type', diis_type) == 3:
+        jacobian_method = getattr(mf, 'diis3_jacobian', 'numeric')
+    return neo.cdft.solve_constraint(
+        component, fock0, s1e, f_lagrange_guess,
+        jacobian_method=jacobian_method,
+        jacobian_gap_tol=getattr(mf, 'f_jacobian_gap_tol', 1e-10),
+    )
 
 
 def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
@@ -854,7 +865,9 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
                 for t, comp in mf.components.items():
                     if t.startswith('n'):
                         ia = comp.mol.atom_index
-                        opt = neo.cdft.solve_constraint(comp, f[t], s1e[t], mf.f[ia])
+                        opt = _solve_constraint_for_diis(
+                            mf, comp, f[t], s1e[t], mf.f[ia], diis_type
+                        )
                         mf.f[ia] = opt.x
                         if opt.success:
                             logger.debug(mf, 'CNEO NUC constraint optimization succeeded.')
@@ -1013,7 +1026,9 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
             for t, comp in mf.components.items():
                 if t.startswith('n'):
                     ia = comp.mol.atom_index
-                    opt = neo.cdft.solve_constraint(comp, f0[t], s1e[t], mf.f[ia])
+                    opt = _solve_constraint_for_diis(
+                        mf, comp, f0[t], s1e[t], mf.f[ia], diis_type
+                    )
                     mf.f[ia] = opt.x
                     if opt.success:
                         logger.debug(mf, 'CNEO NUC constraint optimization succeeded.')
@@ -1106,20 +1121,14 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
                            fock_last=fock_last, diis_type=mf.diis_type,
                            diis_pos=mf.diis_pos, diis_buffer=diis_buffer)
 
-        cput2 = logger.timer(mf, 'cycle= %d-diis'%(cycle+1), *cput2)
-
-        pos_err = neo.diis_util.get_pos_err(mf, fock, s1e)
         if diis_buffer is not None:
-            diis_buffer['pos_err'].append([cycle, abs(pos_err).max()])
-            diis_buffer['f'].append(mf.f.copy())
-        # pos_converged = abs(pos_err).max() < 1e-15
+            if isinstance(mf, neo.CDFT):
+                diis_buffer['f'].append(mf.f.copy())
 
-        mo_energy, mo_coeff = mf.eig(fock, s1e)
-        cput2 = logger.timer(mf, 'cycle= %d-eig'%(cycle+1), *cput2)
+        mo_energy, mo_coeff = mf.eig(fock, s1e, x=x_orth)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         dm = mf.make_rdm1(mo_coeff, mo_occ)
-        vint = mf.get_vint(mol, dm)
-        cput2 = logger.timer(mf, 'cycle= %d-vint'%(cycle+1), *cput2)
+        # vint = mf.get_vint(mol, dm)
         vhf = mf.get_veff(mol, dm, dm_last, vhf)
         cput2 = logger.timer(mf, 'cycle= %d-vhf'%(cycle+1), *cput2)
         e_tot = mf.energy_tot(dm, h1e, vhf, vint)
@@ -1226,7 +1235,8 @@ class HF(scf.hf.SCF):
     '''
     def __init__(self, mol, unrestricted=False,
                  diis_type=3, diis_pos='both',
-                 f_step=1, error_scale=1.0):
+                 f_step=1, error_scale=1.0,
+                 diis3_jacobian='numeric'):
         super().__init__(mol)
         # NOTE: unrestricted should be understood as "force unrestricted".
         # With unrestricted=False, each component will still be RHF/UHF depending on the spin
@@ -1264,8 +1274,14 @@ class HF(scf.hf.SCF):
         self.diis_pos = diis_pos
         self.f_step = f_step
         self.error_scale = error_scale
+        if diis3_jacobian not in ('numeric', 'analytic'):
+            raise ValueError(
+                "diis3_jacobian must be either 'numeric' or 'analytic'"
+            )
+        self.diis3_jacobian = diis3_jacobian
         self._diis_buffer = None
         self.f_jacobian_check = False
+        self.f_jacobian_gap_tol = 1e-10
 
     # mf_elec and mf_nuc for backward compatibility
     @property
