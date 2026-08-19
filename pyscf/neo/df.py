@@ -1566,7 +1566,11 @@ class _DFNEO:
         # Unless DF is used only for J matrix, disable direct_scf for K build.
         # It is more efficient to construct K matrix with MO coefficients than
         # the incremental method in direct_scf.
-        self.direct_scf = self.components['e'].direct_scf = ee_only_dfj
+        self.components['e'].direct_scf = ee_only_dfj
+        if df_ne and self.with_df.df_ne_scheme == 'electron':
+            # The electron scheme evaluates multicomponent J and electronic K
+            # together, so they must use the same direct_scf setting.
+            self.direct_scf = ee_only_dfj
 
     def undo_df(self):
         '''Remove the DFNEO Mixin'''
@@ -1706,6 +1710,7 @@ class _DFNEO:
         if not isinstance(mf_e, scf.hf.KohnShamDFT):
             # Initialize vint_inc with a full-density J build, then update it
             # with density differences in later cycles.
+            incremental_j_not_k = self.direct_scf and not mf_e.direct_scf
             incremental_j = (self.direct_scf and
                              isinstance(dm_last, dict) and isinstance(vhf_last, dict) and
                              all(t in vhf_last and hasattr(vhf_last[t], 'vint_inc') for t in dm))
@@ -1727,6 +1732,10 @@ class _DFNEO:
                 _dm_tot['e'] = _dm['e'][0] + _dm['e'][1]
             else:
                 _dm_tot = _dm
+            # Global DF-NE can update J from the density difference while
+            # electronic DF-K uses the tagged full density.
+            incremental_k = incremental_j and mf_e.direct_scf
+            dm_for_k = _dm['e'] if incremental_k else dm['e']
             if self.with_df.df_ne_scheme == 'global' and not self.ee_only_dfj:
                 build_e_cderi = True
             else:
@@ -1736,7 +1745,7 @@ class _DFNEO:
                     vj, vk = self.with_df.get_jk(_dm, hermi)
                 else:
                     vj = self.with_df.get_j(_dm_tot, hermi)
-                    vk = mf_e.get_k(mol_e, _dm['e'], hermi)
+                    vk = mf_e.get_k(mol_e, dm_for_k, hermi)
             # vj.vint is the e-n part of DF-J.  If _dm is the density used for
             # incremental updates, this contribution is cached in vint_inc;
             # otherwise it is treated as a full-density contribution.
@@ -1748,21 +1757,37 @@ class _DFNEO:
                 vint_full[t] += nn_vint_full[t]
                 vint_delta[t] += nn_vint_delta[t]
             vint = neo.hf._tag_vint_full_delta(vint_full, vint_delta, dm)
-            vhf = {'e': vj['e']}
-            if incremental_j:
+            if incremental_k:
+                vhf = {'e': vj['e']}
+                if e_unrestricted:
+                    vhf['e'] = vhf['e'] - vk
+                else:
+                    vhf['e'] = vhf['e'] - vk * .5
                 vhf['e'] += numpy.asarray(vhf_last['e'])
-            if e_unrestricted:
-                vhf['e'] = vhf['e'] - vk
             else:
-                vhf['e'] = vhf['e'] - vk * .5
+                if incremental_j:
+                    vj['e'] += vhf_last['e'].vj
+                vhf = {'e': vj['e']}
+                if e_unrestricted:
+                    vhf['e'] = vhf['e'] - vk
+                else:
+                    vhf['e'] = vhf['e'] - vk * .5
             for t in dm:
                 if t == 'e':
-                    if cache_component_vint:
-                        vhf[t] = lib.tag_array(vhf[t], vint=vint[t],
-                                               vint_inc=vint_delta[t])
+                    if incremental_j_not_k:
+                        if cache_component_vint:
+                            vhf[t] = lib.tag_array(vhf[t], vj=vj[t], vint=vint[t],
+                                                   vint_inc=vint_delta[t])
+                        else:
+                            vhf[t] = lib.tag_array(vhf[t], vj=vj[t],
+                                                   vint_inc=vint_delta[t])
                     else:
-                        vhf[t] = lib.tag_array(vhf[t],
-                                               vint_inc=vint_delta[t])
+                        if cache_component_vint:
+                            vhf[t] = lib.tag_array(vhf[t], vint=vint[t],
+                                                   vint_inc=vint_delta[t])
+                        else:
+                            vhf[t] = lib.tag_array(vhf[t],
+                                                   vint_inc=vint_delta[t])
                 else:
                     vhf[t] = lib.tag_array(vint[t], vint=vint[t],
                                            vint_inc=vint_delta[t])
@@ -1818,12 +1843,12 @@ class _DFNEO:
             # Initialize vint_inc with a full-density J build, then update it
             # with density differences in later cycles.  XC always uses the
             # current density.
-            incremental_jk = (self.direct_scf and
-                              isinstance(dm_last, dict) and isinstance(vhf_last, dict) and
-                              all(t in vhf_last and hasattr(vhf_last[t], 'vj') and
-                                  hasattr(vhf_last[t], 'vint_inc') for t in dm))
+            incremental_j = (self.direct_scf and
+                             isinstance(dm_last, dict) and isinstance(vhf_last, dict) and
+                             all(t in vhf_last and hasattr(vhf_last[t], 'vj') and
+                                 hasattr(vhf_last[t], 'vint_inc') for t in dm))
             nn_vint_full, nn_vint_delta = self._get_nn_vint_full_delta(dm, dm_last, vhf_last)
-            if incremental_jk:
+            if incremental_j:
                 _dm = {}
                 for t, dm_ in dm.items():
                     dm_ = numpy.asarray(dm_)
@@ -1837,6 +1862,10 @@ class _DFNEO:
                 _dm_tot['e'] = _dm['e'][0] + _dm['e'][1]
             else:
                 _dm_tot = _dm
+            # Global DF-NE can update J from the density difference while
+            # electronic DF-K uses the tagged full density.
+            incremental_k = incremental_j and mf_e.direct_scf
+            dm_for_k = _dm['e'] if incremental_k else dm['e']
             if self.with_df.df_ne_scheme == 'global' and not self.ee_only_dfj and is_hybrid:
                 build_e_cderi = True
             else:
@@ -1852,28 +1881,28 @@ class _DFNEO:
                             vj, vk = self.with_df.get_jk(_dm, hermi)
                         else:
                             vj = self.with_df.get_j(_dm_tot, hermi)
-                            vk = mf_e.get_k(mol_e, _dm['e'], hermi)
+                            vk = mf_e.get_k(mol_e, dm_for_k, hermi)
                         vk *= hyb
                     elif alpha == 0: # LR=0, only SR exchange
                         vj = self.with_df.get_j(_dm_tot, hermi)
-                        vk = mf_e.get_k(mol_e, _dm['e'], hermi, omega=-omega)
+                        vk = mf_e.get_k(mol_e, dm_for_k, hermi, omega=-omega)
                         vk *= hyb
                     elif hyb == 0: # SR=0, only LR exchange
                         vj = self.with_df.get_j(_dm_tot, hermi)
-                        vk = mf_e.get_k(mol_e, _dm['e'], hermi, omega=omega)
+                        vk = mf_e.get_k(mol_e, dm_for_k, hermi, omega=omega)
                         vk *= alpha
                     else: # SR and LR exchange with different ratios
                         if with_df_jk:
                             vj, vk = self.with_df.get_jk(_dm, hermi)
                         else:
                             vj = self.with_df.get_j(_dm_tot, hermi)
-                            vk = mf_e.get_k(mol_e, _dm['e'], hermi)
+                            vk = mf_e.get_k(mol_e, dm_for_k, hermi)
                         vk *= hyb
-                        vklr = mf_e.get_k(mol_e, _dm['e'], hermi, omega=omega)
+                        vklr = mf_e.get_k(mol_e, dm_for_k, hermi, omega=omega)
                         vklr *= (alpha - hyb)
                         vk += vklr
 
-                    if incremental_jk:
+                    if incremental_k:
                         vk += vhf_last['e'].vk
 
                     if ground_state:
@@ -1883,7 +1912,7 @@ class _DFNEO:
                         else:
                             exc -= numpy.einsum('ij,ji', dm['e'], vk).real * .5 * .5
 
-            include_last_vint_delta = (incremental_jk or
+            include_last_vint_delta = (incremental_j or
                 any(isinstance(nn_vint_delta[t], numpy.ndarray) for t in dm))
             vint_full, vint_delta = neo.hf._init_vint_full_delta(nn_vint_full,
                                                                  vhf_last,
@@ -1901,7 +1930,7 @@ class _DFNEO:
             vint = neo.hf._tag_vint_full_delta(vint_full, vint_delta,
                                                nn_vint_full)
             epc = neo.ks._get_epc_vmat(self, dm)
-            if incremental_jk:
+            if incremental_j:
                 for t in vj:
                     vj[t] += vhf_last[t].vj
 

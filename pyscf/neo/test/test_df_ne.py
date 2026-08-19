@@ -17,6 +17,42 @@ class KnownValues(unittest.TestCase):
             es.append(mf.scf())
         self.assertAlmostEqual(es[0], es[1], 8)
 
+    def test_global_df_incremental_j_full_df_k(self):
+        mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
+                    quantum_nuc=[0], verbose=0)
+        mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
+                                     df_ne_scheme='global')
+        mf.conv_tol = 1e-10
+        mf.kernel()
+        dm_last = mf.make_rdm1()
+        vhf_last = mf.get_veff(dm=dm_last)
+        dm = dm_last.copy()
+        dm['n0'] = dm['n0'] * .99
+
+        j_dm = []
+        k_dm = []
+        get_j = mf.with_df.get_j
+        get_k = mf.components['e'].get_k
+        def get_j_hook(dm, *args, **kwargs):
+            j_dm.append(dm)
+            return get_j(dm, *args, **kwargs)
+        def get_k_hook(mol, dm, *args, **kwargs):
+            k_dm.append(dm)
+            return get_k(mol, dm, *args, **kwargs)
+        mf.with_df.get_j = get_j_hook
+        mf.components['e'].get_k = get_k_hook
+
+        vhf = mf.get_veff(dm=dm, dm_last=dm_last, vhf_last=vhf_last)
+        self.assertAlmostEqual(abs(j_dm[0]['e']).max(), 0, 14)
+        self.assertGreater(abs(j_dm[0]['n0']).max(), 0)
+        self.assertIsNotNone(getattr(k_dm[0], 'mo_coeff', None))
+        self.assertIsNotNone(getattr(k_dm[0], 'mo_occ', None))
+
+        mf.direct_scf = False
+        vhf_ref = mf.get_veff(dm=dm)
+        for t in dm:
+            self.assertAlmostEqual(abs(vhf[t] - vhf_ref[t]).max(), 0, 10)
+
     def test_custom_with_df(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
                     quantum_nuc=[0])
