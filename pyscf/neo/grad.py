@@ -154,29 +154,49 @@ def grad_pair_int(mol1, mol2, dm1, dm2, charge1, charge2, atmlst):
     aoslices2 = mol2.aoslice_by_atom()
     nao1 = mol1.nao_nr()
     nao2 = mol2.nao_nr()
-    vhfopt1 = _make_vhfopt(mol1 + mol2, neo.hf._combine_dm(dm1, nao1, dm2, nao2))
-    vhfopt2 = _make_vhfopt(mol2 + mol1, neo.hf._combine_dm(dm2, nao2, dm1, nao1))
+    mol12 = mol1 + mol2
+    vhfopt = _make_vhfopt(mol12, neo.hf._combine_dm(dm1, nao1, dm2, nao2))
     for i0, ia in enumerate(atmlst):
         shl0, shl1, p0, p1 = aoslices1[ia]
         # Derivative w.r.t. mol1
         if shl1 > shl0:
-            shls_slice = (shl0, shl1) + (0, mol1.nbas) + (0, mol2.nbas)*2
-            v1 = get_jk((mol1, mol1, mol2, mol2),
+            shls_slice = (shl0, shl1) + (0, mol1.nbas) + (mol1.nbas, mol12.nbas)*2
+            v1 = get_jk(mol12,
                         dm2, scripts='ijkl,lk->ij',
                         intor='int2e_ip1', aosym='s2kl', comp=3,
-                        shls_slice=shls_slice, vhfopt=vhfopt1)
+                        shls_slice=shls_slice, vhfopt=vhfopt)
             de[i0] -= 2. * charge1 * charge2 * \
                       numpy.einsum('xij,ij->x', v1, dm1[p0:p1])
         shl0, shl1, p0, p1 = aoslices2[ia]
         # Derivative w.r.t. mol2
         if shl1 > shl0:
-            shls_slice = (shl0, shl1) + (0, mol2.nbas) + (0, mol1.nbas)*2
-            v1 = get_jk((mol2, mol2, mol1, mol1),
+            shls_slice = (mol1.nbas+shl0, mol1.nbas+shl1) + (mol1.nbas, mol12.nbas) + (0, mol1.nbas)*2
+            v1 = get_jk(mol12,
                         dm1, scripts='ijkl,lk->ij',
                         intor='int2e_ip1', aosym='s2kl', comp=3,
-                        shls_slice=shls_slice, vhfopt=vhfopt2)
+                        shls_slice=shls_slice, vhfopt=vhfopt)
             de[i0] -= 2. * charge1 * charge2 * \
                       numpy.einsum('xij,ij->x', v1, dm2[p0:p1])
+    return de
+
+def grad_eri(mf_grad, dm0, interactions, atmlst):
+    mf = mf_grad.base
+    de = numpy.zeros((len(atmlst),3))
+    for (t1, t2), interaction in interactions:
+        comp1 = mf.components[t1]
+        comp2 = mf.components[t2]
+        dm1 = dm0[t1]
+        if interaction.mf1_unrestricted:
+            assert dm1.ndim > 2 and dm1.shape[0] == 2
+            dm1 = dm1[0] + dm1[1]
+        dm2 = dm0[t2]
+        if interaction.mf2_unrestricted:
+            assert dm2.ndim > 2 and dm2.shape[0] == 2
+            dm2 = dm2[0] + dm2[1]
+        mol1 = comp1.mol
+        mol2 = comp2.mol
+        de += grad_pair_int(mol1, mol2, dm1, dm2,
+                            comp1.charge, comp2.charge, atmlst)
     return de
 
 def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
@@ -193,23 +213,7 @@ def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
     if atmlst is None:
         atmlst = range(mol.natm)
 
-    de = numpy.zeros((len(atmlst),3))
-
-    for (t1, t2), interaction in mf.interactions.items():
-        comp1 = mf.components[t1]
-        comp2 = mf.components[t2]
-        dm1 = dm0[t1]
-        if interaction.mf1_unrestricted:
-            assert dm1.ndim > 2 and dm1.shape[0] == 2
-            dm1 = dm1[0] + dm1[1]
-        dm2 = dm0[t2]
-        if interaction.mf2_unrestricted:
-            assert dm2.ndim > 2 and dm2.shape[0] == 2
-            dm2 = dm2[0] + dm2[1]
-        mol1 = comp1.mol
-        mol2 = comp2.mol
-        de += grad_pair_int(mol1, mol2, dm1, dm2,
-                            comp1.charge, comp2.charge, atmlst)
+    de = grad_eri(mf_grad, dm0, mf.interactions.items(), atmlst)
 
     if log.verbose >= logger.DEBUG:
         log.debug('gradients of Coulomb interaction')

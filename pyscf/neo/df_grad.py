@@ -197,23 +197,13 @@ def grad_int(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
             dms[t] = dm_t
             charges[t] = comp.charge
 
-    for (t1, t2), interaction in mf.interactions.items():
-        comp1 = mf.components[t1]
-        comp2 = mf.components[t2]
-        dm1 = dm0[t1]
-        if interaction.mf1_unrestricted:
-            assert dm1.ndim > 2 and dm1.shape[0] == 2
-            dm1 = dm1[0] + dm1[1]
-        dm2 = dm0[t2]
-        if interaction.mf2_unrestricted:
-            assert dm2.ndim > 2 and dm2.shape[0] == 2
-            dm2 = dm2[0] + dm2[1]
-        mol1 = comp1.mol
-        mol2 = comp2.mol
-
-        if not (mf.df_ne and ('e' in (t1, t2) or mf.df_nn)):
-            de += grad.grad_pair_int(mol1, mol2, dm1, dm2,
-                                     comp1.charge, comp2.charge, atmlst)
+    if not mf.df_ne:
+        de += grad.grad_eri(mf_grad, dm0, mf.interactions.items(), atmlst)
+    elif not mf.df_nn:
+        eri_interactions = [(pair, interaction) for pair, interaction in mf.interactions.items()
+                            if 'e' not in pair]
+        if eri_interactions:
+            de += grad.grad_eri(mf_grad, dm0, eri_interactions, atmlst)
 
     if mf.df_ne:
         t0 = (logger.process_clock(), logger.perf_counter())

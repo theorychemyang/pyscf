@@ -27,10 +27,11 @@ def get_fock_add_cdft(f1n, int1e_r_ao, fac=2.0):
 
 def _build_all_vhfopt(mols, dm_gs_e, dm_gs, dm_z_e, dm_z):
     vhfopt = {}
-    for t1, mol1 in mols.items():
-        for t2, mol2 in mols.items():
-            if t1 == t2:
-                continue
+    keys = list(mols)
+    for i, t1 in enumerate(keys):
+        mol1 = mols[t1]
+        for t2 in keys[i+1:]:
+            mol2 = mols[t2]
             nao1 = mol1.nao_nr()
             nao2 = mol2.nao_nr()
             mol = mol1 + mol2
@@ -40,7 +41,11 @@ def _build_all_vhfopt(mols, dm_gs_e, dm_gs, dm_z_e, dm_z):
                 dms = _combine_dm((dm_gs[t1], dm_z[t1]), nao1, (dm_gs_e, dm_z_e), nao2)
             else:
                 dms = _combine_dm((dm_gs[t1], dm_z[t1]), nao1, (dm_gs[t2], dm_z[t2]), nao2)
-            vhfopt[f'{t1}-{t2}'] = _make_vhfopt(mol, dms)
+            opt = _make_vhfopt(mol, dms)
+            shls_slice = (0, mol1.nbas, 0, mol1.nbas, mol1.nbas, mol.nbas, mol1.nbas, mol.nbas)
+            vhfopt[f'{t1}-{t2}'] = mol, opt, shls_slice
+            shls_slice = (mol1.nbas, mol.nbas, mol1.nbas, mol.nbas, 0, mol1.nbas, 0, mol1.nbas)
+            vhfopt[f'{t2}-{t1}'] = mol, opt, shls_slice
     return vhfopt
 
 def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
@@ -322,11 +327,12 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
                 mol_n = mol.components[t1]
                 ja = mol_n.atom_index
                 charge = -mf.components[t1].charge
-                shls_slice = (shl0, shl1) + (0, mol_e.nbas) + (0, mol_n.nbas)*2
-                v1en = get_jk((mol_e, mol_e, mol_n, mol_n),
+                mol_en, opt, shls_slice = vhfopt[f'e-{t1}']
+                shls_slice = (shl0, shl1) + shls_slice[2:]
+                v1en = get_jk(mol_en,
                               (dm_gs[t1], dm_z[t1]), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
                               intor='int2e_ip1', aosym='s2kl', comp=3,
-                              shls_slice=shls_slice, vhfopt=vhfopt[f'e-{t1}'])
+                              shls_slice=shls_slice, vhfopt=opt)
                 v1en = [_v * charge for _v in v1en]
                 h1ao_e[:,p0:p1] += v1en[0]
                 h1ao_e[:,:,p0:p1] += v1en[0].transpose(0,2,1)
@@ -336,21 +342,22 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
 
                 if ja == ka:
                     # derivative w.r.t. nuclear basis center
-                    v1ne = get_jk((mol_n, mol_n, mol_e, mol_e),
+                    mol_ne, opt, shls_slice = vhfopt[f'{t1}-e']
+                    v1ne = get_jk(mol_ne,
                                   (dm_gs['e'], dmz1doo), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
                                   intor='int2e_ip1', aosym='s2kl', comp=3,
-                                  vhfopt=vhfopt[f'{t1}-e'])
+                                  shls_slice=shls_slice, vhfopt=opt)
                     v1ne = [_v * charge for _v in v1ne]
                     h1ao_n += v1ne[0] + v1ne[0].transpose(0,2,1)
                     z1ao_n += v1ne[1] * 2.0
 
                     for t2 in mf.components.keys():
                         if (t2.startswith('n')) and (t2 != t1):
-                            mol_n2 = mol.components[t2]
-                            v1nn = get_jk((mol_n, mol_n, mol_n2, mol_n2),
+                            mol_nn, opt, shls_slice = vhfopt[f'{t1}-{t2}']
+                            v1nn = get_jk(mol_nn,
                                           (dm_gs[t2], dm_z[t2]), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
                                           intor='int2e_ip1', aosym='s2kl', comp=3,
-                                          vhfopt=vhfopt[f'{t1}-{t2}'])
+                                          shls_slice=shls_slice, vhfopt=opt)
                             _charge = charge * mf.components[t2].charge
                             v1nn = [_v * _charge for _v in v1nn]
                             h1ao_n += v1nn[0] + v1nn[0].transpose(0,2,1)
@@ -746,11 +753,12 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
                 mol_n = mol.components[t1]
                 ja = mol_n.atom_index
                 charge = -mf.components[t1].charge
-                shls_slice = (shl0, shl1) + (0, mol_e.nbas) + (0, mol_n.nbas)*2
-                v1en = get_jk((mol_e, mol_e, mol_n, mol_n),
+                mol_en, opt, shls_slice = vhfopt[f'e-{t1}']
+                shls_slice = (shl0, shl1) + shls_slice[2:]
+                v1en = get_jk(mol_en,
                               (dm_gs[t1], dm_z[t1]), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
                               intor='int2e_ip1', aosym='s2kl', comp=3,
-                              shls_slice=shls_slice, vhfopt=vhfopt[f'e-{t1}'])
+                              shls_slice=shls_slice, vhfopt=opt)
                 v1en = [_v * charge for _v in v1en]
                 h1ao_e[:,p0:p1] += v1en[0]
                 h1ao_e[:,:,p0:p1] += v1en[0].transpose(0,2,1)
@@ -760,21 +768,22 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
 
                 if ja == ka:
                     # derivative w.r.t. nuclear basis center
-                    v1ne = get_jk((mol_n, mol_n, mol_e, mol_e),
+                    mol_ne, opt, shls_slice = vhfopt[f'{t1}-e']
+                    v1ne = get_jk(mol_ne,
                                   (dm_e, dmz1dooa+dmz1doob), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
                                   intor='int2e_ip1', aosym='s2kl', comp=3,
-                                  vhfopt=vhfopt[f'{t1}-e'])
+                                  shls_slice=shls_slice, vhfopt=opt)
                     v1ne = [_v * charge for _v in v1ne]
                     h1ao_n += v1ne[0] + v1ne[0].transpose(0,2,1)
                     z1ao_n += v1ne[1]
 
                     for t2 in mf.components.keys():
                         if (t2.startswith('n')) and (t2 != t1):
-                            mol_n2 = mol.components[t2]
-                            v1nn = get_jk((mol_n, mol_n, mol_n2, mol_n2),
+                            mol_nn, opt, shls_slice = vhfopt[f'{t1}-{t2}']
+                            v1nn = get_jk(mol_nn,
                                           (dm_gs[t2], dm_z[t2]), scripts=['ijkl,lk->ij','ijkl,lk->ij'],
                                           intor='int2e_ip1', aosym='s2kl', comp=3,
-                                          vhfopt=vhfopt[f'{t1}-{t2}'])
+                                          shls_slice=shls_slice, vhfopt=opt)
                             _charge = charge * mf.components[t2].charge
                             v1nn = [_v * _charge for _v in v1nn]
                             h1ao_n += v1nn[0] + v1nn[0].transpose(0,2,1)
