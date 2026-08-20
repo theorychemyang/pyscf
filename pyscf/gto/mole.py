@@ -2491,7 +2491,7 @@ class MoleBase(lib.StreamObject):
               verbose=None, output=None, max_memory=None,
               atom=None, basis=None, unit=None, nucmod=None, ecp=None, pseudo=None,
               charge=None, spin=0, symmetry=None, symmetry_subgroup=None,
-              cart=None, magmom=None):
+              cart=None, magmom=None, direct_vee=None):
         '''Setup molecule and initialize some control parameters.  Whenever you
         change the value of the attributes of :class:`Mole`, you need call
         this function to refresh the internal data of Mole.
@@ -2526,6 +2526,8 @@ class MoleBase(lib.StreamObject):
                 name, the given point group symmetry will be used.
             magmom : list
                 Collinear spin of each atom. Default is [0.0,]*natm
+            direct_vee : bool
+                Force direct evaluation of electron repulsion integrals
 
         '''
         if isinstance(dump_input, str):
@@ -2548,6 +2550,7 @@ class MoleBase(lib.StreamObject):
         if symmetry_subgroup is not None: self.symmetry_subgroup = symmetry_subgroup
         if cart is not None: self.cart = cart
         if magmom is not None: self.magmom = magmom
+        if direct_vee is not None: self.direct_vee = direct_vee
 
         if parse_arg:
             _update_from_cmdargs_(self)

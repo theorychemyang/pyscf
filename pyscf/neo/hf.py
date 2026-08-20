@@ -599,6 +599,7 @@ class InteractionCoulomb:
         self.mf2 = mf2
         self.mf2_unrestricted = isinstance(self.mf2, scf.uhf.UHF)
         self.mol = self.mf1.mol + self.mf2.mol
+        self.mol.super_mol = self.mf1.mol.super_mol
         self.max_memory = max_memory
         self._eri = None # mol1: left; mol2: right
         self.direct_scf_tol = direct_scf_tol

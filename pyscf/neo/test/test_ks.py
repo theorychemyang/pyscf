@@ -30,9 +30,16 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(mf.scf(), -93.3670499232414, 6)
 
     def test_scf_epc17_2_dvee(self):
-        mol.direct_vee = True
-        mf = neo.KS(mol, xc='b3lyp5', epc='17-2')
+        mol_dvee = neo.M(atom='''H 0 0 0; C 0 0 1.064; N 0 0 2.220''',
+                         basis='ccpvdz', quantum_nuc=[0], direct_vee=True)
+        mf = neo.KS(mol_dvee, xc='b3lyp5', epc='17-2')
+        mol_dvee.direct_vee = False
+        self.assertTrue(all(not interaction.mol.direct_vee
+                            for interaction in mf.interactions.values()))
+        mol_dvee.direct_vee = True
         self.assertAlmostEqual(mf.scf(), -93.3670499232414, 6)
+        self.assertTrue(all(interaction._eri is None
+                            for interaction in mf.interactions.values()))
 
     def test_scf_epc17_2_UKS(self):
         mol.direct_vee = False
