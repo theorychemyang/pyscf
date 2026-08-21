@@ -262,17 +262,73 @@ def _make_single_nuc_mol(mol_n):
                    dump_input=False, parse_arg=False, verbose=0)
     return fake_mol
 
-def _make_nuc_aug_etb(fake_mol, beta):
-    with lib.temporary_env(addons, USE_VERSION_26_AUXBASIS=False):
-        return addons.aug_etb(fake_mol, beta=beta)
+def _nuc_aug_etb_basis(basis, beta, l_max_aux=None):
+    l_max = max(b[0] for b in basis)
+    emin_by_l = [1e99] * (l_max+1)
+    emax_by_l = [0] * (l_max+1)
+    for b in basis:
+        l = b[0]
+        if isinstance(b[1], (int, numpy.integer)):
+            e_c = numpy.array(b[2:])
+        else:
+            e_c = numpy.array(b[1:])
+        es = e_c[:,0]
+        cs = e_c[:,1:]
+        es = es[abs(cs).max(axis=1) > 1e-3]
+        emax_by_l[l] = max(es.max(), emax_by_l[l])
+        emin_by_l[l] = min(es.min(), emin_by_l[l])
 
-def _make_nuc_auxbasis(mol_n, nuc_auxbasis, nuc_auxbasis_beta=2.0):
+    # Nuclear orbital bases can contain higher angular momenta than the
+    # electronic configuration of the element.  Keep the auxiliary basis
+    # through the highest angular momentum in the nuclear orbital basis.
+    # H2O/def2-TZVP, PBE, beta=2.0 errors against exact NEO integrals (Eh):
+    # PB4D: D, -1.22866e-5 (29); F, -1.22713e-5 (43)
+    # PB5F: F, -3.19803e-5 (57); G, -3.20472e-5 (84)
+    # PB6G: G,  8.45403e-5 (100); H, 8.43853e-5 (144)
+    # Parentheses contain the number of auxiliary functions per proton.
+    if l_max_aux is None:
+        l_max_aux = l_max
+    l_max1 = l_max + 1
+    emin_by_l = numpy.array(emin_by_l)
+    emax_by_l = numpy.array(emax_by_l)
+    emax = emax_by_l[:,None] + emax_by_l
+    emin = emin_by_l[:,None] + emin_by_l
+
+    liljsum = numpy.arange(l_max1)[:,None] + numpy.arange(l_max1)
+    emax_by_l = numpy.array([emax[liljsum==ll].max() for ll in range(l_max_aux+1)])
+    emin_by_l = numpy.array([emin[liljsum==ll].min() for ll in range(l_max_aux+1)])
+
+    ns = numpy.log((emax_by_l+emin_by_l)/emin_by_l) / numpy.log(beta)
+    etb = []
+    for l, n in enumerate(numpy.ceil(ns).astype(int)):
+        if n > 0:
+            etb.append((l, n, emin_by_l[l], beta))
+    return etb
+
+def _make_nuc_aug_etb(fake_mol, beta, l_max_aux=None):
+    uniq_atoms = {a[0] for a in fake_mol._atom}
+    newbasis = {}
+    for symb in uniq_atoms:
+        basis = fake_mol._basis[symb]
+        etb = _nuc_aug_etb_basis(basis, beta, l_max_aux)
+        if etb:
+            newbasis[symb] = gto.expand_etbs(etb)
+            for l, n, emin, beta in etb:
+                logger.info(fake_mol, 'ETB for %s: l = %d, exps = %s * %g^n , n = 0..%d',
+                            symb, l, emin, beta, n-1)
+        else:
+            raise RuntimeError(f'Failed to generate even-tempered auxbasis for {symb}')
+    return newbasis
+
+def _make_nuc_auxbasis(mol_n, nuc_auxbasis, nuc_auxbasis_beta=2.0,
+                       nuc_auxbasis_lmax=None):
     ia = mol_n.atom_index
     label = mol_n.atom_symbol(ia)
 
     fake_mol = _make_single_nuc_mol(mol_n)
     if nuc_auxbasis is None or nuc_auxbasis == 'aug_etb':
-        return _make_nuc_aug_etb(fake_mol, nuc_auxbasis_beta)
+        return _make_nuc_aug_etb(fake_mol, nuc_auxbasis_beta,
+                                 nuc_auxbasis_lmax)
     if nuc_auxbasis == 'autoaux':
         return addons.autoaux(fake_mol)
     if nuc_auxbasis == 'autoabs':
@@ -302,8 +358,10 @@ def _make_nuc_auxbasis(mol_n, nuc_auxbasis, nuc_auxbasis_beta=2.0):
     raise TypeError('nuc_auxbasis must be None, a string, a basis list, '
                     'or a basis dictionary')
 
-def _make_nuc_auxmol(mol_n, nuc_auxbasis=None, nuc_auxbasis_beta=2.0):
-    auxbasis = _make_nuc_auxbasis(mol_n, nuc_auxbasis, nuc_auxbasis_beta)
+def _make_nuc_auxmol(mol_n, nuc_auxbasis=None, nuc_auxbasis_beta=2.0,
+                     nuc_auxbasis_lmax=None):
+    auxbasis = _make_nuc_auxbasis(mol_n, nuc_auxbasis, nuc_auxbasis_beta,
+                                  nuc_auxbasis_lmax)
     with open(os.devnull, 'w') as devnull:
         with contextlib.redirect_stderr(devnull):
             return addons.make_auxmol(mol_n, auxbasis)
@@ -528,11 +586,12 @@ def cholesky_eri_b_outcore(mol, erifile, auxbasis='weigend+etb', dataname='j3c',
 class DF(df.DF):
     '''build all e-e and e-n cderi'''
     _keys = df.DF._keys.union(['df_ne_scheme', 'nuc_auxbasis',
-                               'nuc_auxbasis_beta', 'df_ne_component_vint',
-                               'df_nn'])
+                               'nuc_auxbasis_beta', 'nuc_auxbasis_lmax',
+                               'df_ne_component_vint', 'df_nn'])
 
     def __init__(self, mol, auxbasis=None, df_ne_scheme='global', df_nn=False,
                  nuc_auxbasis=None, nuc_auxbasis_beta=2.0,
+                 nuc_auxbasis_lmax=None,
                  df_ne_component_vint=False):
         super().__init__(mol, auxbasis)
         self._cderi_names = list(self.mol.components.keys())
@@ -541,6 +600,7 @@ class DF(df.DF):
         self.df_ne_scheme = df_ne_scheme
         self.nuc_auxbasis = nuc_auxbasis
         self.nuc_auxbasis_beta = nuc_auxbasis_beta
+        self.nuc_auxbasis_lmax = nuc_auxbasis_lmax
         self.df_ne_component_vint = df_ne_component_vint
         self.df_nn = df_nn
         # Non-owning reference to the electronic component's ordinary DF
@@ -593,7 +653,8 @@ class DF(df.DF):
             if t == 'e':
                 continue
             auxmols.append(_make_nuc_auxmol(mol_n, self.nuc_auxbasis,
-                                            self.nuc_auxbasis_beta))
+                                            self.nuc_auxbasis_beta,
+                                            self.nuc_auxbasis_lmax))
         return _concat_auxmols(self.mol, auxmols)
 
     def make_auxmol_atom_major(self):
@@ -604,7 +665,8 @@ class DF(df.DF):
                 if t == 'e':
                     continue
                 auxmols.append(_make_nuc_auxmol(mol_n, self.nuc_auxbasis,
-                                                self.nuc_auxbasis_beta))
+                                                self.nuc_auxbasis_beta,
+                                                self.nuc_auxbasis_lmax))
             auxmol = _combine_auxbasis(self.mol, auxmols)
         return auxmol
 
@@ -1356,7 +1418,8 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
 
 def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
                 df_ne=False, df_nn=False, df_ne_scheme='global', nuc_auxbasis=None,
-                nuc_auxbasis_beta=2.0, df_ne_component_vint=False):
+                nuc_auxbasis_beta=2.0, nuc_auxbasis_lmax=None,
+                df_ne_component_vint=False):
     '''Apply density fitting to NEO SCF objects.
 
     If ``df_ne`` is false, only the electronic e-e Coulomb build is density
@@ -1376,9 +1439,10 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
     ``df_ne_scheme='global'`` is the default.  It builds one mixed auxiliary
     metric for the electronic and nuclear auxiliary functions and uses the same
     transformed tensor for e-e and e-n Coulomb builds.  The default nuclear
-    auxiliary basis is generated by PySCF's ``aug_etb`` recipe with the
+    auxiliary basis is generated by an ``aug_etb`` recipe with the
     exponent-sum range, which targets AO-product densities rather than AO
-    functions.
+    functions.  Its maximum angular momentum matches the nuclear orbital
+    basis rather than using the element's electronic configuration.
 
     ``nuc_auxbasis`` controls only the nuclear auxiliary functions in the
     global scheme.  Named nuclear bases such as ``'pb4d'`` can be used, but
@@ -1388,7 +1452,8 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
     these manual nuclear auxiliary bases the starting exponent is doubled
     relative to the NEO AO basis generator to match the equal-exponent product
     scale.  ``nuc_auxbasis_beta`` controls the spacing of the default
-    ``aug_etb`` nuclear auxiliary basis.
+    ``aug_etb`` nuclear auxiliary basis.  ``nuc_auxbasis_lmax`` controls its
+    maximum angular momentum and defaults to that of the nuclear AO basis.
 
     ``df_ne_component_vint`` controls an extra compatibility path for
     component-level calls such as ``mf.components['e'].get_fock()`` after a
@@ -1434,6 +1499,7 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
         with_df = DF(mol, auxbasis, df_ne_scheme=df_ne_scheme, df_nn=df_nn,
                      nuc_auxbasis=nuc_auxbasis,
                      nuc_auxbasis_beta=nuc_auxbasis_beta,
+                     nuc_auxbasis_lmax=nuc_auxbasis_lmax,
                      df_ne_component_vint=df_ne_component_vint)
 
     if with_df is not None and df_ne:
@@ -1446,6 +1512,7 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
         with_df.df_ne_scheme = df_ne_scheme
         with_df.nuc_auxbasis = nuc_auxbasis
         with_df.nuc_auxbasis_beta = nuc_auxbasis_beta
+        with_df.nuc_auxbasis_lmax = nuc_auxbasis_lmax
         with_df.df_ne_component_vint = df_ne_component_vint
         with_df.df_nn = df_nn
         with_df.max_memory = mf.max_memory
@@ -1622,6 +1689,7 @@ class _DFNEO:
                              df_ne_scheme=self.with_df.df_ne_scheme,
                              nuc_auxbasis=self.with_df.nuc_auxbasis,
                              nuc_auxbasis_beta=self.with_df.nuc_auxbasis_beta,
+                             nuc_auxbasis_lmax=self.with_df.nuc_auxbasis_lmax,
                              df_ne_component_vint=self.df_ne_component_vint,
                              df_nn=self.df_nn)
             self.components = mf.components
