@@ -162,7 +162,7 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
         vj, vk = td_grad.get_jk(mol, dm)
 
         if getattr(td_grad.base._scf, 'with_df', None):
-        # Create local variables for density fitting gradient
+            # Create local variables for density fitting gradient
             if not singlet:
                 raise NotImplementedError
             vhf_aux = vj.aux - vk.aux * 0.5 * hyb
@@ -181,7 +181,7 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
         vj = td_grad.get_j(mol, (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T))
 
         if getattr(td_grad.base._scf, 'with_df', None):
-        # Create local variables for density fitting gradient
+            # Create local variables for density fitting gradient
             if not singlet:
                 raise NotImplementedError
             vhf_aux = vj.aux
