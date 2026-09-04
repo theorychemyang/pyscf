@@ -5,7 +5,6 @@ Constrained nuclear-electronic orbital density functional theory
 '''
 
 import numpy
-import scipy
 import scipy.optimize
 from pyscf import symm
 from pyscf.data import nist
@@ -28,11 +27,6 @@ def _get_mo_energy_coeff_occ(mf, fock, s1e):
         mf.verbose = verbose
     return mo_energy, mo_coeff, mo_occ
 
-def _get_mo_coeff_occ(mf, fock, s1e):
-    _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)
-    return mo_coeff, mo_occ
-
-
 def analytic_position_jacobian(mo_energy, mo_coeff, mo_occ, int1e_r,
                                gap_tol=1e-14):
     '''
@@ -43,32 +37,32 @@ def analytic_position_jacobian(mo_energy, mo_coeff, mo_occ, int1e_r,
     mo_occ = numpy.asarray(mo_occ)
     int1e_r = numpy.asarray(int1e_r)
 
-    occupied = numpy.flatnonzero(mo_occ > 0)
-    if occupied.size != 1:
+    occidx = mo_occ > 0
+    viridx = mo_occ == 0
+    nocc = numpy.count_nonzero(occidx)
+    if nocc != 1:
         raise RuntimeError(
             'Analytic CNEO position Jacobian requires exactly one occupied '
-            f'nuclear orbital; found {occupied.size}.'
+            f'nuclear orbital; found {nocc}.'
         )
 
-    occ = occupied[0]
-    other = numpy.arange(mo_energy.size) != occ
-    energy_gap = mo_energy[occ] - mo_energy[other]
-    if numpy.any(numpy.abs(energy_gap) <= gap_tol):
+    e_a = mo_energy[viridx]
+    e_i = mo_energy[occidx]
+    e_ai = e_a[:,None] - e_i
+    if numpy.any(numpy.abs(e_ai) <= gap_tol):
         raise numpy.linalg.LinAlgError(
             'The occupied nuclear orbital is degenerate or nearly degenerate '
             'with another orbital; the analytic position Jacobian is not '
             'valid.'
         )
+    e_ai = 1 / e_ai
 
-    int1e_r_mo = numpy.einsum('pi,xpq,qj->xij', mo_coeff.conj(), int1e_r,
-                              mo_coeff, optimize=True)
-    coupling = int1e_r_mo[:, occ, other]
-    occupation = float(numpy.real(mo_occ[occ]))
-    jacobian = 2.0 * occupation * \
-        numpy.real(numpy.einsum('xa,ya,a->xy', coupling, coupling.conj(),
-                                1.0 / energy_gap, optimize=True))
+    orbo = mo_coeff[:,occidx]
+    orbv = mo_coeff[:,viridx]
+    coupling = numpy.matmul(numpy.matmul(orbo.conj().T, int1e_r), orbv)[:,0]
+    occupation = mo_occ[occidx][0]
+    jacobian = -2.0 * occupation * numpy.real((coupling * e_ai.T) @ coupling.conj().T)
     return 0.5 * (jacobian + jacobian.T)
-
 
 def _position_deviation(mf, mo_coeff, mo_occ, position_matrices=None):
     if position_matrices is None:
@@ -100,10 +94,32 @@ def get_position_error(mf, fock, s1e):
     return numpy.concatenate(deviations)
 
 
-def update_lagrange_multipliers(mf, fock0, s1e, max_cycle, tol=1e-15):
-    '''Apply Newton updates to the CNEO Lagrange multipliers.'''
-    gap_tol = mf.constraint_jacobian_gap_tol
-    minimum_step = mf.constraint_line_search_min_step
+def update_lagrange_multipliers(mf, fock0, s1e, one_step=False, tol=1e-15):
+    '''Update the CNEO Lagrange multipliers.'''
+    deviations = []
+    if not one_step:
+        for t, comp in mf.components.items():
+            if t.startswith('n'):
+                ia = comp.mol.atom_index
+                opt = solve_constraint(comp, fock0[t], s1e[t], mf.f[ia])
+                mf.f[ia] = opt.x
+                deviations.append(opt.fun)
+                if opt.success:
+                    logger.debug(mf, 'CNEO NUC constraint optimization succeeded.')
+                    logger.debug(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                                 (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
+                    logger.debug(mf, 'Position deviation: %s', opt.fun)
+                else:
+                    logger.warn(mf, 'CNEO NUC constraint optimization failed!')
+                    logger.warn(mf, 'scipy.optimize.least_squares message: %s',
+                                opt.message)
+                    logger.warn(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
+                                (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
+                    logger.warn(mf, 'Position deviation: %s', opt.fun)
+        return
+
+    gap_tol = 1e-14
+    minimum_step = 0.01
 
     for t in sorted(mf.components):
         if not t.startswith('n'):
@@ -117,12 +133,6 @@ def update_lagrange_multipliers(mf, fock0, s1e, max_cycle, tol=1e-15):
             _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp, fock, s1e[t])
             return _position_deviation(comp, mo_coeff, mo_occ)
 
-        def residual_vectorize(x):
-            x = numpy.asarray(x)
-            if x.ndim == 1:
-                return residual(x)
-            return numpy.apply_along_axis(residual, axis=0, arr=x)
-
         def evaluate(f_lagrange):
             fock = fock0[t] + numpy.einsum('xij,x->ij', comp.int1e_r, f_lagrange)
             mo_energy, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp,
@@ -135,19 +145,17 @@ def update_lagrange_multipliers(mf, fock0, s1e, max_cycle, tol=1e-15):
                                                       gap_tol)
             except (RuntimeError, numpy.linalg.LinAlgError) as err:
                 logger.warn(mf, '%s Falling back to numerical position Jacobian.', err)
-                result = scipy.differentiate.jacobian(residual_vectorize, f_lagrange,
-                                                      maxiter=1, order=2,initial_step=1e-3)
-                jacobian = result.df
+                displacements = numpy.eye(f_lagrange.size) * 1e-3
+                jacobian = numpy.column_stack([
+                    (residual(f_lagrange + displacement) - deviation) / 1e-3
+                    for displacement in displacements
+                ])
             return deviation, jacobian
 
         f_lagrange = numpy.asarray(mf.f[ia], dtype=float).copy()
         deviation, jacobian = evaluate(f_lagrange)
 
-        for cycle in range(max_cycle):
-            if numpy.max(numpy.abs(deviation)) < tol:
-                logger.debug(mf, 'CNEO constraint Newton update converged at '
-                             'cycle %d', cycle)
-                break
+        if numpy.max(numpy.abs(deviation)) >= tol:
 
             deviation_norm = numpy.linalg.norm(deviation)
             try:
@@ -159,33 +167,37 @@ def update_lagrange_multipliers(mf, fock0, s1e, max_cycle, tol=1e-15):
             if direction_norm == 0.0 or not numpy.isfinite(direction_norm):
                 logger.warn(mf, 'Invalid CNEO constraint Newton step for %s; '
                             'keeping the previous Lagrange multiplier', t)
-                break
-
-            step_size = 1.0
-            f_trial = f_lagrange + step_direction
-            trial_deviation, trial_jacobian = evaluate(f_trial)
-            trial_norm = numpy.linalg.norm(trial_deviation)
-
-            while trial_norm >= deviation_norm:
-                if step_size < minimum_step:
-                    break
-
-                slope = -deviation_norm / (step_size * direction_norm)
-                denominator = 2.0 * (trial_norm - deviation_norm - slope)
-                if denominator == 0.0 or not numpy.isfinite(denominator):
-                    step_size *= 0.5
-                else:
-                    step_size *= max(-slope / denominator, 0.1)
-
-                f_trial = f_lagrange + step_size * step_direction
-                trial_deviation, trial_jacobian = evaluate(f_trial)
+            else:
+                step_size = 1.0
+                f_trial = f_lagrange + step_direction
+                trial_deviation = residual(f_trial)
                 trial_norm = numpy.linalg.norm(trial_deviation)
 
-            f_lagrange = f_trial
-            deviation = trial_deviation
-            jacobian = trial_jacobian
+                while trial_norm >= deviation_norm:
+                    if step_size < minimum_step:
+                        break
+
+                    slope = -deviation_norm / (step_size * direction_norm)
+                    denominator = 2.0 * (trial_norm - deviation_norm - slope)
+                    if denominator == 0.0 or not numpy.isfinite(denominator):
+                        step_size *= 0.5
+                    else:
+                        step_size *= max(-slope / denominator, 0.1)
+
+                    f_trial = f_lagrange + step_size * step_direction
+                    trial_deviation = residual(f_trial)
+                    trial_norm = numpy.linalg.norm(trial_deviation)
+
+                if trial_norm < deviation_norm:
+                    f_lagrange = f_trial
+                    deviation = trial_deviation
+                else:
+                    logger.debug(mf, 'CNEO constraint line search failed for %s; '
+                                 'keeping the previous Lagrange multiplier', t)
 
         mf.f[ia] = f_lagrange
+        deviations.append(deviation)
+    return numpy.concatenate(deviations)
 
 
 def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
@@ -206,23 +218,21 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
         # but how to detect that? This is a global optimization problem.
         # TODO: may result in wrong symmetry with bad f guess, how to improve?
         fock = fock0 + numpy.einsum('xij,x->ij', mf.int1e_r, f_lagrange_guess)
-        mo_coeff, mo_occ = _get_mo_coeff_occ(mf, fock, s1e)
+        _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)
         mocc = mo_coeff[:,mo_occ>0]
-        if mocc.shape[1] == 1: # singly occupied
-            orbsym = mo_coeff.orbsym[mo_occ>0][0]
-            # For this symmetry, test SO matrix
-            symm_orb = mf.mol.symm_orb
-            irrep_id = mf.mol.irrep_id
-            nirrep = symm_orb.__len__()
-            important_axes = []
-            for idx, int1e_x in enumerate(mf.int1e_r_symm):
-                int1e_x_so = symm.symmetrize_matrix(int1e_x, symm_orb)
-                for ir in range(nirrep):
-                    if irrep_id[ir] == orbsym:
-                        if numpy.abs(int1e_x_so[ir]).max() > 1e-12: # NOTE: can adjust 1e-12
-                            important_axes.append(idx)
-        else:
-            important_axes = [x for x in range(mf.int1e_r.shape[0])]
+        assert mocc.shape[1] == 1 # singly occupied
+        orbsym = mo_coeff.orbsym[mo_occ>0][0]
+        # For this symmetry, test SO matrix
+        symm_orb = mf.mol.symm_orb
+        irrep_id = mf.mol.irrep_id
+        nirrep = symm_orb.__len__()
+        important_axes = []
+        for idx, int1e_x in enumerate(mf.int1e_r_symm):
+            int1e_x_so = symm.symmetrize_matrix(int1e_x, symm_orb)
+            for ir in range(nirrep):
+                if irrep_id[ir] == orbsym:
+                    if numpy.abs(int1e_x_so[ir]).max() > 1e-12: # NOTE: can adjust 1e-12
+                        important_axes.append(idx)
         if len(important_axes) == 0:
             logger.warn(mf, 'No important symmetry axes found! Fallback to no symm')
             important_axes = [x for x in range(mf.int1e_r.shape[0])]
@@ -254,6 +264,8 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
         return deviation, jacobian
 
     def position_deviation(f_lagrange):
+        '''Calculate position deviation from the Kohn-Sham orbital with
+        frozen unconstrained NEO Fock and provided Lagrange multiplier'''
         return evaluate(f_lagrange)[0]
 
     def position_jacobian(f_lagrange):
@@ -261,7 +273,7 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
 
     def position_deviation_numeric(f_lagrange):
         fock = fock0 + numpy.einsum('xij,x->ij', position_matrices, f_lagrange)
-        mo_coeff, mo_occ = _get_mo_coeff_occ(mf, fock, s1e)
+        _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)
         return _position_deviation(mf, mo_coeff, mo_occ, position_matrices)
 
     #opt = scipy.optimize.root(position_deviation, f_lagrange_guess, method='hybr')

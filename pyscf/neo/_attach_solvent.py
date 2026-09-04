@@ -68,7 +68,7 @@ class NEOSCFWithSolvent(_Solvation):
     def get_fock(self, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
                  diis=None, diis_start_cycle=None, level_shift_factor=None,
                  damp_factor=None, fock_last=None, diis_pos='both',
-                 diis_type=3, constraint_update=True):
+                 diis_type=4, constraint_update=True):
         if dm is None: dm = self.make_rdm1()
 
         # DIIS was called inside super().get_fock. v_solvent, as a function of

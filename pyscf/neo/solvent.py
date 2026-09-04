@@ -184,7 +184,7 @@ def _for_scf_neo(mf, solvent_obj, dm=None):
         def get_fock(self, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
                      diis=None, diis_start_cycle=None, level_shift_factor=None,
                      damp_factor=None, fock_last=None, diis_pos='both',
-                     diis_type=3, constraint_update=True):
+                     diis_type=4, constraint_update=True):
             # DIIS was called inside oldMF.get_fock. v_solvent, as a function of
             # dm, should be extrapolated as well. To enable it, v_solvent has to be
             # added to the fock matrix before DIIS was called.
