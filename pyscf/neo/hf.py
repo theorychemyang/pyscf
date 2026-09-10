@@ -334,36 +334,19 @@ class ComponentSCF(Component):
         '''Support fractional occupation. For nucleus, make sure it is a single particle'''
         if mo_energy is None: mo_energy = self.mo_energy
         if self.is_nucleus:
-            mo_occ = numpy.zeros_like(mo_energy)
             if self.mol.symmetry:
                 if self.nuc_occ_state != 0:
                     raise NotImplementedError('With symmetry the nucleus must occupy ground state.')
-                # MO's are not sorted, but grouped according to symmetry
-                # copied from scf.hf_symm
-                mol = self.mol
-                orbsym = self.get_orbsym(mo_coeff)
-                rest_idx = numpy.ones(mo_occ.size, dtype=bool)
-                nelec_fix = 0
-                for i, ir in enumerate(mol.irrep_id):
-                    irname = mol.irrep_name[i]
-                    if irname in self.irrep_nelec:
-                        ir_idx = numpy.where(orbsym == ir)[0]
-                        n = self.irrep_nelec[irname]
-                        occ_sort = numpy.argsort(mo_energy[ir_idx].round(9), kind='stable')
-                        occ_idx  = ir_idx[occ_sort[:n//2]]
-                        mo_occ[occ_idx] = self.mol.nnuc
-                        nelec_fix += n
-                        rest_idx[ir_idx] = False
-                nelec_float = mol.nelectron - nelec_fix
-                assert (nelec_float >= 0)
-                if nelec_float > 0:
-                    rest_idx = numpy.where(rest_idx)[0]
-                    occ_sort = numpy.argsort(mo_energy[rest_idx].round(9), kind='stable')
-                    occ_idx  = rest_idx[occ_sort[:nelec_float//2]]
-                    mo_occ[occ_idx] = self.mol.nnuc
-
+                # Nuclear molecules use two formal electrons for RHF orbital
+                # selection; the occupied orbital carries nnuc nuclei instead.
+                # Log nuclear occupations below, rather than the formal RHF pair.
+                with lib.temporary_env(self, verbose=logger.QUIET):
+                    mo_occ = super().get_occ(mo_energy, mo_coeff)
+                mo_occ *= self.mol.nnuc / 2
                 assert numpy.sum(mo_occ > 0) == 1 # ensure singly occupied
 
+                mol = self.mol
+                orbsym = self.get_orbsym(mo_coeff)
                 vir_idx = (mo_occ==0)
                 if self.verbose >= logger.INFO and numpy.count_nonzero(vir_idx) > 0:
                     ehomo = max(mo_energy[~vir_idx])
@@ -385,6 +368,7 @@ class ComponentSCF(Component):
                     scf.hf_symm._dump_mo_energy(mol, mo_energy, mo_occ, ehomo, elumo, orbsym,
                                                 title='CNEO NUC ', verbose=self.verbose)
             else:
+                mo_occ = numpy.zeros_like(mo_energy)
                 e_idx = numpy.argsort(mo_energy)
                 e_sort = mo_energy[e_idx]
                 nmo = mo_energy.size
@@ -1163,8 +1147,13 @@ class HF(scf.hf.SCF):
         self.unrestricted = unrestricted
         self.components = {}
         for t, comp in self.mol.components.items():
+            # Keep symmetry dispatch without selecting the isolated HF1e solver.
+            if not comp.symmetry or comp.groupname == 'C1':
+                RHF, UHF = scf.hf.RHF, scf.uhf.UHF
+            else:
+                RHF, UHF = scf.hf_symm.RHF, scf.uhf_symm.UHF
             if t.startswith('n'):
-                self.components[t] = general_scf(scf.RHF(comp),
+                self.components[t] = general_scf(RHF(comp),
                                                  charge=-1. * self.mol.atom_charge(comp.atom_index),
                                                  mass=self.mol.mass[comp.atom_index]
                                                       * nist.ATOMIC_MASS / nist.E_MASS,
@@ -1172,12 +1161,12 @@ class HF(scf.hf.SCF):
                                                  nuc_occ_state=0)
             else:
                 if self.unrestricted:
-                    mf = scf.UHF(comp)
+                    mf = UHF(comp)
                 else:
                     if getattr(comp, 'nhomo', None) is not None or comp.spin != 0:
-                        mf = scf.UHF(comp)
+                        mf = UHF(comp)
                     else:
-                        mf = scf.RHF(comp)
+                        mf = RHF(comp)
                     # TODO: ROHF?
                 charge = 1.
                 if t.startswith('p'):
@@ -1833,40 +1822,42 @@ class HF(scf.hf.SCF):
         if mol is not None:
             self.mol = mol
         super().reset(mol=mol)
-        if sorted(self.components.keys()) == sorted(self.mol.components.keys()):
-            # quantum nuc is the same, reset each component
-            for t, comp in self.components.items():
-                comp.reset(self.mol.components[t])
-                comp._vint = None
-            for t, comp in self.interactions.items():
-                comp._eri = None
-                comp._vhfopt = None
-        else:
-            # quantum nuc is different, need to rebuild
-            self.components.clear()
-            for t, comp in self.mol.components.items():
-                if t.startswith('n'):
-                    self.components[t] = general_scf(scf.RHF(comp),
-                                                     charge=-1. * self.mol.atom_charge(comp.atom_index),
-                                                     mass=self.mol.mass[comp.atom_index] * nist.ATOMIC_MASS
-                                                          / nist.E_MASS,
-                                                     is_nucleus=True,
-                                                     nuc_occ_state=0)
-                else:
-                    if self.unrestricted:
-                        mf = scf.UHF(comp)
-                    else:
-                        if getattr(comp, 'nhomo', None) is not None or comp.spin != 0:
-                            mf = scf.UHF(comp)
-                        else:
-                            mf = scf.RHF(comp)
-                    charge = 1.
-                    if t.startswith('p'):
-                        charge = -1.
-                    self.components[t] = general_scf(mf, charge=charge)
-            self.interactions.clear()
-            self.interactions.update(generate_interactions(self.components, InteractionCoulomb,
-                                                           self.max_memory, self.direct_scf_tol))
+        components = self.components.copy()
+        if components.keys() != self.mol.components.keys():
+            self.mo_coeff = None
+        self.components.clear()
+        for t, comp in self.mol.components.items():
+            is_nucleus = t.startswith('n')
+            unrestricted = not is_nucleus and (self.unrestricted or comp.spin != 0 or
+                                               getattr(comp, 'nhomo', None) is not None)
+            symmetry = comp.symmetry and comp.groupname != 'C1'
+            if symmetry:
+                mf_class = scf.uhf_symm.UHF if unrestricted else scf.hf_symm.RHF
+            else:
+                mf_class = scf.uhf.UHF if unrestricted else scf.hf.RHF
+            mf = components.get(t)
+            # Nuclear membership and electronic spin can change independently.
+            # Keep compatible component objects, including their DF decoration.
+            if (isinstance(mf, mf_class) and
+                (mf.mol.symmetry and mf.mol.groupname != 'C1') == symmetry):
+                mf.reset(comp)
+            else:
+                mf = mf_class(comp)
+                self.mo_coeff = None
+            if is_nucleus:
+                self.components[t] = general_scf(mf,
+                                                 charge=-1. * self.mol.atom_charge(comp.atom_index),
+                                                 mass=self.mol.mass[comp.atom_index] * nist.ATOMIC_MASS
+                                                      / nist.E_MASS,
+                                                 is_nucleus=True,
+                                                 nuc_occ_state=getattr(mf, 'nuc_occ_state', 0))
+            else:
+                charge = -1. if t.startswith('p') else 1.
+                self.components[t] = general_scf(mf, charge=charge)
+        # Recreate pair molecules and spin flags from the reset components.
+        self.interactions.clear()
+        self.interactions.update(generate_interactions(self.components, InteractionCoulomb,
+                                                       self.max_memory, self.direct_scf_tol))
 
         return self
 

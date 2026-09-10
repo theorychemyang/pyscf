@@ -3,9 +3,32 @@
 import numpy
 import unittest
 from unittest import mock
-from pyscf import neo
+from pyscf import neo, scf
 
 class KnownValues(unittest.TestCase):
+    def test_scanner_spin(self):
+        mol1 = neo.M(atom='H 0 0 0', basis='sto-3g', nuc_basis='pb4d',
+                     quantum_nuc=[0], spin=1)
+        mol = neo.M(atom='H 0 0 0; Li 0 0 1.6', basis='sto-3g',
+                    nuc_basis='pb4d', quantum_nuc=[0])
+        mol2 = neo.M(atom='H 0 0 0; Li 0 0 1.6', basis='sto-3g',
+                     nuc_basis='pb4d', quantum_nuc=[0], charge=1, spin=1)
+        mf = neo.HF(mol1)
+        mf.conv_tol = 1e-10
+        scanner = mf.as_scanner()
+        scanner(mol1)
+        mf_e = scanner.components['e']
+        for mol_test, unrestricted in ((mol2, False), (mol, False), (mol, True)):
+            scanner.unrestricted = unrestricted
+            mf_ref = neo.HF(mol_test, unrestricted=unrestricted)
+            mf_ref.conv_tol = 1e-10
+            self.assertAlmostEqual(scanner(mol_test), mf_ref.scf(), 8)
+            self.assertEqual(isinstance(scanner.components['e'], scf.uhf.UHF),
+                             unrestricted or mol_test.spin != 0)
+            if mol_test is mol2:
+                self.assertIs(scanner.components['e'], mf_e)
+                self.assertNotIsInstance(mf_e, scf.uhf.HF1e)
+
     def test_scf(self):
         mol = neo.Mole()
         mol.build(atom='''H 0 0 0; C 0 0 1.064; N 0 0 2.220''', basis='ccpvdz', quantum_nuc=[0])

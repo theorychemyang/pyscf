@@ -433,9 +433,14 @@ class KS(hf.HF):
         self.epc = epc # Electron-proton correlation
 
         for t, comp in self.mol.components.items():
+            # HF components use NEO's one-particle treatment, not HF1e.scf.
+            if not comp.symmetry or comp.groupname == 'C1':
+                RHF, UHF = scf.hf.RHF, scf.uhf.UHF
+            else:
+                RHF, UHF = scf.hf_symm.RHF, scf.uhf_symm.UHF
             if t.startswith('n'):
                 if self.epc is None:
-                    mf = scf.RHF(comp)
+                    mf = RHF(comp)
                 else:
                     mf = dft.RKS(comp, xc='HF')
                 self.components[t] = hf.general_scf(mf,
@@ -447,18 +452,18 @@ class KS(hf.HF):
             else:
                 if self.unrestricted:
                     if self.epc is None and self.xc_e.upper() == 'HF':
-                        mf = scf.UHF(comp)
+                        mf = UHF(comp)
                     else:
                         mf = dft.UKS(comp, xc=self.xc_e)
                 else:
                     if getattr(comp, 'nhomo', None) is not None or comp.spin != 0:
                         if self.epc is None and self.xc_e.upper() == 'HF':
-                            mf = scf.UHF(comp)
+                            mf = UHF(comp)
                         else:
                             mf = dft.UKS(comp, xc=self.xc_e)
                     else:
                         if self.epc is None and self.xc_e.upper() == 'HF':
-                            mf = scf.RHF(comp)
+                            mf = RHF(comp)
                         else:
                             mf = dft.RKS(comp, xc=self.xc_e)
                 charge = 1.
@@ -591,60 +596,58 @@ class KS(hf.HF):
         if mol is not None:
             self.mol = mol
         scf.hf.SCF.reset(self, mol=mol) # do not call neo.HF.reset
-        if sorted(self.components.keys()) == sorted(self.mol.components.keys()):
-            # quantum nuc is the same, reset each component
-            for t, comp in self.components.items():
-                comp.reset(self.mol.components[t])
-                comp._vint = None
-            for t, comp in self.interactions.items():
-                comp._eri = None
-                comp._vhfopt = None
-                # reset grids in interactions
-                comp.grids = None
-                comp._elec_grids_hash = None
-                comp._skip_epc = False
-        else:
-            # quantum nuc is different, need to rebuild
-            self.components.clear()
-            for t, comp in self.mol.components.items():
-                if t.startswith('n'):
-                    if self.epc is None:
-                        mf = scf.RHF(comp)
-                    else:
-                        mf = dft.RKS(comp, xc='HF')
-                    self.components[t] = hf.general_scf(mf,
-                                                        charge=-1. * self.mol.atom_charge(comp.atom_index),
-                                                        mass=self.mol.mass[comp.atom_index] * nist.ATOMIC_MASS
-                                                             / nist.E_MASS,
-                                                        is_nucleus=True,
-                                                        nuc_occ_state=0)
+        components = self.components.copy()
+        if components.keys() != self.mol.components.keys():
+            self.mo_coeff = None
+        self.components.clear()
+        for t, comp in self.mol.components.items():
+            is_nucleus = t.startswith('n')
+            unrestricted = not is_nucleus and (self.unrestricted or comp.spin != 0 or
+                                               getattr(comp, 'nhomo', None) is not None)
+            mf = components.get(t)
+            # Preserve the existing HF/KS method; select a method only for new components.
+            if mf is None:
+                is_dft = self.epc is not None or not is_nucleus and self.xc_e.upper() != 'HF'
+            else:
+                is_dft = isinstance(mf, scf.hf.KohnShamDFT)
+            symmetry = comp.symmetry and comp.groupname != 'C1'
+            if is_dft:
+                if symmetry:
+                    mf_class = dft.uks_symm.UKS if unrestricted else dft.rks_symm.RKS
                 else:
-                    if self.unrestricted:
-                        if self.epc is None and self.xc_e.upper() == 'HF':
-                            mf = scf.UHF(comp)
-                        else:
-                            mf = dft.UKS(comp, xc=self.xc_e)
-                    else:
-                        if getattr(comp, 'nhomo', None) is not None or comp.spin != 0:
-                            if self.epc is None and self.xc_e.upper() == 'HF':
-                                mf = scf.UHF(comp)
-                            else:
-                                mf = dft.UKS(comp, xc=self.xc_e)
-                        else:
-                            if self.epc is None and self.xc_e.upper() == 'HF':
-                                mf = scf.RHF(comp)
-                            else:
-                                mf = dft.RKS(comp, xc=self.xc_e)
-                    charge = 1.
-                    if t.startswith('p'):
-                        charge = -1.
-                    self.components[t] = hf.general_scf(mf, charge=charge)
-            self.interactions.clear()
-            self.interactions.update(hf.generate_interactions(self.components,
-                                                              InteractionCorrelation,
-                                                              self.max_memory,
-                                                              self.direct_scf_tol,
-                                                              epc=self.epc))
+                    mf_class = dft.uks.UKS if unrestricted else dft.rks.RKS
+            else:
+                if symmetry:
+                    mf_class = scf.uhf_symm.UHF if unrestricted else scf.hf_symm.RHF
+                else:
+                    mf_class = scf.uhf.UHF if unrestricted else scf.hf.RHF
+            if (isinstance(mf, mf_class) and
+                (mf.mol.symmetry and mf.mol.groupname != 'C1') == symmetry):
+                mf.reset(comp)
+            else:
+                if is_dft:
+                    xc = mf.xc if mf is not None else ('HF' if is_nucleus else self.xc_e)
+                    mf = mf_class(comp, xc=xc)
+                else:
+                    mf = mf_class(comp)
+                self.mo_coeff = None
+            if is_nucleus:
+                self.components[t] = hf.general_scf(mf,
+                                                    charge=-1. * self.mol.atom_charge(comp.atom_index),
+                                                    mass=self.mol.mass[comp.atom_index] * nist.ATOMIC_MASS
+                                                         / nist.E_MASS,
+                                                    is_nucleus=True,
+                                                    nuc_occ_state=getattr(mf, 'nuc_occ_state', 0))
+            else:
+                charge = -1. if t.startswith('p') else 1.
+                self.components[t] = hf.general_scf(mf, charge=charge)
+        # Recreate pair molecules, spin flags and EPC state after class selection.
+        self.interactions.clear()
+        self.interactions.update(hf.generate_interactions(self.components,
+                                                          InteractionCorrelation,
+                                                          self.max_memory,
+                                                          self.direct_scf_tol,
+                                                          epc=self.epc))
         # EPC grids
         self._epc_n_types = None
         self._skip_epc = False

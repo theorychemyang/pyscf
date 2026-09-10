@@ -15,6 +15,21 @@ def tearDownModule():
     del mol, mol_symm
 
 class KnownValues(unittest.TestCase):
+    def test_scf_symmetry(self):
+        for epc in (None, '17-2'):
+            with self.subTest(epc=epc):
+                energies = []
+                for symmetry in (False, True):
+                    mol = neo.M(atom='H 0 0 0; C 0 0 1.064; N 0 0 2.220',
+                                basis='sto3g', nuc_basis='pb4d', quantum_nuc=[0],
+                                symmetry=symmetry, verbose=0)
+                    mf = neo.CDFT(mol, xc='pbe', epc=epc)
+                    mf.conv_tol = 1e-10
+                    energies.append(mf.scf())
+                    self.assertTrue(mf.converged)
+                    self.assertAlmostEqual(mf.mo_occ['n0'].sum(), 1.)
+                self.assertAlmostEqual(energies[0], energies[1], 7)
+
     def test_scf_noepc(self):
         mf = neo.CDFT(mol, xc='b3lyp5', epc=None)
         mf.conv_tol = 1e-11

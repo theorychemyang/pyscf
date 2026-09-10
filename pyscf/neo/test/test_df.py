@@ -1,9 +1,57 @@
 #!/usr/bin/env python
 
 import unittest
-from pyscf import neo
+from pyscf import neo, scf
 
 class KnownValues(unittest.TestCase):
+    def test_scanner_spin(self):
+        mol = neo.M(atom='H 0 0 0; Li 0 0 1.6', basis='sto-3g',
+                    nuc_basis='pb4d', quantum_nuc=[0])
+        mol2 = neo.M(atom='H 0 0 0; Li 0 0 1.6', basis='sto-3g',
+                     nuc_basis='pb4d', quantum_nuc=[0], charge=1, spin=1)
+        for df_ne in (None, False, True):
+            with self.subTest(df_ne=df_ne):
+                mf = neo.CDFT(mol, xc='PBE0')
+                if df_ne is not None:
+                    mf = mf.density_fit(auxbasis='weigend', df_ne=df_ne)
+                mf.conv_tol = 1e-10
+                scanner = mf.nuc_grad_method().as_scanner()
+                scanner(mol)
+                for mol_test, unrestricted in ((mol2, False), (mol, False), (mol, True)):
+                    scanner.base.unrestricted = unrestricted
+                    mf_ref = neo.CDFT(mol_test, xc='PBE0', unrestricted=unrestricted)
+                    if df_ne is not None:
+                        mf_ref = mf_ref.density_fit(auxbasis='weigend', df_ne=df_ne)
+                    mf_ref.conv_tol = 1e-10
+                    e, grad = scanner(mol_test)
+                    self.assertAlmostEqual(e, mf_ref.scf(), 8)
+                    self.assertTrue(abs(grad-mf_ref.Gradients().kernel()).max() < 1e-6)
+                    self.assertEqual(isinstance(scanner.base.components['e'], scf.uhf.UHF),
+                                     unrestricted or mol_test.spin != 0)
+
+    def test_scanner_different_mol(self):
+        mol = neo.M(atom='H 0 0 0; F 0 0 0.9', basis='sto-3g',
+                    nuc_basis='pb4d', quantum_nuc=[0])
+        mf = neo.CDFT(mol, xc='LDA,VWN').density_fit(auxbasis='weigend',
+                                                     df_ne=False)
+        mf.conv_tol = 1e-10
+        grad_scanner = mf.nuc_grad_method().as_scanner()
+        grad_scanner(mol)
+        mf_e = grad_scanner.base.components['e']
+
+        mol2 = neo.M(atom='O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587',
+                     basis='sto-3g', nuc_basis='pb4d', quantum_nuc=[1,2])
+        for mol_test in (mol2, mol):
+            mf_ref = neo.CDFT(mol_test, xc='LDA,VWN').density_fit(
+                auxbasis='weigend', df_ne=False)
+            mf_ref.conv_tol = 1e-10
+            e_ref = mf_ref.scf()
+            grad_ref = mf_ref.Gradients().grad()
+            e, grad = grad_scanner(mol_test)
+            self.assertIs(grad_scanner.base.components['e'], mf_e)
+            self.assertAlmostEqual(e, e_ref, 9)
+            self.assertTrue(abs(grad-grad_ref).max() < 1e-8)
+
     def test_hf_direct_scf(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
                     quantum_nuc=[0])

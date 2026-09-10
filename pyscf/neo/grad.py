@@ -515,12 +515,13 @@ class Gradients(rhf_grad.GradientsBase):
         if mol is not None:
             self.mol = mol
         self.base.reset(self.mol)
-        if sorted(self.components.keys()) == sorted(self.mol.components.keys()):
-            # quantum nuc is the same, reset each component
+        if (self.components.keys() == self.base.components.keys() and
+            all(comp.base is self.base.components[t] for t, comp in self.components.items())):
+            # Reuse gradients only while their underlying SCF objects survive.
             for t, comp in self.components.items():
                 comp.reset(self.mol.components[t])
         else:
-            # quantum nuc is different, need to rebuild
+            # Nuclear membership or an SCF method class changed.
             self.components.clear()
             for t, comp in self.base.components.items():
                 self.components[t] = general_grad(comp.nuc_grad_method())

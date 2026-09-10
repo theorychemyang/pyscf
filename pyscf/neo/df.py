@@ -1550,14 +1550,14 @@ def density_fit(mf, auxbasis=None, with_df=None, ee_only_dfj=False,
     _is_nucleus = mf.components['e'].is_nucleus
     _nuc_occ_state = mf.components['e'].nuc_occ_state
     base = mf.components['e'].undo_component()
-    # with_df is None or with_df is DF class in this file, need to rebuild elec DF
+    # Rebuild electronic DF, retaining an ordinary electronic with_df if supplied.
     if isinstance(base, df_jk._DFHF):
         base = base.undo_df()
     if with_df is not None:
         auxbasis = with_df.auxbasis
     mf.components['e'] = neo.hf.general_scf(df_jk.density_fit(base,
                                                               auxbasis=auxbasis,
-                                                              with_df=None,
+                                                              with_df=with_df if not df_ne else None,
                                                               only_dfj=ee_only_dfj),
                                             charge=_charge, mass=_mass,
                                             is_nucleus=_is_nucleus,
@@ -1677,23 +1677,40 @@ class _DFNEO:
         return obj
 
     def reset(self, mol=None):
-        component_keys = set(self.components)
+        e_with_df = self.components['e'].with_df
         if self.with_df is not None:
             self.with_df.reset(mol)
         super().reset(mol)
-        if component_keys != set(self.components):
-            mf = density_fit(self, auxbasis=self.with_df.auxbasis,
-                             with_df=self.with_df,
-                             ee_only_dfj=self.ee_only_dfj,
-                             df_ne=self.df_ne,
-                             df_ne_scheme=self.with_df.df_ne_scheme,
-                             nuc_auxbasis=self.with_df.nuc_auxbasis,
-                             nuc_auxbasis_beta=self.with_df.nuc_auxbasis_beta,
-                             nuc_auxbasis_lmax=self.with_df.nuc_auxbasis_lmax,
-                             df_ne_component_vint=self.df_ne_component_vint,
-                             df_nn=self.df_nn)
-            self.components = mf.components
-            self.interactions = mf.interactions
+        mf_e = self.components['e']
+        if not isinstance(mf_e, df_jk._DFHF):
+            # A spin or symmetry change replaced the electronic component.
+            # Restore only its ordinary DF wrapper, retaining the DF settings.
+            e_with_df.reset(mf_e.mol)
+            mf_e = neo.hf.general_scf(df_jk.density_fit(mf_e.undo_component(),
+                                                        with_df=e_with_df,
+                                                        only_dfj=self.ee_only_dfj),
+                                      charge=mf_e.charge, mass=mf_e.mass,
+                                      is_nucleus=mf_e.is_nucleus,
+                                      nuc_occ_state=mf_e.nuc_occ_state)
+            self.components['e'] = mf_e
+            # The parent already constructed the pair molecules and spin flags.
+            # Only the electronic SCF reference changes when DF is restored.
+            for interaction in self.interactions.values():
+                if interaction.mf1_type == 'e':
+                    interaction.mf1 = mf_e
+                if interaction.mf2_type == 'e':
+                    interaction.mf2 = mf_e
+        if self.df_ne:
+            self.with_df._charges.clear()
+            self.with_df._unrestricted.clear()
+            for t, comp in self.components.items():
+                self.with_df._charges[t] = comp.charge
+                self.with_df._unrestricted[t] = isinstance(comp, scf.uhf.UHF)
+            if self.with_df.df_ne_scheme == 'global':
+                self.with_df._elec_with_df = mf_e.with_df
+                if not isinstance(mf_e, _SeparateJKDF):
+                    lib.set_class(mf_e, (_SeparateJKDF, mf_e.__class__))
+                mf_e.with_df._global_aux_j_with_df = self.with_df
         return self
 
     def _get_init_guess_vint(self, output_components, dm_guess):
