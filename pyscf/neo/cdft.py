@@ -70,18 +70,53 @@ def _position_deviation(mf, mo_coeff, mo_occ, position_matrices=None):
     dm = mf.make_rdm1(mo_coeff, mo_occ)
     return numpy.einsum('xij,ji->x', position_matrices, dm).real
 
+def _get_constraint_symmetry(mf, mo_coeff, mo_occ):
+    mocc = mo_coeff[:,mo_occ>0]
+    assert mocc.shape[1] == 1 # singly occupied
+    orbsym = mo_coeff.orbsym[mo_occ>0][0]
+    # For this symmetry, test SO matrix
+    symm_orb = mf.mol.symm_orb
+    irrep_id = mf.mol.irrep_id
+    nirrep = symm_orb.__len__()
+    important_axes = []
+    for idx, int1e_x in enumerate(mf.int1e_r_symm):
+        int1e_x_so = symm.symmetrize_matrix(int1e_x, symm_orb)
+        for ir in range(nirrep):
+            if irrep_id[ir] == orbsym:
+                if numpy.abs(int1e_x_so[ir]).max() > 1e-12: # NOTE: can adjust 1e-12
+                    important_axes.append(idx)
+    if len(important_axes) == 0:
+        logger.warn(mf, 'No important symmetry axes found! Fallback to no symm')
+        important_axes = [x for x in range(mf.int1e_r.shape[0])]
+    return important_axes, mf.int1e_r_symm[important_axes]
+
 def get_position_error(mf, fock, s1e):
     '''Return concatenated position-constraint errors for quantum nuclei.'''
     deviations = []
     for t in sorted(mf.components):
-        if t.startswith('n'):
-            comp = mf.components[t]
-            _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp, fock[t], s1e[t])
-            deviations.append(_position_deviation(comp, mo_coeff, mo_occ))
+        if not t.startswith('n'):
+            continue
+
+        comp = mf.components[t]
+
+        _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp, fock[t], s1e[t])
+
+        if comp.int1e_r_symm is not None:
+            important_axes, position_matrices = _get_constraint_symmetry(comp, mo_coeff, mo_occ)
+            deviation = _position_deviation(comp, mo_coeff, mo_occ, position_matrices)
+            deviation_full = numpy.zeros(comp.int1e_r.shape[0])
+            for i, idx in enumerate(important_axes):
+                deviation_full[idx] = deviation[i]
+            deviation = comp.mol._symm_axes.T @ deviation_full
+        else:
+            deviation = _position_deviation(comp, mo_coeff, mo_occ)
+
+        deviations.append(deviation)
+
     return numpy.concatenate(deviations)
 
-
-def update_lagrange_multipliers(mf, fock0, s1e, one_step=False, tol=1e-15):
+def update_lagrange_multipliers(mf, fock0, s1e, one_step=False, tol=1e-15,
+                                gap_tol=1e-14, minimum_step=0.01):
     '''Update the CNEO Lagrange multipliers.'''
     deviations = []
     if not one_step:
@@ -103,10 +138,7 @@ def update_lagrange_multipliers(mf, fock0, s1e, one_step=False, tol=1e-15):
                     logger.warn(mf, 'Lagrange multiplier of %s(%i) atom: %s' %
                                 (mf.mol.atom_symbol(ia), ia, mf.f[ia]))
                     logger.warn(mf, 'Position deviation: %s', opt.fun)
-        return
-
-    gap_tol = 1e-14
-    minimum_step = 0.01
+        return numpy.concatenate(deviations)
 
     for t in sorted(mf.components):
         if not t.startswith('n'):
@@ -115,20 +147,42 @@ def update_lagrange_multipliers(mf, fock0, s1e, one_step=False, tol=1e-15):
         comp = mf.components[t]
         ia = comp.mol.atom_index
 
-        def residual(f_lagrange):
+        f_lagrange = numpy.asarray(mf.f[ia], dtype=float).copy()
+
+        if comp.int1e_r_symm is not None:
+            # Detect the occupied nuclear orbital symmetry using the current f.
             fock = fock0[t] + numpy.einsum('xij,x->ij', comp.int1e_r, f_lagrange)
+
             _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp, fock, s1e[t])
-            return _position_deviation(comp, mo_coeff, mo_occ)
+
+            important_axes, position_matrices = _get_constraint_symmetry(comp, mo_coeff, mo_occ)
+
+            # Cartesian -> symmetry-axis coordinates, then remove forbidden axes.
+            f_lagrange = comp.mol._symm_axes @ f_lagrange
+            f_lagrange = f_lagrange[important_axes]
+
+        else:
+            important_axes = None
+            position_matrices = comp.int1e_r
+
+        def residual(f_lagrange):
+            fock = fock0[t] + numpy.einsum('xij,x->ij', position_matrices,
+                                           f_lagrange)
+
+            _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp, fock, s1e[t])
+
+            return _position_deviation(comp, mo_coeff, mo_occ, position_matrices)
 
         def evaluate(f_lagrange):
-            fock = fock0[t] + numpy.einsum('xij,x->ij', comp.int1e_r, f_lagrange)
-            mo_energy, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp,
-                                                                   fock,
-                                                                   s1e[t])
-            deviation = _position_deviation(comp, mo_coeff, mo_occ)
+            fock = fock0[t] + numpy.einsum('xij,x->ij', position_matrices, f_lagrange)
+
+            mo_energy, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp, fock, s1e[t])
+
+            deviation = _position_deviation(comp, mo_coeff, mo_occ, position_matrices)
+
             try:
                 jacobian = analytic_position_jacobian(mo_energy, mo_coeff,
-                                                      mo_occ, comp.int1e_r,
+                                                      mo_occ, position_matrices,
                                                       gap_tol)
             except (RuntimeError, numpy.linalg.LinAlgError) as err:
                 logger.warn(mf, '%s Falling back to numerical position Jacobian.', err)
@@ -139,7 +193,6 @@ def update_lagrange_multipliers(mf, fock0, s1e, one_step=False, tol=1e-15):
                 ])
             return deviation, jacobian
 
-        f_lagrange = numpy.asarray(mf.f[ia], dtype=float).copy()
         deviation, jacobian = evaluate(f_lagrange)
 
         if numpy.max(numpy.abs(deviation)) >= tol:
@@ -182,7 +235,20 @@ def update_lagrange_multipliers(mf, fock0, s1e, one_step=False, tol=1e-15):
                     logger.debug(mf, 'CNEO constraint line search failed for %s; '
                                  'keeping the previous Lagrange multiplier', t)
 
-        mf.f[ia] = f_lagrange
+        if important_axes is not None:
+            f_lagrange_full = numpy.zeros(comp.int1e_r.shape[0])
+            deviation_full = numpy.zeros(comp.int1e_r.shape[0])
+
+            for i, idx in enumerate(important_axes):
+                f_lagrange_full[idx] = f_lagrange[i]
+                deviation_full[idx] = deviation[i]
+
+            mf.f[ia] = comp.mol._symm_axes.T @ f_lagrange_full
+            deviation = comp.mol._symm_axes.T @ deviation_full
+
+        else:
+            mf.f[ia] = f_lagrange
+
         deviations.append(deviation)
     return numpy.concatenate(deviations)
 
@@ -206,31 +272,15 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
         # TODO: may result in wrong symmetry with bad f guess, how to improve?
         fock = fock0 + numpy.einsum('xij,x->ij', mf.int1e_r, f_lagrange_guess)
         _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)
-        mocc = mo_coeff[:,mo_occ>0]
-        assert mocc.shape[1] == 1 # singly occupied
-        orbsym = mo_coeff.orbsym[mo_occ>0][0]
-        # For this symmetry, test SO matrix
-        symm_orb = mf.mol.symm_orb
-        irrep_id = mf.mol.irrep_id
-        nirrep = symm_orb.__len__()
-        important_axes = []
-        for idx, int1e_x in enumerate(mf.int1e_r_symm):
-            int1e_x_so = symm.symmetrize_matrix(int1e_x, symm_orb)
-            for ir in range(nirrep):
-                if irrep_id[ir] == orbsym:
-                    if numpy.abs(int1e_x_so[ir]).max() > 1e-12: # NOTE: can adjust 1e-12
-                        important_axes.append(idx)
-        if len(important_axes) == 0:
-            logger.warn(mf, 'No important symmetry axes found! Fallback to no symm')
-            important_axes = [x for x in range(mf.int1e_r.shape[0])]
+        important_axes, position_matrices = _get_constraint_symmetry(mf, mo_coeff, mo_occ)
+
         # Transform to along symmetry axes
         f_lagrange_guess = mf.mol._symm_axes @ f_lagrange_guess
         # Only keep the axes with non-trivial contributions
         f_lagrange_guess = f_lagrange_guess[important_axes]
 
-    if mf.int1e_r_symm is not None:
-        position_matrices = mf.int1e_r_symm[important_axes]
     else:
+        important_axes = None
         position_matrices = mf.int1e_r
 
     cache = {'f_lagrange': None, 'deviation': None, 'jacobian': None,
@@ -241,7 +291,7 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
         if (cache['f_lagrange'] is not None and
                 numpy.array_equal(f_lagrange, cache['f_lagrange'])):
             return cache['deviation']
-
+        # Get Fock matrix with constraint
         fock = fock0 + numpy.einsum('xij,x->ij', position_matrices, f_lagrange)
         # Calculate expectation position deviation
         mo_energy, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)

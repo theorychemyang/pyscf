@@ -849,11 +849,12 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
     if isinstance(mf, neo.CDFT):
         if diis_pos == 'pre' or diis_pos == 'both' or (cycle < 0 and diis is None):
             if constraint_update:
+                # optimize the Lagrange multiplier in CNEO
                 position_error = neo.cdft.update_lagrange_multipliers(
                     mf, f, s1e, one_step=(diis_type==4 and cycle>=0))
 
         # For DIIS type 1, preserve original matrices
-        if diis_type == 1:
+        if diis_type == 1 and diis is not None and cycle >= diis_start_cycle:
             f0 = f.copy()
 
         fock_add = mf.get_fock_add_cdft()
@@ -970,8 +971,7 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
             else:
                 f0[t] = f[t]
 
-        neo.cdft.update_lagrange_multipliers(
-            mf, f0, s1e, one_step=diis_type == 4)
+        neo.cdft.update_lagrange_multipliers(mf, f0, s1e, one_step=diis_type == 4)
 
         fock_add = mf.get_fock_add_cdft()
         for t in fock_add:
@@ -1049,7 +1049,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
         # be modified in some methods.
         fock_last = fock
         fock = mf.get_fock(h1e, s1e, vhf, dm,
-                           constraint_update=False)
+                           constraint_update=False) # = h1e + vhf, no DIIS
         grad = mf.get_grad(mo_coeff, mo_occ, fock)
         norm_gorb = {}
         for t in grad.keys():
@@ -1135,7 +1135,6 @@ class HF(scf.hf.SCF):
     >>> mf.scf()
     -99.98104139461894
     '''
-
     def __init__(self, mol, unrestricted=False):
         super().__init__(mol)
         # NOTE: unrestricted should be understood as "force unrestricted".
