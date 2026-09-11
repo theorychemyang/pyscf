@@ -34,6 +34,8 @@ class KnownValues(unittest.TestCase):
         mol = neo.M(atom='''H 0 0 0; F 0 0 0.9''', basis='ccpvdz',
                     quantum_nuc=[0])
         mf = neo.CDFT(mol, xc='hf', unrestricted=True)
+        mf.conv_tol = 1e-11
+        mf.conv_tol_grad = 1e-7
         mf.scf()
         td_mf = mf.TDDFT()
         td_mf.kernel(nstates=5)

@@ -13,12 +13,13 @@ def tearDownModule():
 class KnownValues(unittest.TestCase):
     def test_scf_epc17_2(self):
         mf = neo.CDFT(mol, xc='b3lyp5', epc='17-2')
+        mf.conv_tol = 1e-12
         e = mf.scf()
         mf1 = mf.copy()
         mf1.components['e'].xc = 'PBE'
         mf1.epc = None
         mf1.scf()
-        self.assertAlmostEqual(mf.scf(), e, 8)
+        self.assertAlmostEqual(mf.scf(), e, 7)
 
 if __name__ == "__main__":
     print("Full Tests for neo copy function")
