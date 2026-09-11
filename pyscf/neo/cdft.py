@@ -70,19 +70,6 @@ def _position_deviation(mf, mo_coeff, mo_occ, position_matrices=None):
     dm = mf.make_rdm1(mo_coeff, mo_occ)
     return numpy.einsum('xij,ji->x', position_matrices, dm).real
 
-
-def _position_deviation_and_jacobian(mf, fock, s1e,
-                                     position_matrices=None,
-                                     gap_tol=1e-14):
-    if position_matrices is None:
-        position_matrices = mf.int1e_r
-    mo_energy, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)
-    deviation = _position_deviation(mf, mo_coeff, mo_occ, position_matrices)
-    jacobian = analytic_position_jacobian(mo_energy, mo_coeff, mo_occ,
-                                          position_matrices, gap_tol)
-    return deviation, jacobian
-
-
 def get_position_error(mf, fock, s1e):
     '''Return concatenated position-constraint errors for quantum nuclei.'''
     deviations = []
@@ -246,30 +233,38 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
     else:
         position_matrices = mf.int1e_r
 
-    cache = {'f_lagrange': None, 'deviation': None, 'jacobian': None}
+    cache = {'f_lagrange': None, 'deviation': None, 'jacobian': None,
+             'orbitals': None}
 
     def evaluate(f_lagrange):
         f_lagrange = numpy.asarray(f_lagrange)
         if (cache['f_lagrange'] is not None and
                 numpy.array_equal(f_lagrange, cache['f_lagrange'])):
-            return cache['deviation'], cache['jacobian']
+            return cache['deviation']
 
         fock = fock0 + numpy.einsum('xij,x->ij', position_matrices, f_lagrange)
-        deviation, jacobian = _position_deviation_and_jacobian(mf, fock, s1e,
-                                                               position_matrices,
-                                                               jacobian_gap_tol)
+        # Calculate expectation position deviation
+        mo_energy, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)
+        deviation = _position_deviation(mf, mo_coeff, mo_occ, position_matrices)
         cache['f_lagrange'] = f_lagrange.copy()
         cache['deviation'] = deviation
-        cache['jacobian'] = jacobian
-        return deviation, jacobian
+        cache['jacobian'] = None
+        cache['orbitals'] = mo_energy, mo_coeff, mo_occ
+        return deviation
 
     def position_deviation(f_lagrange):
         '''Calculate position deviation from the Kohn-Sham orbital with
         frozen unconstrained NEO Fock and provided Lagrange multiplier'''
-        return evaluate(f_lagrange)[0]
+        return evaluate(f_lagrange)
 
     def position_jacobian(f_lagrange):
-        return evaluate(f_lagrange)[1]
+        evaluate(f_lagrange)
+        # SciPy requests Jacobians only for accepted trials. Reuse their orbitals.
+        if cache['jacobian'] is None:
+            mo_energy, mo_coeff, mo_occ = cache['orbitals']
+            cache['jacobian'] = analytic_position_jacobian(
+                mo_energy, mo_coeff, mo_occ, position_matrices, jacobian_gap_tol)
+        return cache['jacobian']
 
     def position_deviation_numeric(f_lagrange):
         fock = fock0 + numpy.einsum('xij,x->ij', position_matrices, f_lagrange)
