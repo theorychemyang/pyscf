@@ -1,14 +1,14 @@
 '''Cneo TDDFT with frozen orbital assumption'''
 
 from pyscf.neo import tddft_slow
-from pyscf import neo, lib, tdscf, scf
-from pyscf.tdscf._lr_eig import eig as lr_eig, real_eig
+from pyscf import neo, lib, scf
 from pyscf.tdscf import rhf, TDDFT
 from pyscf.lib import logger
-from pyscf import __config__
 import numpy
 
 def get_ab(mf):
+    if getattr(mf, 'df_ne', False):
+        raise NotImplementedError('CNEO-TDDFT with DF-NE')
     if isinstance(mf, neo.KS):
         if mf.epc is not None:
             _a, _b, c = tddft_slow.get_abc(mf)
@@ -72,6 +72,8 @@ class CTDDirect(rhf.TDBase):
     '''
 
     def get_ab(self):
+        if not self.singlet:
+            raise NotImplementedError('Explicit CNEO triplet response matrix')
         return get_ab(self._scf)
 
     def get_full(self):
@@ -106,9 +108,9 @@ class CTDDirect(rhf.TDBase):
         return self.e, self.xy
 
     def Gradients(self):
+        if getattr(self._scf, 'df_ne', False):
+            raise NotImplementedError('CNEO-TD gradients with DF-NE')
         if getattr(self._scf.components['e'], 'with_df', None):
-            if isinstance(self._scf.components['e'], scf.uhf.UHF):
-                raise NotImplementedError('Gradient of unrestricted density fitting CNEO-TDDFT')
             from pyscf.neo import df_tdgrad
             return df_tdgrad.Gradients(self)
         else:
@@ -132,67 +134,35 @@ class CTDDFT(CTDDirect):
     [ 6.82308887  7.68777851  7.68777851 10.05706016 10.05706016]
     '''
 
-    def gen_vind(self, mf=None):
-        if mf is None:
-            mf = self._scf
+    def kernel(self, x0=None, nstates=None):
+        mf = self._scf
         if isinstance(mf, neo.KS) and mf.epc is not None:
             raise NotImplementedError('epc is not implemented for CNEO-TDDFT davidson')
-        return TDDFT(mf.components['e']).gen_vind()
-
-    def get_init_guess(self, mf, nstates=None, wfnsym=None, **kwargs):
+        if getattr(mf, 'df_ne', False):
+            raise NotImplementedError('CNEO-TDDFT with DF-NE')
         mf_elec = mf.components['e']
-        return TDDFT(mf_elec).get_init_guess(mf_elec, nstates, wfnsym, **kwargs)
-
-    def kernel(self, x0=None, nstates=None):
-        '''
-        Modified from tdscf.rhf/uhf
-        '''
-        log = logger.new_logger(self)
-        cpu0 = (logger.process_clock(), logger.perf_counter())
-        self.check_sanity()
-        self.dump_flags()
-        if nstates is None:
-            nstates = self.nstates
-        else:
-            self.nstates = nstates
-        mol = self.mol
-
-        real_system = self._scf.mo_coeff['e'][0].dtype == numpy.double
-
-        vind, hdiag = self.gen_vind(self._scf)
-        precond = self.get_precond(hdiag)
-        if real_system:
-            eig = real_eig
-            pickeig = None
-        else:
-            eig = lr_eig
-            # We only need positive eigenvalues
-            def pickeig(w, v, nroots, envs):
-                realidx = numpy.where((abs(w.imag) < rhf.REAL_EIG_THRESHOLD) &
-                                      (w.real > self.positive_eig_threshold))[0]
-                # If the complex eigenvalue has small imaginary part, both the
-                # real part and the imaginary part of the eigenvector can
-                # approximately be used as the "real" eigen solutions.
-                return lib.linalg_helper._eigs_cmplx2real(w, v, realidx, real_system)
-
-        x0sym = None
-        if x0 is None:
-            x0, x0sym = self.get_init_guess(
-                self._scf, self.nstates, return_symmetry=True)
-        elif mol.symmetry:
-            x_sym = y_sym = tdscf.rhf._get_x_sym_table(self._scf.components['e']).ravel()
-            x_sym = numpy.append(x_sym, y_sym)
-            x0sym = [tdscf.rhf._guess_wfnsym_id(self, x_sym, x) for x in x0]
-
-        self.converged, self.e, x1 = eig(
-            vind, x0, precond, tol_residual=self.conv_tol, lindep=self.lindep,
-            nroots=nstates, x0sym=x0sym, pick=pickeig, max_cycle=self.max_cycle,
-            max_memory=self.max_memory, verbose=log)
-
-        self.xy = _normalize(x1, self._scf.mo_occ['e'])
-
-        log.timer('CNEO-TDDFT Davidson', *cpu0)
-        self._finalize()
+        if mf_elec.mo_coeff is None or mf_elec.mo_energy is None:
+            mf.run()
+        td = TDDFT(mf.components['e'], frozen=self.frozen)
+        # Forward TD controls while keeping the electronic reference on td.
+        td.verbose = self.verbose
+        td.stdout = self.stdout
+        td.max_memory = self.max_memory
+        td.chkfile = self.chkfile
+        td.conv_tol = self.conv_tol
+        td.nstates = self.nstates
+        td.singlet = None if isinstance(td._scf, scf.uhf.UHF) else self.singlet
+        td.lindep = self.lindep
+        td.level_shift = self.level_shift
+        td.max_cycle = self.max_cycle
+        td.positive_eig_threshold = self.positive_eig_threshold
+        td.deg_eia_thresh = self.deg_eia_thresh
+        td.exclude_nlc = self.exclude_nlc
+        td.frozen = self.frozen
+        td.wfnsym = self.wfnsym
+        self.e, self.xy = td.kernel(x0=x0, nstates=nstates)
+        self.converged = td.converged
+        self.nstates = td.nstates
 
         return self.e, self.xy
 

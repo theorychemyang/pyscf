@@ -105,6 +105,8 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
     dmzoo+= reduce(numpy.dot, (orbv['e'], dvv, orbv['e'].T))
 
     td_grad_e = (TDDFT(mf_e)).Gradients()
+    if getattr(mf_e, 'with_df', None):
+        td_grad_e.auxbasis_response = td_grad.auxbasis_response
 
     if mf.xc_e.upper() == 'HF': # TDRHF
         vj, vk = mf_e.get_jk(mol, (dmzoo, dmxpy+dmxpy.T, dmxmy-dmxmy.T), hermi=0)
@@ -254,11 +256,14 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
     if mf.xc_e.upper() == 'HF':
         vj, vk = td_grad_e.get_jk(mol_e, (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T,
                                   dmxmy-dmxmy.T))
-        if getattr(mf_e, 'with_df', None):
-            # Create local variables for density fitting gradient
-            if not singlet:
-                raise NotImplementedError
-            vhf_aux = vj.aux - vk.aux * 0.5
+        if getattr(mf_e, 'with_df', None) and td_grad.auxbasis_response:
+            # Auxiliary-center derivatives are added by extra_force.
+            vhf_aux = -vk.aux * 0.5
+            if singlet:
+                vhf_aux += vj.aux
+            else:
+                # Triplets retain ground/relaxed J, but not transition J.
+                vhf_aux[:2] += vj.aux[:2]
 
         vj = vj.reshape(-1,3,nao_e,nao_e)
         vk = vk.reshape(-1,3,nao_e,nao_e)
@@ -274,15 +279,21 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
             dm = (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T, dmxmy-dmxmy.T)
             vj, vk = td_grad_e.get_jk(mol_e, dm)
 
-            if getattr(mf_e, 'with_df', None):
-                # Create local variables for density fitting gradient
-                if not singlet:
-                    raise NotImplementedError
-                vhf_aux = vj.aux - vk.aux * 0.5 * hyb
+            if getattr(mf_e, 'with_df', None) and td_grad.auxbasis_response:
+                # Auxiliary-center derivatives are added by extra_force.
+                vhf_aux = -vk.aux * 0.5 * hyb
+                if singlet:
+                    vhf_aux += vj.aux
+                else:
+                    # Triplets retain ground/relaxed J, but not transition J.
+                    vhf_aux[:2] += vj.aux[:2]
 
             vk *= hyb
             if omega != 0:
-                vk += td_grad_e.get_k(mol_e, dm, omega=omega) * (alpha-hyb)
+                vk_lr = td_grad_e.get_k(mol_e, dm, omega=omega)
+                vk += vk_lr * (alpha-hyb)
+                if getattr(mf_e, 'with_df', None) and td_grad.auxbasis_response:
+                    vhf_aux -= vk_lr.aux * 0.5 * (alpha-hyb)
             vj = vj.reshape(-1,3,nao_e,nao_e)
             vk = vk.reshape(-1,3,nao_e,nao_e)
             veff1 = -vk
@@ -293,11 +304,12 @@ def grad_elec_rhf(td_grad, x_y, singlet=True, atmlst=None,
         else:
             vj = td_grad_e.get_j(mol_e, (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T))
 
-            if getattr(mf_e, 'with_df', None):
-                # Create local variables for density fitting gradient
-                if not singlet:
-                    raise NotImplementedError
+            if getattr(mf_e, 'with_df', None) and td_grad.auxbasis_response:
+                # Auxiliary-center derivatives are added by extra_force.
                 vhf_aux = vj.aux
+                if not singlet:
+                    vhf_aux = vhf_aux.copy()
+                    vhf_aux[2] = 0
 
             vj = vj.reshape(-1,3,nao_e,nao_e)
             veff1 = numpy.zeros((4,3,nao_e,nao_e))
@@ -406,6 +418,8 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
     assert isinstance(mf_e, scf.uhf.UHF)
     mol_e = mol.components['e']
     td_grad_e = TDDFT(mf_e).Gradients()
+    if getattr(mf_e, 'with_df', None):
+        td_grad_e.auxbasis_response = td_grad.auxbasis_response
 
     mo_coeff = mf.mo_coeff
     mo_energy = mf.mo_energy
@@ -522,7 +536,7 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
             vj, vk = mf_e.get_jk(mol_e, dm, hermi=0)
             vk *= hyb
             if omega != 0:
-                vk += mf.get_k(mol_e, dm, hermi=0, omega=omega) * (alpha-hyb)
+                vk += mf_e.get_k(mol_e, dm, hermi=0, omega=omega) * (alpha-hyb)
             vj = vj.reshape(2,3,nao_e,nao_e)
             vk = vk.reshape(2,3,nao_e,nao_e)
 
@@ -546,7 +560,7 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
         else:
             dm = (dmzooa, dmxpya+dmxpya.T,
                   dmzoob, dmxpyb+dmxpyb.T)
-            vj = mf.get_j(mol_e, dm, hermi=1).reshape(2,2,nao_e,nao_e)
+            vj = mf_e.get_j(mol_e, dm, hermi=1).reshape(2,2,nao_e,nao_e)
 
             veff0doo = vj[0,0]+vj[1,0] + f1oo[:,0] + k1ao[:,0] * 2
             wvoa = reduce(numpy.dot, (orbva.T, veff0doo[0], orboa)) * 2
@@ -697,6 +711,9 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
     if mf.xc_e.upper() == 'HF':
         vj, vk = td_grad_e.get_jk(mol, (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
                                   oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T))
+        if getattr(mf_e, 'with_df', None) and td_grad.auxbasis_response:
+            vj_aux = vj.aux
+            vk_aux = vk.aux
         vj = vj.reshape(2,4,3,nao_e,nao_e)
         vk = vk.reshape(2,4,3,nao_e,nao_e)
         veff1a, veff1b = vj[0] + vj[1] - vk
@@ -706,15 +723,25 @@ def grad_elec_uhf(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INF
             dm = (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
                   oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T)
             vj, vk = td_grad_e.get_jk(mol_e, dm)
+            if getattr(mf_e, 'with_df', None) and td_grad.auxbasis_response:
+                vj_aux = vj.aux
+                vk_aux = vk.aux * hyb
             vj = vj.reshape(2,4,3,nao_e,nao_e)
             vk = vk.reshape(2,4,3,nao_e,nao_e) * hyb
             if omega != 0:
-                vk += td_grad_e.get_k(mol, dm, omega=omega).reshape(2,4,3,nao_e,nao_e) * (alpha-hyb)
+                vk_lr = td_grad_e.get_k(mol_e, dm, omega=omega)
+                vk += vk_lr.reshape(2,4,3,nao_e,nao_e) * (alpha-hyb)
+                if getattr(mf_e, 'with_df', None) and td_grad.auxbasis_response:
+                    vk_aux += vk_lr.aux * (alpha-hyb)
             veff1 = vj[0] + vj[1] - vk
         else:
             dm = (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T,
                   oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T)
-            vj = td_grad_e.get_j(mol, dm).reshape(2,3,3,nao_e,nao_e)
+            vj = td_grad_e.get_j(mol_e, dm)
+            if getattr(mf_e, 'with_df', None) and td_grad.auxbasis_response:
+                vj_aux = vj.aux
+                vk_aux = None
+            vj = vj.reshape(2,3,3,nao_e,nao_e)
             veff1 = numpy.zeros((2,4,3,nao_e,nao_e))
             veff1[:,:3] = vj[0] + vj[1]
 
@@ -902,6 +929,8 @@ class Gradients(tdrhf.Gradients):
         '''Electronic and quantum nuclear part of CNEO-TDDFT nuclear gradients'''
 
         mf = self.base._scf
+        if getattr(mf, 'df_ne', False):
+            raise NotImplementedError('CNEO-TD gradients with DF-NE')
         if isinstance(mf.components['e'], scf.uhf.UHF):
             return grad_elec_uhf(self, xy, atmlst, self.max_memory, self.verbose)
         else:

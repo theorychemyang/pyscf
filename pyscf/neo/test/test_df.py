@@ -99,23 +99,6 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(results['freq_wavenumber'][-2], 3609.801, 0)
         self.assertAlmostEqual(results['freq_wavenumber'][-3], 1572.818, 0)
 
-    def test_grad_ctddft(self):
-        mol = neo.M(atom='''H 0 0 0; F 0 0 0.94''', basis='ccpvdz',
-                    quantum_nuc=[0])
-
-        mf = neo.CDFT(mol, xc='b3lyp5')
-        mf.scf()
-        td_mf = mf.TDDFT()
-        td_mf.kernel()
-        gref = td_mf.Gradients().kernel()
-
-        mf = neo.CDFT(mol, xc='b3lyp5').density_fit(auxbasis='cc-pVDZ-JKFIT')
-        mf.scf()
-        td_mf = mf.TDDFT()
-        td_mf.kernel()
-        grad = td_mf.Gradients().kernel()
-        self.assertAlmostEqual(abs(gref-grad).max(), 0, 4)
-
     def test_hess_df_ne(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
                     quantum_nuc=[0])
@@ -127,6 +110,18 @@ class KnownValues(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             neo.Hessian(mf)
 
+    def test_grad_ctddft(self):
+        mol = neo.M(atom='''H 0 0 0; F 0 0 0.94''', basis='ccpvdz',
+                    quantum_nuc=[0])
+        for xc in ['lda', 'b3lyp5', 'camb3lyp']:
+            mf = neo.CDFT(mol, xc=xc)
+            mf.scf()
+            gref = mf.TDDFT().Gradients().kernel()
+
+            mf = neo.CDFT(mol, xc=xc).density_fit(auxbasis='cc-pVTZ-JKFIT')
+            mf.scf()
+            grad = mf.TDDFT().Gradients().kernel()
+            self.assertAlmostEqual(abs(gref-grad).max(), 0, 4)
 
 if __name__ == "__main__":
     print("Full Tests for electronic DF in NEO")
