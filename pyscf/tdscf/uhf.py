@@ -794,10 +794,11 @@ class TDA(TDBase):
 
     def Gradients(self):
         if getattr(self._scf, 'with_df', None):
-            logger.warn(self, 'TDDFT Gradients with DF approximation is not available. '
-                        'TDDFT Gradients are computed using exact integrals')
-        from pyscf.grad import tduhf
-        return tduhf.Gradients(self)
+            from pyscf.df.grad import tduhf
+            return tduhf.Gradients(self)
+        else:
+            from pyscf.grad import tduhf
+            return tduhf.Gradients(self)
 
     def to_gpu(self):
         import cupy as cp

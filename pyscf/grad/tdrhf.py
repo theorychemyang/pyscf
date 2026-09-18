@@ -129,11 +129,14 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None,
     vj, vk = td_grad.get_jk(mol, (oo0, dmz1doo+dmz1doo.T, dmxpy+dmxpy.T,
                                   dmxmy-dmxmy.T))
 
-    if getattr(td_grad.base._scf, 'with_df', None):
-        # Create local variables for density fitting gradient
-        if not singlet:
-            raise NotImplementedError
-        vhf_aux = vj.aux - vk.aux * 0.5
+    if getattr(mf, 'with_df', None) and td_grad.auxbasis_response:
+        # Auxiliary-center derivatives are added by extra_force.
+        vhf_aux = -vk.aux * 0.5
+        if singlet:
+            vhf_aux += vj.aux
+        else:
+            # Triplets retain ground/relaxed J, but not transition J.
+            vhf_aux[:2] += vj.aux[:2]
 
     vj = vj.reshape(-1,3,nao,nao)
     vk = vk.reshape(-1,3,nao,nao)
