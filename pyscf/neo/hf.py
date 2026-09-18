@@ -846,6 +846,8 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
     # This helps with final extra cycle convergence.
     f0 = None
     position_error = None
+    if diis_start_cycle is None:
+        diis_start_cycle = mf.diis_start_cycle
     if isinstance(mf, neo.CDFT):
         if diis_pos == 'pre' or diis_pos == 'both' or (cycle < 0 and diis is None):
             if constraint_update:
@@ -864,8 +866,6 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
     if cycle < 0 and diis is None:  # Not inside the SCF iteration
         return f
 
-    if diis_start_cycle is None:
-        diis_start_cycle = mf.diis_start_cycle
     if level_shift_factor is None:
         level_shift_factor = mf.level_shift
     if damp_factor is None:
@@ -918,7 +918,7 @@ def get_fock(mf, h1e=None, s1e=None, vhf=None, dm=None, cycle=-1,
                 error = numpy.concatenate((fock_error, position_error))
                 f_flat = lib.diis.DIIS.update(diis, f_flat, error)
             else:
-                logger.warn(mf, 'Unknown CDFT DIIS type %s; DIIS is disabled', diis_type)
+                logger.warn(mf, 'Unknow CDFT DIIS type %s, NO DIIS IS USED!!!\n', diis_type)
                 f_flat = None
 
             if f_flat is not None:
@@ -1084,7 +1084,7 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     mf.cycles = cycle + 1
     if scf_conv and conv_check:
         # An extra diagonalization, to remove level shift
-        #fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf
+        fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf
         mo_energy, mo_coeff = mf.eig(fock, s1e, x=x_orth)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         dm, dm_last = mf.make_rdm1(mo_coeff, mo_occ), dm

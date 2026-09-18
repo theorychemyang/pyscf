@@ -56,7 +56,6 @@ class KnowValues(unittest.TestCase):
     def test(self):
         # energy
         mf = neo.CDFT(mol, xc='PBE0')
-        mf.conv_tol = 1e-12
         e0 = mf.kernel()
         self.assertAlmostEqual(e0, -76.23177544660282, 8)
         # gradient

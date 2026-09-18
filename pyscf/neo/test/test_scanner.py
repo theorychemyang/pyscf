@@ -37,8 +37,8 @@ class KnownValues(unittest.TestCase):
         mol = neo.M(atom='H 0 0 0; F 0 0 0.94', basis='def2svp',
                     nuc_basis='pb4f1', quantum_nuc=[0,1])
         mf = neo.CDFT(mol, xc='M062X')
-        mf.conv_tol = 1e-12
-        mf.conv_tol_grad = 1e-8
+        mf.conv_tol = 1e-11
+        mf.conv_tol_grad = 1e-7
         mf.components['e'].grids.atom_grid = (99, 590)
         pes_scanner = mf.as_scanner()
         grad_scanner = mf.Gradients().set(grid_response=True).as_scanner()
@@ -46,8 +46,8 @@ class KnownValues(unittest.TestCase):
         mol2 = neo.M(atom='H 0 0 0; F 0 0 1.1', basis='def2svp',
                      nuc_basis='pb4f1', quantum_nuc=[0,1])
         mf2 = neo.CDFT(mol2, xc='M062X')
-        mf2.conv_tol = 1e-12
-        mf2.conv_tol_grad = 1e-8
+        mf2.conv_tol = 1e-11
+        mf2.conv_tol_grad = 1e-7
         mf2.components['e'].grids.atom_grid = (99, 590)
         e_tot2 = mf2.scf()
         grad2 = mf2.Gradients().set(grid_response=True).grad()

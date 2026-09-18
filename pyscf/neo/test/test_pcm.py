@@ -10,8 +10,6 @@ class KnownValues(unittest.TestCase):
         mol = neo.M(atom='H 0 0 0; C 0 0 1.0754; N 0 0 2.2223',
                     basis='ccpvdz', quantum_nuc=[0])
         mf = neo.CDFT(mol, xc='b3lypg').PCM()
-        mf.conv_tol = 1e-10
-        mf.conv_tol_grad = 1e-6
         mf.run()
         de = mf.nuc_grad_method().kernel()
 

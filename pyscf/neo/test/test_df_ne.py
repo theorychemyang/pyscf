@@ -402,8 +402,6 @@ class KnownValues(unittest.TestCase):
         mf = neo.CDFT(mol, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit',
                                                     df_ne=True,
                                                     df_ne_scheme='global')
-        mf.conv_tol = 1e-11
-        # mf.conv_tol_grad = 1e-6
         mf.scf()
         de = mf.Gradients().kernel()
 
@@ -465,7 +463,6 @@ class KnownValues(unittest.TestCase):
                                                     df_ne=True,
                                                     df_ne_scheme='global')
         mf.scf()
-        mf.conv_tol = 1e-11
         de = mf.Gradients().kernel()
 
         e_scanner = mf.as_scanner()
@@ -479,7 +476,7 @@ class KnownValues(unittest.TestCase):
                     nuc_basis='pb4d', quantum_nuc=[0,1])
         mf = neo.CDFT(mol, xc='LDA,VWN').density_fit(auxbasis='weigend',
                                                      df_ne=True, df_nn=True)
-        mf.conv_tol = 1e-12
+        mf.conv_tol = 1e-11
         mf.scf()
         de = mf.Gradients().kernel()
 
@@ -492,26 +489,23 @@ class KnownValues(unittest.TestCase):
     def test_scanner(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 0.94', basis='aug-ccpvdz')
         mf = neo.CDFT(mol, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
-        mf.conv_tol = 1e-12
         grad_scanner = mf.nuc_grad_method().as_scanner()
         grad_scanner(mol)
 
         mol2 = neo.M(atom='H 0 0 0; F 0 0 1.1', basis='aug-ccpvdz')
         mf2 = neo.CDFT(mol2, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
-        mf2.conv_tol = 1e-12
         e2 = mf2.scf()
         grad2 = mf2.Gradients().grad()
         e, grad = grad_scanner(mol2)
-        self.assertAlmostEqual(e, e2, 8)
+        self.assertAlmostEqual(e, e2, 9)
         self.assertTrue(abs(grad-grad2).max() < 1e-6)
 
         mol2 = neo.M(atom='H 0 0 0; F 0 0 1.2', basis='aug-ccpvdz')
         mf2 = neo.CDFT(mol2, xc='b3lypg').density_fit(auxbasis='aug-cc-pvdz-jkfit', df_ne=True)
-        mf2.conv_tol = 1e-12
         e2 = mf2.scf()
         grad2 = mf2.Gradients().grad()
         e, grad = grad_scanner(mol2)
-        self.assertAlmostEqual(e, e2, 8)
+        self.assertAlmostEqual(e, e2, 9)
         self.assertTrue(abs(grad-grad2).max() < 1e-6)
 
     def test_scanner_different_mol(self):
@@ -540,7 +534,6 @@ class KnownValues(unittest.TestCase):
                     nuc_basis='pb4d', quantum_nuc=[0,1])
         mf = neo.CDFT(mol, xc='PBE0').density_fit(auxbasis='weigend',
                                                   df_ne=True, df_nn=True)
-        mf.conv_tol = 1e-12
         grad_scanner = mf.nuc_grad_method().as_scanner()
         grad_scanner(mol)
 
@@ -548,11 +541,10 @@ class KnownValues(unittest.TestCase):
                      nuc_basis='pb4d', quantum_nuc=[0,1])
         mf2 = neo.CDFT(mol2, xc='PBE0').density_fit(auxbasis='weigend',
                                                     df_ne=True, df_nn=True)
-        mf2.conv_tol = 1e-12
         e2 = mf2.scf()
         grad2 = mf2.Gradients().grad()
         e, grad = grad_scanner(mol2)
-        self.assertAlmostEqual(e, e2, 8)
+        self.assertAlmostEqual(e, e2, 9)
         self.assertTrue(abs(grad-grad2).max() < 1e-6)
 
 if __name__ == "__main__":
