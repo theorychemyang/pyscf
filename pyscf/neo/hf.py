@@ -1084,7 +1084,9 @@ def kernel(mf, conv_tol=1e-10, conv_tol_grad=None,
     mf.cycles = cycle + 1
     if scf_conv and conv_check:
         # An extra diagonalization, to remove level shift
-        fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf
+        if isinstance(mf, neo.CDFT):
+            # Rebuild the Fock matrix to fully optimize the CNEO constraints
+            fock = mf.get_fock(h1e, s1e, vhf, dm)  # = h1e + vhf
         mo_energy, mo_coeff = mf.eig(fock, s1e, x=x_orth)
         mo_occ = mf.get_occ(mo_energy, mo_coeff)
         dm, dm_last = mf.make_rdm1(mo_coeff, mo_occ), dm

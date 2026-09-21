@@ -27,7 +27,7 @@ def _get_mo_energy_coeff_occ(mf, fock, s1e):
     return mo_energy, mo_coeff, mo_occ
 
 def analytic_position_jacobian(mo_energy, mo_coeff, mo_occ, int1e_r,
-                               gap_tol=1e-14):
+                               gap_floor=1e-14):
     '''
     Frozen-Fock derivative of the position constraint with respect to f.
     '''
@@ -46,12 +46,10 @@ def analytic_position_jacobian(mo_energy, mo_coeff, mo_occ, int1e_r,
     e_a = mo_energy[viridx]
     e_i = mo_energy[occidx]
     e_ai = e_a[:,None] - e_i
-    if numpy.any(numpy.abs(e_ai) <= gap_tol):
-        raise numpy.linalg.LinAlgError(
-            'The occupied nuclear orbital is degenerate or nearly degenerate '
-            'with another orbital; the analytic position Jacobian is not '
-            'valid.'
-        )
+    # Regularize the response near degeneracy while preserving the sign of the orbital-energy denominator.
+    e_ai = numpy.where(e_ai < 0,
+                       numpy.minimum(e_ai, -gap_floor),
+                       numpy.maximum(e_ai, gap_floor))
     e_ai = 1 / e_ai
 
     orbo = mo_coeff[:,occidx]
@@ -67,26 +65,19 @@ def _position_deviation(mf, mo_coeff, mo_occ, position_matrices=None):
     dm = mf.make_rdm1(mo_coeff, mo_occ)
     return numpy.einsum('xij,ji->x', position_matrices, dm).real
 
-def _get_constraint_symmetry(mf, mo_coeff, mo_occ):
-    mocc = mo_coeff[:,mo_occ>0]
-    assert mocc.shape[1] == 1 # singly occupied
-    orbsym = mo_coeff.orbsym[mo_occ>0][0]
-    # For this symmetry, test SO matrix
-    symm_orb = mf.mol.symm_orb
-    irrep_id = mf.mol.irrep_id
-    nirrep = symm_orb.__len__()
-    occupied_symm_orb = None
-    for ir in range(nirrep):
-        if irrep_id[ir] == orbsym:
-            occupied_symm_orb = symm_orb[ir]
+def _get_constraint_symmetry(mf):
     important_axes = []
-    if occupied_symm_orb is not None:
-        for idx, int1e_x in enumerate(mf.int1e_r_symm):
-            int1e_x_so = numpy.matmul(numpy.matmul(occupied_symm_orb.conj().T, int1e_x), occupied_symm_orb)
+    # The symmetry eigensolver uses diagonal irrep blocks.
+    # Keep symmetry axes whose position operator has a nonzero
+    # contribution within at least one irrep block.
+    for idx, int1e_x in enumerate(mf.int1e_r_symm):
+        for symm_orb in mf.mol.symm_orb:
+            int1e_x_so = numpy.matmul(numpy.matmul(symm_orb.conj().T, int1e_x), symm_orb)
             if numpy.abs(int1e_x_so).max() > 1e-12: # NOTE: can adjust 1e-12
                 important_axes.append(idx)
+                break
     if len(important_axes) == 0:
-        logger.warn(mf, 'No important symmetry axes found! Fallback to no symm')
+        logger.warn(mf, 'No important symmetry axes found! Using all symmetry axes')
         important_axes = [x for x in range(mf.int1e_r.shape[0])]
     return important_axes, mf.int1e_r_symm[important_axes]
 
@@ -101,7 +92,7 @@ def get_position_error(mf, fock, s1e):
         _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp, fock[t], s1e[t])
 
         if comp.int1e_r_symm is not None:
-            important_axes, position_matrices = _get_constraint_symmetry(comp, mo_coeff, mo_occ)
+            important_axes, position_matrices = comp.constraint_symmetry
             deviation = _position_deviation(comp, mo_coeff, mo_occ, position_matrices)
             deviation_full = numpy.zeros(comp.int1e_r.shape[0])
             for i, idx in enumerate(important_axes):
@@ -114,7 +105,7 @@ def get_position_error(mf, fock, s1e):
     return numpy.concatenate(deviations)
 
 def update_lagrange_multipliers(mf, fock0, s1e, one_step=False, tol=1e-15,
-                                gap_tol=1e-14, minimum_step=0.01):
+                                gap_floor=1e-14, minimum_step=0.01):
     '''Update the CNEO Lagrange multipliers.'''
     if not one_step:
         for t, comp in mf.components.items():
@@ -144,21 +135,13 @@ def update_lagrange_multipliers(mf, fock0, s1e, one_step=False, tol=1e-15,
         comp = mf.components[t]
         ia = comp.mol.atom_index
         f_lagrange = numpy.asarray(mf.f[ia], dtype=float).copy()
-        initial_orbitals = None
 
         if comp.int1e_r_symm is not None:
-            # Detect the occupied nuclear orbital symmetry using the current f.
-            fock = fock0[t] + numpy.einsum('xij,x->ij', comp.int1e_r, f_lagrange)
-            mo_energy, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp, fock, s1e[t])
-            important_axes, position_matrices = _get_constraint_symmetry(comp, mo_coeff, mo_occ)
+            important_axes, position_matrices = comp.constraint_symmetry
 
             # Cartesian -> symmetry-axis coordinates, then remove forbidden axes.
             f_lagrange = comp.mol._symm_axes @ f_lagrange
             f_lagrange = f_lagrange[important_axes]
-
-            initial_fock = fock0[t] + numpy.einsum('xij,x->ij', position_matrices, f_lagrange)
-            if numpy.allclose(fock, initial_fock, rtol=0.0, atol=1e-12):
-                initial_orbitals = mo_energy, mo_coeff, mo_occ
 
         else:
             important_axes = None
@@ -175,28 +158,16 @@ def update_lagrange_multipliers(mf, fock0, s1e, one_step=False, tol=1e-15,
             deviation = _position_deviation(comp, mo_coeff, mo_occ, position_matrices)
             return deviation, mo_energy, mo_coeff, mo_occ
 
-        if initial_orbitals is None:
-            deviation, mo_energy, mo_coeff, mo_occ = evaluate(f_lagrange)
-        else:
-            mo_energy, mo_coeff, mo_occ = initial_orbitals
-            deviation = _position_deviation(comp, mo_coeff, mo_occ, position_matrices)
+        deviation, mo_energy, mo_coeff, mo_occ = evaluate(f_lagrange)
 
         if numpy.max(numpy.abs(deviation)) >= tol:
-            try:
-                jacobian = analytic_position_jacobian(mo_energy, mo_coeff, mo_occ, position_matrices, gap_tol)
-            except (RuntimeError, numpy.linalg.LinAlgError) as err:
-                logger.warn(mf, '%s Falling back to numerical position Jacobian.', err)
-                displacements = numpy.eye(f_lagrange.size) * 1e-3
-                jacobian = numpy.column_stack([
-                    (residual(f_lagrange + displacement) - deviation) / 1e-3
-                    for displacement in displacements
-                ])
+            jacobian = analytic_position_jacobian(mo_energy, mo_coeff, mo_occ, position_matrices, gap_floor)
 
             deviation_norm = numpy.linalg.norm(deviation)
             try:
                 step_direction = numpy.linalg.solve(jacobian, -deviation)
             except numpy.linalg.LinAlgError:
-                step_direction = numpy.linalg.lstsq(jacobian, -deviation, rcond=gap_tol)[0]
+                step_direction = numpy.linalg.lstsq(jacobian, -deviation, rcond=gap_floor)[0]
 
             direction_norm = numpy.linalg.norm(step_direction)
             if direction_norm == 0.0 or not numpy.isfinite(direction_norm):
@@ -249,7 +220,7 @@ def update_lagrange_multipliers(mf, fock0, s1e, one_step=False, tol=1e-15,
 
 
 def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
-                     jacobian_gap_tol=1e-14):
+                     jacobian_gap_floor=1e-14):
     '''Solve the Kohn-Sham equation with position constraint
         [H + f_lagrange * (r - R)] y = e y, <y|r - R|y> = 0.
     '''
@@ -258,25 +229,12 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
     if f_lagrange_guess is None:
         f_lagrange_guess = numpy.zeros(mf.int1e_r.shape[0])
 
-    initial_orbitals = None
     if mf.int1e_r_symm is not None:
-        # Detect ground state symmetry with fock0 and f guess.
-        # This symmetry detection mostly relies on the zero guess of f, then
-        # the symmetry is unlikely to be changed in following steps.
-        # It is possible that the true ground state has a different symmetry,
-        # but how to detect that? This is a global optimization problem.
-        # TODO: may result in wrong symmetry with bad f guess, how to improve?
-        fock = fock0 + numpy.einsum('xij,x->ij', mf.int1e_r, f_lagrange_guess)
-        mo_energy, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)
-        important_axes, position_matrices = _get_constraint_symmetry(mf, mo_coeff, mo_occ)
+        important_axes, position_matrices = mf.constraint_symmetry
         # Transform to along symmetry axes
         f_lagrange_guess = mf.mol._symm_axes @ f_lagrange_guess
         # Only keep the axes with non-trivial contributions
         f_lagrange_guess = f_lagrange_guess[important_axes]
-
-        initial_fock = fock0 + numpy.einsum('xij,x->ij', position_matrices, f_lagrange_guess)
-        if numpy.allclose(fock, initial_fock, rtol=0.0, atol=1e-12):
-            initial_orbitals = mo_energy, mo_coeff, mo_occ
 
     else:
         important_axes = None
@@ -284,15 +242,10 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
 
     cache = {'f_lagrange': None, 'deviation': None, 'jacobian': None,
              'orbitals': None}
-    if initial_orbitals is not None:
-        mo_energy, mo_coeff, mo_occ = initial_orbitals
-        cache['f_lagrange'] = numpy.asarray(f_lagrange_guess).copy()
-        cache['deviation'] = _position_deviation(mf, mo_coeff, mo_occ, position_matrices)
-        cache['orbitals'] = initial_orbitals
 
-    jacobian_failure_point = None
-
-    def evaluate(f_lagrange):
+    def position_deviation(f_lagrange):
+        '''Calculate position deviation from the Kohn-Sham orbital with
+        frozen unconstrained NEO Fock and provided Lagrange multiplier'''
         f_lagrange = numpy.asarray(f_lagrange)
         if (cache['f_lagrange'] is not None and
                 numpy.array_equal(f_lagrange, cache['f_lagrange'])):
@@ -308,42 +261,18 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
         cache['orbitals'] = mo_energy, mo_coeff, mo_occ
         return deviation
 
-    def position_deviation(f_lagrange):
-        '''Calculate position deviation from the Kohn-Sham orbital with
-        frozen unconstrained NEO Fock and provided Lagrange multiplier'''
-        return evaluate(f_lagrange)
-
     def position_jacobian(f_lagrange):
-        nonlocal jacobian_failure_point
-        jacobian_failure_point = None
-        deviation = evaluate(f_lagrange)
+        position_deviation(f_lagrange)
         # SciPy requests Jacobians only for accepted trials. Reuse their orbitals.
         if cache['jacobian'] is None:
             mo_energy, mo_coeff, mo_occ = cache['orbitals']
-            try:
-                cache['jacobian'] = analytic_position_jacobian(
-                    mo_energy, mo_coeff, mo_occ, position_matrices, jacobian_gap_tol)
-            except (RuntimeError, numpy.linalg.LinAlgError):
-                f_lagrange = numpy.asarray(f_lagrange)
-                if numpy.all(numpy.isfinite(f_lagrange)) and numpy.all(numpy.isfinite(deviation)):
-                    jacobian_failure_point = f_lagrange.copy()
-                raise
+            cache['jacobian'] = analytic_position_jacobian(
+                mo_energy, mo_coeff, mo_occ, position_matrices, jacobian_gap_floor)
         return cache['jacobian']
 
-    def position_deviation_numeric(f_lagrange):
-        fock = fock0 + numpy.einsum('xij,x->ij', position_matrices, f_lagrange)
-        _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(mf, fock, s1e)
-        return _position_deviation(mf, mo_coeff, mo_occ, position_matrices)
-
     #opt = scipy.optimize.root(position_deviation, f_lagrange_guess, method='hybr')
-    try:
-        opt = scipy.optimize.least_squares(position_deviation, f_lagrange_guess,
-                                           jac=position_jacobian, gtol=1e-15)
-    except (RuntimeError, numpy.linalg.LinAlgError) as err:
-        logger.warn(mf, '%s Falling back to numerical position Jacobian.', err)
-        if jacobian_failure_point is None:
-            jacobian_failure_point = f_lagrange_guess
-        opt = scipy.optimize.least_squares(position_deviation_numeric, jacobian_failure_point, gtol=1e-15)
+    opt = scipy.optimize.least_squares(position_deviation, f_lagrange_guess,
+                                       jac=position_jacobian, gtol=1e-15)
 
     if mf.int1e_r_symm is not None:
         # Recover the full dimensional f_lagrange
@@ -385,9 +314,11 @@ class CDFT(ks.KS):
                 comp.int1e_r = comp.mol.intor_symmetric('int1e_r', comp=3) \
                              - numpy.asarray([comp.nuclear_expect_position[i] * s1e for i in range(3)])
                 comp.int1e_r_symm = None
+                comp.constraint_symmetry = (None, comp.int1e_r)
                 if comp.mol.symmetry and comp.mol._symm_axes is not None:
                     # Transform to along symmetry axes
                     comp.int1e_r_symm = numpy.einsum('xy,yij->xij', comp.mol._symm_axes, comp.int1e_r)
+                    comp.constraint_symmetry = _get_constraint_symmetry(comp)
 
 
     def get_fock_add_cdft(self):

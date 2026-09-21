@@ -15,6 +15,7 @@ class KnownValues(unittest.TestCase):
                             H    0.6182130   0.5951910   1.4994600;
                     ''', basis='ccpvdz')
         mf = neo.CDFT(mol, xc='b3lyp')
+        mf.conv_tol = 1e-10
         mf.run()
 
         hess = mf.Hessian()
@@ -32,6 +33,7 @@ class KnownValues(unittest.TestCase):
                              H    0.6172130   0.5951910   1.4994600;
                      ''', basis='ccpvdz')
         mf1 = neo.CDFT(mol1, xc='b3lyp')
+        mf1.conv_tol = 1e-10
         mf1.scf()
 
         mol2 = neo.M(atom='''C    0.5803070   0.4714570   0.4115280;
@@ -41,6 +43,7 @@ class KnownValues(unittest.TestCase):
                              H    0.6192130   0.5951910   1.4994600;
                      ''', basis='ccpvdz')
         mf2 = neo.CDFT(mol2, xc='b3lyp')
+        mf2.conv_tol = 1e-10
         mf2.scf()
 
         de_finite_diff = (mf2.dip_moment(unit='au') - mf1.dip_moment(unit='au')) / 0.002 * lib.param.BOHR
