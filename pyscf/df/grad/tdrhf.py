@@ -7,10 +7,6 @@ class Gradients(tdrhf.Gradients):
 
     auxbasis_response = True
 
-    def __init__(self, td):
-        tdrhf.Gradients.__init__(self, td)
-
-
     def check_sanity(self):
         assert isinstance(self.base._scf, df.df_jk._DFHF)
 
@@ -39,7 +35,8 @@ class Gradients(tdrhf.Gradients):
             e1_aux = vhf[0][0] * 4  # ground state oo0,oo0
             e1_aux += (vhf[0][1] + vhf[1][0])   # dmz1doo, oo0
             e1_aux += vhf[2][2] * 2 # X+Y
-            e1_aux -= vhf[3][3] * 2 # X-Y
+            if vhf.shape[0] > 3:
+                e1_aux -= vhf[3][3] * 2 # X-Y
 
             return e1_aux
         else:

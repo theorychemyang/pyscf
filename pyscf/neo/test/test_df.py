@@ -110,7 +110,7 @@ class KnownValues(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             neo.Hessian(mf)
 
-    def test_grad_ctddft(self):
+    def test_grad_ctddft_rks(self):
         mol = neo.M(atom='''H 0 0 0; F 0 0 0.94''', basis='ccpvdz',
                     quantum_nuc=[0])
         for xc in ['lda', 'b3lyp5', 'camb3lyp']:
@@ -119,6 +119,19 @@ class KnownValues(unittest.TestCase):
             gref = mf.TDDFT().Gradients().kernel()
 
             mf = neo.CDFT(mol, xc=xc).density_fit(auxbasis='cc-pVTZ-JKFIT')
+            mf.scf()
+            grad = mf.TDDFT().Gradients().kernel()
+            self.assertAlmostEqual(abs(gref-grad).max(), 0, 4)
+
+    def test_grad_ctddft_uks(self):
+        mol = neo.M(atom='''H 0 0 0; F 0 0 0.94''', basis='ccpvdz',
+                    quantum_nuc=[0])
+        for xc in ['lda', 'b3lyp5', 'camb3lyp']:
+            mf = neo.CDFT(mol, xc=xc, unrestricted=True)
+            mf.scf()
+            gref = mf.TDDFT().Gradients().kernel()
+
+            mf = neo.CDFT(mol, xc=xc, unrestricted=True).density_fit(auxbasis='cc-pVTZ-JKFIT')
             mf.scf()
             grad = mf.TDDFT().Gradients().kernel()
             self.assertAlmostEqual(abs(gref-grad).max(), 0, 4)
