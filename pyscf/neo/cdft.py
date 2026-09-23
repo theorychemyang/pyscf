@@ -65,7 +65,7 @@ def _position_deviation(mf, mo_coeff, mo_occ, position_matrices=None):
     dm = mf.make_rdm1(mo_coeff, mo_occ)
     return numpy.einsum('xij,ji->x', position_matrices, dm).real
 
-def _get_constraint_symmetry(mf):
+def _get_important_axes(mf):
     important_axes = []
     # The symmetry eigensolver uses diagonal irrep blocks.
     # Keep symmetry axes whose position operator has a nonzero
@@ -92,8 +92,8 @@ def get_position_error(mf, fock, s1e):
         _, mo_coeff, mo_occ = _get_mo_energy_coeff_occ(comp, fock[t], s1e[t])
 
         if comp.int1e_r_symm is not None:
-            important_axes, position_matrices = comp.constraint_symmetry
-            deviation = _position_deviation(comp, mo_coeff, mo_occ, position_matrices)
+            important_axes = comp._important_axes
+            deviation = _position_deviation(comp, mo_coeff, mo_occ, comp.int1e_r_symm)
             deviation_full = numpy.zeros(comp.int1e_r.shape[0])
             for i, idx in enumerate(important_axes):
                 deviation_full[idx] = deviation[i]
@@ -137,8 +137,8 @@ def update_lagrange_multipliers(mf, fock0, s1e, one_step=False, tol=1e-15,
         f_lagrange = numpy.asarray(mf.f[ia], dtype=float).copy()
 
         if comp.int1e_r_symm is not None:
-            important_axes, position_matrices = comp.constraint_symmetry
-
+            important_axes = comp._important_axes
+            position_matrices = comp.int1e_r_symm
             # Cartesian -> symmetry-axis coordinates, then remove forbidden axes.
             f_lagrange = comp.mol._symm_axes @ f_lagrange
             f_lagrange = f_lagrange[important_axes]
@@ -230,7 +230,8 @@ def solve_constraint(mf, fock0, s1e=None, f_lagrange_guess=None,
         f_lagrange_guess = numpy.zeros(mf.int1e_r.shape[0])
 
     if mf.int1e_r_symm is not None:
-        important_axes, position_matrices = mf.constraint_symmetry
+        important_axes = mf._important_axes
+        position_matrices = mf.int1e_r_symm
         # Transform to along symmetry axes
         f_lagrange_guess = mf.mol._symm_axes @ f_lagrange_guess
         # Only keep the axes with non-trivial contributions
@@ -314,11 +315,11 @@ class CDFT(ks.KS):
                 comp.int1e_r = comp.mol.intor_symmetric('int1e_r', comp=3) \
                              - numpy.asarray([comp.nuclear_expect_position[i] * s1e for i in range(3)])
                 comp.int1e_r_symm = None
-                comp.constraint_symmetry = (None, comp.int1e_r)
+                comp._important_axes = None
                 if comp.mol.symmetry and comp.mol._symm_axes is not None:
                     # Transform to along symmetry axes
                     comp.int1e_r_symm = numpy.einsum('xy,yij->xij', comp.mol._symm_axes, comp.int1e_r)
-                    comp.constraint_symmetry = _get_constraint_symmetry(comp)
+                    comp._important_axes, comp.int1e_r_symm = _get_important_axes(comp)
 
 
     def get_fock_add_cdft(self):
