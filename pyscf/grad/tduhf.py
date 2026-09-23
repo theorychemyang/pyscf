@@ -177,6 +177,9 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
     as_dm1 = oo0a + oo0b + (dmz1dooa + dmz1doob) * .5
     vj, vk = td_grad.get_jk(mol, (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
                                   oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T))
+    if getattr(mf, 'with_df', None) and td_grad.auxbasis_response:
+        vj_aux = vj.aux
+        vk_aux = vk.aux
     vj = vj.reshape(2,4,3,nao,nao)
     vk = vk.reshape(2,4,3,nao,nao)
     vhf1a, vhf1b = vj[0] + vj[1] - vk

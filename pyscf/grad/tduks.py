@@ -219,15 +219,25 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
         dm = (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T, dmxmya-dmxmya.T,
               oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T, dmxmyb-dmxmyb.T)
         vj, vk = td_grad.get_jk(mol, dm)
+        if getattr(mf, 'with_df', None) and td_grad.auxbasis_response:
+            vj_aux = vj.aux
+            vk_aux = vk.aux * hyb
         vj = vj.reshape(2,4,3,nao,nao)
         vk = vk.reshape(2,4,3,nao,nao) * hyb
         if omega != 0:
-            vk += td_grad.get_k(mol, dm, omega=omega).reshape(2,4,3,nao,nao) * (alpha-hyb)
+            vk_lr = td_grad.get_k(mol, dm, omega=omega)
+            vk += vk_lr.reshape(2,4,3,nao,nao) * (alpha-hyb)
+            if getattr(mf, 'with_df', None) and td_grad.auxbasis_response:
+                vk_aux += vk_lr.aux * (alpha-hyb)
         veff1 = vj[0] + vj[1] - vk
     else:
         dm = (oo0a, dmz1dooa+dmz1dooa.T, dmxpya+dmxpya.T,
               oo0b, dmz1doob+dmz1doob.T, dmxpyb+dmxpyb.T)
-        vj = td_grad.get_j(mol, dm).reshape(2,3,3,nao,nao)
+        vj = td_grad.get_j(mol, dm)
+        if getattr(mf, 'with_df', None) and td_grad.auxbasis_response:
+            vj_aux = vj.aux
+            vk_aux = None
+        vj = vj.reshape(2,3,3,nao,nao)
         veff1 = numpy.zeros((2,4,3,nao,nao))
         veff1[:,:3] = vj[0] + vj[1]
 

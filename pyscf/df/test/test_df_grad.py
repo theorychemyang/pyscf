@@ -177,6 +177,79 @@ class KnownValues(unittest.TestCase):
         g1 = mc.nuc_grad_method ().kernel (state=1)
         self.assertAlmostEqual(abs(gref - g1).max(), 0, 4)
 
+    def test_tdrhf_grad(self):
+        mf = mol.RHF.run()
+        tdmf = mf.TDHF()
+        tdmf.kernel()
+        gref = tdmf.Gradients().kernel()
+
+        mf = mol.RHF.density_fit().run()
+        tdmf = mf.TDHF()
+        tdmf.kernel()
+        g1 = tdmf.Gradients().kernel()
+        self.assertAlmostEqual(abs(gref-g1).max(), 0, 4)
+
+    def test_tdrks_grad(self):
+        for xc in ['lda,', 'b3lyp5', 'camb3lyp']:
+            gref = mol.RKS().run(xc=xc).TDDFT().Gradients().kernel()
+
+            g1 = mol.RKS().density_fit().run(xc=xc).TDDFT().Gradients().kernel()
+            self.assertAlmostEqual(abs(gref-g1).max(), 0, 4)
+
+    def test_tduhf_grad(self):
+        mol = gto.Mole()
+        mol.atom = [
+            ['O' , (0. , 0.     , 0.)],
+            [1   , (0. , -0.757 , 0.587)],
+            [1   , (0. , 0.757  , 0.587)] ]
+        mol.symmetry = True
+        mol.verbose = 0
+        mol.basis = '631g'
+        mol.spin = 2
+        mol.build()
+        state = 3
+        nstates = 5
+
+        mf = mol.UHF().run()
+        tdmf = mf.TDHF()
+        tdmf.nstates = nstates
+        tdmf.kernel()
+        gref = tdmf.Gradients().kernel(state=state)
+
+        mf = mol.UHF().density_fit().run()
+        tdmf = mf.TDHF()
+        tdmf.nstates = nstates
+        tdmf.kernel()
+        g1 = tdmf.Gradients().kernel(state=state)
+        self.assertAlmostEqual(abs(gref-g1).max(), 0, 4)
+
+    def test_tduks_grad(self):
+        mol = gto.Mole()
+        mol.atom = [
+            ['O' , (0. , 0.     , 0.)],
+            [1   , (0. , -0.757 , 0.587)],
+            [1   , (0. , 0.757  , 0.587)] ]
+        mol.symmetry = True
+        mol.verbose = 0
+        mol.basis = '631g'
+        mol.spin = 2
+        mol.build()
+        state = 3
+        nstates = 5
+        for xc in ['lda,', 'b3lyp5', 'camb3lyp']:
+            mf = mol.UKS().run(xc=xc)
+            tdmf = mf.TDDFT()
+            tdmf.nstates = nstates
+            tdmf.kernel()
+            gref = tdmf.Gradients().kernel(state=state)
+
+            mf = mol.UKS().density_fit().run(xc=xc)
+            tdmf = mf.TDDFT()
+            tdmf.nstates = nstates
+            tdmf.kernel()
+            g1 = tdmf.Gradients().kernel(state=state)
+            self.assertAlmostEqual(abs(gref-g1).max(), 0, 4)
+
 if __name__ == "__main__":
     print("Full Tests for df.grad")
     unittest.main()

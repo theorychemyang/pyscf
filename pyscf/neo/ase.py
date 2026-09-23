@@ -6,7 +6,7 @@ from ase.calculators.calculator import Calculator
 from ase.units import Bohr, Hartree
 from pyscf.data import nist
 from pyscf import neo
-from pyscf import gto, dft, tddft
+from pyscf import gto, dft, tddft, scf
 from pyscf.lib import logger
 from pyscf.tdscf.rhf import oscillator_strength
 from pyscf.neo import ctddft, tdgrad
@@ -228,13 +228,13 @@ class Pyscf_TDNEO(Pyscf_NEO):
     def create_tdmf(self, mol):
         mf = self.create_mf(mol)
         if self.is_davidson:
-            td_mf = ctddft.CTDDFT(mf)
+            td_mf = mf.TDDFT()
             td_mf.nstates = self.nstates
         else:
-            td_mf = ctddft.CTDDirect(mf)
+            td_mf = mf.TDDirect()
             td_mf.nstates = self.nstates
 
-        td_grad = tdgrad.Gradients(td_mf)
+        td_grad = td_mf.Gradients()
         td_grad.state = self.state
 
         return td_mf, td_grad
@@ -421,3 +421,55 @@ class Pyscf_DFT(Calculator):
 
             self.results['excited_energies'] = e * nist.HARTREE2EV
             self.results['oscillator_strength'] = os
+
+
+class Pyscf_TDDFT(Pyscf_DFT):
+    '''TDDFT PySCF calculator'''
+    implemented_properties = ['energy', 'forces', 'excitation-energy']
+    def __init__(self, state=1,
+                 nstates=3,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.run_tda = False
+        if not self.scanner_available:
+            raise RuntimeError('mf_scanner not initialized')
+
+        self.scanner_available = False
+        self.state = state
+        self.nstates = nstates
+
+        mol = gto.M(atom='H 0 0 0; F 0 0 0.9')
+        td_mf, td_grad = self.create_tdmf(mol)
+        self.td_scanner = td_mf.as_scanner()
+        self.td_grad_scanner = td_grad.as_scanner(state=self.state)
+        self.scanner_available = True
+
+    def create_tdmf(self, mol):
+        mf = self.create_mf(mol)
+        td_mf = mf.TDDFT()
+        td_mf.nstates = self.nstates
+
+        td_grad = td_mf.Gradients()
+        td_grad.state = self.state
+
+        return td_mf, td_grad
+
+    def calculate(self, atoms, properties, system_changes):
+        Calculator.calculate(self, atoms, properties, system_changes)
+        mol = self.get_mol_from_atoms(atoms)
+        if not self.scanner_available:
+            raise RuntimeError('td scanner not initialized')
+
+        if 'forces' in properties:
+            e_tot, de = self.td_grad_scanner(mol)
+            td_mf = self.td_grad_scanner.base
+        else:
+            e_tot = self.td_scanner(mol)[self.state-1]
+            td_mf = self.td_scanner
+
+        self.results['energy'] = e_tot * Hartree
+        if 'forces' in properties:
+            self.results['forces'] = -de * Hartree / Bohr
+        if 'excitation-energy' in properties:
+            e_ex = td_mf.e
+            self.results['excitation-energy'] = e_ex * nist.HARTREE2EV
