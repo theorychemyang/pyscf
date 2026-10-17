@@ -1,11 +1,56 @@
 #!/usr/bin/env python
 
 import unittest
+from unittest.mock import patch
 import numpy
+import scipy.linalg
 from pyscf import neo, lib
 from pyscf.neo import df
 
 class KnownValues(unittest.TestCase):
+    def test_direct_j_truncated_electronic_metric(self):
+        from pyscf import df as electronic_df
+
+        mol = neo.M(atom='H 0 0 0; F 0 0 .9', basis='sto-3g',
+                    nuc_basis='pb4d', quantum_nuc=[0], verbose=0)
+        auxmol = electronic_df.addons.make_auxmol(mol.components['e'], 'weigend')
+        j3c = electronic_df.incore.aux_e2(mol.components['e'], auxmol)
+        w, v = scipy.linalg.eigh(auxmol.intor('int2c2e', hermi=1))
+        # A raised cutoff gives discarded directions with measurable integrals.
+        cutoff = .1
+        keep = w > cutoff
+        factor = v[:,keep] / numpy.sqrt(w[keep])
+        cderi = numpy.einsum('ijp,pk->kij', j3c, factor)
+        cderi = lib.pack_tril(cderi)
+        dm = neo.HF(mol).get_init_guess()
+        raw_rho = numpy.einsum('ijp,ij->p', j3c, dm['e'])
+        rest = v[:,~keep]
+        self.assertGreater(abs(raw_rho.dot(rest).dot(rest.T)).max(), 1e-3)
+
+        for df_nn in (False, True):
+            with self.subTest(df_nn=df_nn):
+                mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True, df_nn=df_nn)
+                e_df = mf.components['e'].with_df
+                e_df.auxmol = auxmol
+                e_df._cderi = cderi
+                ref = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True, df_nn=df_nn)
+                ref.with_df._elec_with_df = None
+                expected = df.get_j(ref.with_df, dm)
+                with patch.object(df, 'LINEAR_DEP_THR', cutoff), \
+                     patch.object(scipy.linalg, 'cholesky',
+                                  side_effect=numpy.linalg.LinAlgError):
+                    actual = df.get_j(mf.with_df, dm)
+                for t in dm:
+                    numpy.testing.assert_allclose(actual[t], expected[t], atol=1e-9, rtol=0)
+                opt = mf.with_df._vjopt['e']
+                self.assertEqual(opt.j2c_e_rest.shape[1], rest.shape[1])
+                weights = numpy.linspace(-.2, .8, auxmol.nao)
+                potential = df._get_j_e_cderi(e_df, opt.j2c_e_factor, weights[None])[0]
+                residual = weights.dot(opt.j2c_e_rest).dot(opt.j2c_e_rest.T)
+                potential += numpy.einsum('ijp,p->ij', j3c, residual)
+                numpy.testing.assert_allclose(
+                    potential, numpy.einsum('ijp,p->ij', j3c, weights), atol=1e-9, rtol=0)
+
     def test_hf_df_ne_exact_nn(self):
         energies = []
         for direct_vee in (False, True):

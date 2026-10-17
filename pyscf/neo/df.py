@@ -1206,6 +1206,18 @@ def get_jk(dfobj, dm, hermi=0, with_j=True, with_k=True, direct_scf_tol=1e-13):
     logger.timer(dfobj, 'df vj and vk', *t0)
     return vj, vk
 
+def _get_j_e_cderi(dfobj, j2c_e_factor, auxvec):
+    # Packed J return follows df.df_jk.get_jk. The electronic metric factor
+    # R maps global fitted coefficients c to CDERI weights as R.T c.
+    auxvec = auxvec.dot(j2c_e_factor)
+    nao = dfobj.mol.nao_nr()
+    result = numpy.zeros((len(auxvec), nao*(nao+1)//2))
+    p1 = 0
+    for eri1 in dfobj.loop():
+        p0, p1 = p1, p1 + len(eri1)
+        lib.dot(auxvec[:,p0:p1], eri1, 1, result, 1)
+    return lib.unpack_tril(result)
+
 def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
           output_components=None):
     from pyscf.scf import _vhf
@@ -1271,6 +1283,39 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
         dfobj._vjopt = opt
         t1 = logger.timer_debug1(dfobj, 'df-vj init_direct_scf', *t1)
 
+    # Global auxiliaries begin with the electronic basis. Reconstruct its raw
+    # source with the same metric decomposition used by df.incore.cholesky_eri.
+    e_df = dfobj._elec_with_df
+    naux_e = nbas_aux_e = 0
+    j2c_e_rest = None
+    if (dfobj.df_ne_scheme == 'global' and e_df is not None and
+        e_df.auxbasis == dfobj.auxbasis and
+        (e_df._cderi is not None or
+         (with_e and getattr(dfobj, '_build_e_cderi', False)))):
+        if e_df._cderi is None:
+            e_df.build()
+        if e_df.auxmol is None:
+            e_df.auxmol = addons.make_auxmol(e_df.mol, e_df.auxbasis)
+        naux_e = e_df.auxmol.nao_nr()
+        nbas_aux_e = e_df.auxmol.nbas
+        opt_e = dfobj._vjopt['e']
+        if getattr(opt_e, 'j2c_e_factor', None) is None:
+            j2c_e = e_df.auxmol.intor('int2c2e', hermi=1)
+            try:
+                j2c_e_factor = scipy.linalg.cholesky(j2c_e, lower=True)
+            except scipy.linalg.LinAlgError:
+                w, v = scipy.linalg.eigh(j2c_e)
+                mask = w > LINEAR_DEP_THR
+                j2c_e_factor = v[:,mask] * numpy.sqrt(w[mask])
+                if numpy.any(~mask):
+                    j2c_e_rest = v[:,~mask]
+            opt_e.j2c_e_factor = j2c_e_factor
+            opt_e.j2c_e_rest = j2c_e_rest
+        j2c_e_factor = opt_e.j2c_e_factor
+        j2c_e_rest = opt_e.j2c_e_rest
+        if e_df.get_naoaux() != j2c_e_factor.shape[1]:
+            raise ValueError('Electronic CDERI rank differs from its auxiliary metric')
+
     if with_e or df_nn:
         jaux_e_n = 0
     if df_nn:
@@ -1301,13 +1346,35 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
         # rho = numpy.linalg.solve(auxmol.intor('int2c2e'), jaux)
         nbas = mol_.nbas
         nbas1 = mol_.nbas + dfobj.auxmol.nbas
-        shls_slice = (0, nbas, 0, nbas, nbas, nbas1, nbas1, nbas1+1)
+        # Electronic CDERI covers the skipped electronic-auxiliary prefix.
+        aux_start = nbas + (nbas_aux_e if t == 'e' and j2c_e_rest is None else 0)
+        shls_slice = (0, nbas, 0, nbas, aux_start, nbas1, nbas1, nbas1+1)
         with lib.temporary_env(opt_, prescreen='CVHFnr3c2e_vj_pass1_prescreen'):
             jaux = jk.get_jk(fakemol, dm_, ['ijkl,ji->kl']*n_dm, 'int3c2e',
                              aosym='s2ij', hermi=0, shls_slice=shls_slice,
                              vhfopt=opt_)
         # remove the index corresponding to bas_placeholder
         jaux = numpy.array(jaux)[:,:,0]
+        if t == 'e' and naux_e:
+            # Packed-DM weighting follows df.df_jk.get_jk. Restore the raw
+            # electronic-auxiliary source as R (B D) for the global solve.
+            dmtril = lib.pack_tril(dm_ + dm_.transpose(0,2,1))
+            idx = numpy.arange(nao)
+            idx = idx * (idx+1) // 2 + idx
+            dmtril[:,idx] *= .5
+            rho = numpy.empty((len(dmtril), j2c_e_factor.shape[1]))
+            p1 = 0
+            for eri1 in e_df.loop():
+                p0, p1 = p1, p1 + len(eri1)
+                rho[:,p0:p1] = lib.dot(dmtril, eri1.T)
+            shared_rho = lib.dot(rho, j2c_e_factor.T)
+            if j2c_e_rest is None:
+                jaux = numpy.hstack((shared_rho, jaux))
+            else:
+                # Preserve global J's electronic metric directions omitted by
+                # electronic CDERI through direct residual contractions.
+                jaux[:,:naux_e] = (shared_rho +
+                                   jaux[:,:naux_e].dot(j2c_e_rest).dot(j2c_e_rest.T))
         if t == 'e':
             jaux_e = jaux * dfobj._charges[t]
         elif df_nn:
@@ -1321,6 +1388,7 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
             dm_shape[t] = dm_shape['e'][:-2] + (nao, nao)
 
     if df_nn:
+        # Each nuclear target excludes its own density from the total source.
         nuc_outputs = [t for t in output_components if t != 'e']
         jaux = [jaux_e_n]
         for t in nuc_outputs:
@@ -1383,17 +1451,34 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
         # temporarily set "_dmcondname=None" to skip the call to set_dm method.
         nbas = mol_.nbas
         nbas1 = mol_.nbas + dfobj.auxmol.nbas
-        shls_slice = (0, nbas, 0, nbas, nbas, nbas1, nbas1, nbas1+1)
+        aux_start = nbas + (nbas_aux_e if t == 'e' and j2c_e_rest is None else 0)
+        shls_slice = (0, nbas, 0, nbas, aux_start, nbas1, nbas1, nbas1+1)
         with lib.temporary_env(opt_, prescreen='CVHFnr3c2e_vj_pass2_prescreen',
                                _dmcondname=None):
             if t == 'e':
                 opt_.dm_cond = dm_cond_tot
-                vj[t] = jk.get_jk(fakemol, rho_tot, ['ijkl,lk->ij']*n_dm, 'int3c2e',
+                if j2c_e_rest is None:
+                    rho_direct = rho_tot[:,:,naux_e:]
+                else:
+                    rho_direct = rho_tot.copy()
+                    rho_direct[:,:,:naux_e] = rho_tot[:,:,:naux_e].dot(
+                        j2c_e_rest).dot(j2c_e_rest.T)
+                    opt_.dm_cond = numpy.array([abs(rho_direct[:,:,i0:i1]).max()
+                                                for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
+                vj[t] = jk.get_jk(fakemol, rho_direct, ['ijkl,lk->ij']*n_dm, 'int3c2e',
                                   aosym='s2ij', hermi=1, shls_slice=shls_slice,
                                   vhfopt=opt_)
                 if with_vint:
                     opt_.dm_cond = dm_cond_n
-                    vj_inter_e = jk.get_jk(fakemol, rho_n, ['ijkl,lk->ij']*n_dm, 'int3c2e',
+                    if j2c_e_rest is None:
+                        rho_direct = rho_n[:,:,naux_e:]
+                    else:
+                        rho_direct = rho_n.copy()
+                        rho_direct[:,:,:naux_e] = rho_n[:,:,:naux_e].dot(
+                            j2c_e_rest).dot(j2c_e_rest.T)
+                        opt_.dm_cond = numpy.array([abs(rho_direct[:,:,i0:i1]).max()
+                                                    for i0, i1 in zip(aux_loc[:-1], aux_loc[1:])])
+                    vj_inter_e = jk.get_jk(fakemol, rho_direct, ['ijkl,lk->ij']*n_dm, 'int3c2e',
                                            aosym='s2ij', hermi=1, shls_slice=shls_slice,
                                            vhfopt=opt_)
             else:
@@ -1408,6 +1493,13 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
                                   aosym='s2ij', hermi=1, shls_slice=shls_slice,
                                   vhfopt=opt_)
         vj[t] = numpy.asarray(vj[t]).reshape(dm_shape[t])
+        if t == 'e' and naux_e:
+            vj[t] += _get_j_e_cderi(
+                e_df, j2c_e_factor, rho_tot[:,0,:naux_e]).reshape(dm_shape[t])
+            if with_vint:
+                vj_inter_e = numpy.asarray(vj_inter_e).reshape(dm_shape[t])
+                vj_inter_e += _get_j_e_cderi(
+                    e_df, j2c_e_factor, rho_n[:,0,:naux_e]).reshape(dm_shape[t])
         vj[t] *= dfobj._charges[t]
         if t == 'e' and with_vint:
             vj_inter_e = numpy.asarray(vj_inter_e).reshape(dm_shape[t])
