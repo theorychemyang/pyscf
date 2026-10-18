@@ -1,6 +1,39 @@
 '''
 Interface for PySCF and ASE
+
+SCF initial-guess extrapolation during MD is opt-in for Pyscf_NEO,
+Pyscf_DFT and their TD calculators::
+
+    atoms.calc = Pyscf_NEO(..., extrapolator=True)
+    dyn = VelocityVerlet(atoms, timestep=0.5 * units.fs)
+    dyn.run(100)
+
+True selects projected G-Ext with four snapshots. Use extrapolator='aspc'
+to select a method, or extrapolator={'scheme': 'aspc', 'history_length': 4}
+to set its parameters. Explicit predictor objects are also accepted.
+At each geometry, extrapolation supplies an initial density for a full SCF
+calculation; energies and forces are evaluated from the converged state.
+Each new calculated geometry advances the prediction history automatically;
+repeated property requests at the same geometry retain one history entry.
+Enable this only when each new geometry is the next fixed-timestep MD point.
+After SCF converges, the calculator stores its orbitals and the current
+geometry in the prediction history.
+
+A geometry optimizer can evaluate trial geometries that it later rejects;
+storing those trials as consecutive MD points gives the predictor the wrong
+history. Leave extrapolator=None for geometry optimization. MD integrators
+that evaluate intermediate geometries need the same care.
+Extrapolation can also accelerate geometry optimization: see Askarpour
+et al., doi:10.1021/acs.jctc.4c01417, and Song and Lao,
+doi:10.1039/D6CP01718E. The history handling needed for those optimization
+methods is currently unimplemented in this calculator.
+The default extrapolator=None keeps ordinary scanner behavior for geometry
+optimization and single-point calculations.
+TD calculators predict only the underlying ground-state density; excitation
+amplitudes are computed by the ordinary TD solver at each geometry.
 '''
+
+from contextlib import nullcontext
 
 from ase.calculators.calculator import Calculator
 from ase.units import Bohr, Hartree
@@ -32,6 +65,101 @@ def stable_opt_internal(mf):
     return mf
 
 
+def _make_extrapolator(option):
+    '''Convert ASE's boolean/string/dictionary options to a predictor.'''
+    from pyscf.neo.extrapolation import Extrapolator
+    if option is True:
+        return Extrapolator()
+    if option is False:
+        return None
+    if isinstance(option, str):
+        return Extrapolator(scheme=option)
+    if isinstance(option, dict):
+        return Extrapolator(**option)
+    return option
+
+
+def _run_scf(calc, mol, forces, mf=None):
+    '''Run ground-state SCF using a scanner or a supplied fresh SCF object.'''
+    scanner = mf is None
+    if calc.extrapolator is None and scanner:
+        if forces:
+            return calc.mf_grad_scanner(mol)
+        return calc.mf_scanner(mol), None
+    if scanner:
+        mf = calc.mf_scanner
+    predictor = calc.extrapolator
+    dm0 = None if predictor is None else predictor.kernel(mf, mol)
+    if forces and scanner:
+        calc.mf_grad_scanner.reset(mol)
+    # GPU gradient scanners forward kwargs to the gradient kernel. Supply
+    # dm0 to SCF directly. Fresh objects can also refine their orbitals through
+    # stability optimization; record its final Fock for the stored orbitals.
+    with nullcontext() if predictor is None else predictor.record_fock(mf):
+        if scanner:
+            energy = mf(mol, dm0=dm0)
+        else:
+            mf.scf(dm0=dm0)
+            if calc.stable_opt:
+                stable_opt_internal(mf)
+            energy = mf.e_tot
+    if predictor is not None and not mf.converged:
+        raise RuntimeError('SCF failed; Extrapolator history is unchanged')
+    gradient = None
+    if forces:
+        if scanner:
+            gradient = calc.mf_grad_scanner.kernel()
+        else:
+            gradient = mf.nuc_grad_method().set(grid_response=calc.grid_response).grad()
+    if predictor is not None:
+        predictor.update(mf)
+    return energy, gradient
+
+
+def _run_td(calc, mol, forces, reuse=False):
+    '''Share ground-state SCF guess extrapolation and TD solves between calculators.'''
+    if reuse:
+        # Separate atoms.get_potential_energy() then atoms.get_forces() calls
+        # at unchanged coordinates reuse the converged SCF and TD amplitudes;
+        # only the excited-state gradient remains to be evaluated.
+        # Energy-only TD scanner calls update the TD molecule. Its gradient
+        # object needs that molecule too; keep the converged SCF/TD state.
+        calc.td_grad_scanner.mol = calc.td_scanner.mol
+        gradient = calc.td_grad_scanner.kernel(state=calc.state) if forces else None
+        return calc.results['energy'] / Hartree, gradient
+    initialize = calc.td_scanner is None
+    if calc.extrapolator is None and not initialize:
+        if forces:
+            return calc.td_grad_scanner(mol)
+        return calc.td_scanner(mol)[calc.state-1], None
+    mf = calc.create_mf(mol) if initialize else calc.td_scanner._scf
+    predictor = calc.extrapolator
+    dm0 = None if predictor is None else predictor.kernel(mf, mol)
+    if not initialize:
+        calc.td_grad_scanner.reset(mol)
+    with nullcontext() if predictor is None else predictor.record_fock(mf):
+        if initialize:
+            mf.kernel(dm0=dm0)
+        else:
+            mf(mol, dm0=dm0)
+    if predictor is not None and not mf.converged:
+        raise RuntimeError('SCF failed; Extrapolator history is unchanged')
+    if initialize:
+        # TD constructors run SCF when orbitals are absent. Supplying the
+        # converged reference makes first-point SCF and Fock capture explicit.
+        td, grad = calc.create_tdmf(mol, mf)
+        calc.td_grad_scanner = grad.as_scanner(state=calc.state)
+        calc.td_scanner = calc.td_grad_scanner.base
+        calc.mf_scanner = calc.td_scanner._scf
+    # Calling the TD kernel directly avoids the scanner's second SCF call.
+    calc.td_scanner.kernel()
+    energy = mf.e_tot + calc.td_scanner.e[calc.state-1]
+    gradient = calc.td_grad_scanner.kernel(state=calc.state) if forces else None
+    if predictor is not None:
+        predictor.update(mf)
+    return energy, gradient
+
+
 class Pyscf_NEO(Calculator):
     """CNEO-DFT PySCF calculator"""
 
@@ -60,6 +188,7 @@ class Pyscf_NEO(Calculator):
                  to_gpu=False,             # use GPU4PySCF
                  force_unrestricted=False, # can force mf to be unrestricted
                  stable_opt=False,         # if check stability
+                 extrapolator=None,        # SCF guess extrapolation during MD
                  **kwargs):
         Calculator.__init__(self, **kwargs)
         self.basis = basis
@@ -89,9 +218,14 @@ class Pyscf_NEO(Calculator):
         self.run_tda = run_tda
         self.disp = disp
         self.stable_opt = stable_opt
+        self.extrapolator = _make_extrapolator(extrapolator)
         if self.add_solvent or self.run_tda or self.stable_opt or self.efield is not None:
             # TODO: see if some of them can work with scanners
             self.scanner_available = False
+        elif hasattr(self, 'create_tdmf'):
+            # TD setup waits for the first real molecule to avoid an SCF on
+            # the placeholder used by ground-state scanner construction.
+            self.scanner_available = True
         else:
             # initialize a fake mol then create scanners
             mol = neo.M(atom='H 0 0 0; F 0 0 0.9')
@@ -163,26 +297,25 @@ class Pyscf_NEO(Calculator):
     def calculate(self, atoms, properties, system_changes):
         Calculator.calculate(self, atoms, properties, system_changes)
         mol = self.get_mol_from_atoms(atoms)
-        if self.scanner_available:
+        if not system_changes and 'energy' in self.results:
+            # Separate atoms.get_potential_energy() then atoms.get_forces()
+            # calls at unchanged coordinates reuse this converged SCF state;
+            # only the gradient remains to be evaluated.
+            mf = self._last_mf
+            e_tot = mf.e_tot
             if 'forces' in properties:
-                e_tot, de = self.mf_grad_scanner(mol)
-                mf = self.mf_grad_scanner.base
-            else:
-                e_tot = self.mf_scanner(mol)
-                mf = self.mf_scanner
+                de = mf.nuc_grad_method().set(grid_response=self.grid_response).grad()
+        elif self.scanner_available:
+            mf = self.mf_scanner
+            e_tot, de = _run_scf(self, mol, 'forces' in properties)
         else:
             mf = self.create_mf(mol)
             if self.disp:
                 mf.disp = self.disp
             if self.add_solvent:
                 mf = mf.ddCOSMO()
-            # TODO: last step dm0 for non-scanner?
-            mf.scf()
-            if self.stable_opt:
-                mf = stable_opt_internal(mf)
-            e_tot = mf.e_tot
-            if 'forces' in properties:
-                de = mf.nuc_grad_method().set(grid_response=self.grid_response).grad()
+            e_tot, de = _run_scf(self, mol, 'forces' in properties, mf)
+        self._last_mf = mf
         self.results['energy'] = e_tot * Hartree
         if 'forces' in properties:
             self.results['forces'] = -de * Hartree / Bohr
@@ -191,7 +324,7 @@ class Pyscf_NEO(Calculator):
         if True:
             self.results['dipole'] = mf.dip_moment()
 
-        if self.run_tda:
+        if self.run_tda and (system_changes or 'excited_energies' not in self.results):
             # calculate excited energies and oscillator strength by TDDFT/TDA
             td = tddft.TDA(mf.mf_elec)
             e, xy = td.kernel()
@@ -219,14 +352,13 @@ class Pyscf_TDNEO(Pyscf_NEO):
         self.nstates = nstates
         self.is_davidson = is_davidson
 
-        mol = neo.M(atom='H 0 0 0; F 0 0 0.9')
-        td_mf, td_grad = self.create_tdmf(mol)
-        self.td_grad_scanner = td_grad.as_scanner(state=self.state)
-        self.td_scanner = self.td_grad_scanner.base
+        self.td_scanner = None
+        self.td_grad_scanner = None
         self.scanner_available = True
 
-    def create_tdmf(self, mol):
-        mf = self.create_mf(mol)
+    def create_tdmf(self, mol, mf=None):
+        if mf is None:
+            mf = self.create_mf(mol)
         if self.is_davidson:
             td_mf = mf.TDDFT()
             td_mf.nstates = self.nstates
@@ -245,12 +377,9 @@ class Pyscf_TDNEO(Pyscf_NEO):
         if not self.scanner_available:
             raise RuntimeError('td scanner not initialized')
 
-        if 'forces' in properties:
-            e_tot, de = self.td_grad_scanner(mol)
-            td_mf = self.td_grad_scanner.base
-        else:
-            e_tot = self.td_scanner(mol)[self.state-1]
-            td_mf = self.td_scanner
+        e_tot, de = _run_td(self, mol, 'forces' in properties,
+                            reuse=not system_changes and 'energy' in self.results)
+        td_mf = self.td_scanner
 
         self.results['energy'] = e_tot * Hartree
         if 'forces' in properties:
@@ -285,6 +414,7 @@ class Pyscf_DFT(Calculator):
                  to_gpu=False,             # use GPU4PySCF
                  force_unrestricted=False, # can force mf to be unrestricted
                  stable_opt=False,         # if check stability
+                 extrapolator=None,        # SCF guess extrapolation during MD
                  **kwargs):
         Calculator.__init__(self, **kwargs)
         self.basis = basis
@@ -309,9 +439,12 @@ class Pyscf_DFT(Calculator):
         self.run_tda = run_tda
         self.disp = disp
         self.stable_opt = stable_opt
+        self.extrapolator = _make_extrapolator(extrapolator)
         if self.add_solvent or self.run_tda or self.stable_opt or self.efield is not None:
             # TODO: see if some of them can work with scanners
             self.scanner_available = False
+        elif hasattr(self, 'create_tdmf'):
+            self.scanner_available = True
         else:
             # initialize a fake mol then create scanners
             mol = gto.M(atom='H 0 0 0; F 0 0 0.9')
@@ -385,13 +518,17 @@ class Pyscf_DFT(Calculator):
     def calculate(self, atoms, properties, system_changes):
         Calculator.calculate(self, atoms, properties, system_changes)
         mol = self.get_mol_from_atoms(atoms)
-        if self.scanner_available:
+        if not system_changes and 'energy' in self.results:
+            # Separate atoms.get_potential_energy() then atoms.get_forces()
+            # calls at unchanged coordinates reuse this converged SCF state;
+            # only the gradient remains to be evaluated.
+            mf = self._last_mf
+            e_tot = mf.e_tot
             if 'forces' in properties:
-                e_tot, de = self.mf_grad_scanner(mol)
-                mf = self.mf_grad_scanner.base
-            else:
-                e_tot = self.mf_scanner(mol)
-                mf = self.mf_scanner
+                de = mf.nuc_grad_method().set(grid_response=self.grid_response).grad()
+        elif self.scanner_available:
+            mf = self.mf_scanner
+            e_tot, de = _run_scf(self, mol, 'forces' in properties)
         else:
             mf = self.create_mf(mol)
             if self.disp:
@@ -399,13 +536,8 @@ class Pyscf_DFT(Calculator):
             if self.add_solvent:
                 from pyscf import solvent
                 mf = mf.ddCOSMO()
-            # TODO: last step dm0 for non-scanner?
-            mf.scf()
-            if self.stable_opt:
-                mf = stable_opt_internal(mf)
-            e_tot = mf.e_tot
-            if 'forces' in properties:
-                de = mf.nuc_grad_method().set(grid_response=self.grid_response).grad()
+            e_tot, de = _run_scf(self, mol, 'forces' in properties, mf)
+        self._last_mf = mf
         self.results['energy'] = e_tot * Hartree
         if 'forces' in properties:
             self.results['forces'] = -de * Hartree / Bohr
@@ -414,7 +546,7 @@ class Pyscf_DFT(Calculator):
         if True:
             self.results['dipole'] = mf.dip_moment()
 
-        if self.run_tda:
+        if self.run_tda and (system_changes or 'excited_energies' not in self.results):
             td = tddft.TDA(mf)
             e, xy = td.kernel()
             os = oscillator_strength(td, e=e, xy=xy)
@@ -438,14 +570,13 @@ class Pyscf_TDDFT(Pyscf_DFT):
         self.state = state
         self.nstates = nstates
 
-        mol = gto.M(atom='H 0 0 0; F 0 0 0.9')
-        td_mf, td_grad = self.create_tdmf(mol)
-        self.td_scanner = td_mf.as_scanner()
-        self.td_grad_scanner = td_grad.as_scanner(state=self.state)
+        self.td_scanner = None
+        self.td_grad_scanner = None
         self.scanner_available = True
 
-    def create_tdmf(self, mol):
-        mf = self.create_mf(mol)
+    def create_tdmf(self, mol, mf=None):
+        if mf is None:
+            mf = self.create_mf(mol)
         td_mf = mf.TDDFT()
         td_mf.nstates = self.nstates
 
@@ -460,12 +591,9 @@ class Pyscf_TDDFT(Pyscf_DFT):
         if not self.scanner_available:
             raise RuntimeError('td scanner not initialized')
 
-        if 'forces' in properties:
-            e_tot, de = self.td_grad_scanner(mol)
-            td_mf = self.td_grad_scanner.base
-        else:
-            e_tot = self.td_scanner(mol)[self.state-1]
-            td_mf = self.td_scanner
+        e_tot, de = _run_td(self, mol, 'forces' in properties,
+                            reuse=not system_changes and 'energy' in self.results)
+        td_mf = self.td_scanner
 
         self.results['energy'] = e_tot * Hartree
         if 'forces' in properties:
