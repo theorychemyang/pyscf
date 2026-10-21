@@ -1753,12 +1753,14 @@ class _DFNEO:
         for t_pair, interaction in self.interactions.items():
             if 'e' in t_pair:
                 continue
+            # Every remaining pair is nuclear-nuclear Coulomb. HF interactions
+            # expose get_vint(dm); KS adds the same Coulomb term for these
+            # pairs because electron-proton correlation requires an electron.
             if interaction._is_direct_vint():
-                v = interaction.get_vint(ddm if incremental_j else dm,
-                                         coulomb_only=True)
+                v = interaction.get_vint(ddm if incremental_j else dm)
                 target = nn_vint_delta
             else:
-                v = interaction.get_vint(dm, coulomb_only=True)
+                v = interaction.get_vint(dm)
                 target = nn_vint_full
             for t in (interaction.mf1_type, interaction.mf2_type):
                 target[t] += v[t]

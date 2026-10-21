@@ -6,6 +6,22 @@ from pyscf import neo, lib
 from pyscf.neo import df
 
 class KnownValues(unittest.TestCase):
+    def test_hf_df_ne_exact_nn(self):
+        energies = []
+        for direct_vee in (False, True):
+            with self.subTest(direct_vee=direct_vee):
+                mol = neo.M(atom='O 0 0 0; H 0 -.757 .587; H 0 .757 .587',
+                            basis='sto-3g', nuc_basis='pb4d', quantum_nuc=['H'],
+                            direct_vee=direct_vee, verbose=0)
+                mf = neo.HF(mol).density_fit(auxbasis='weigend', df_ne=True,
+                                             df_nn=False)
+                mf.conv_tol = 1e-10
+                energies.append(mf.kernel())
+                self.assertTrue(mf.converged)
+                interaction = mf.interactions[('n1', 'n2')]
+                self.assertEqual(interaction._eri is None, direct_vee)
+        self.assertAlmostEqual(energies[0], energies[1], 8)
+
     def test_hf_direct_scf(self):
         mol = neo.M(atom='H 0 0 0; F 0 0 1', basis='sto-3g',
                     quantum_nuc=[0])
