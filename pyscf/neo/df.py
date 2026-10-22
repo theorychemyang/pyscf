@@ -1238,7 +1238,11 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
             j2c = scipy.linalg.cho_factor(j2c, lower=True)
             j2c_type = 'cd'
         except scipy.linalg.LinAlgError:
-            j2c_type = 'regular'
+            # Follow df.incore._eig_decompose for dependent auxiliaries.
+            w, v = scipy.linalg.eigh(j2c)
+            mask = w > LINEAR_DEP_THR
+            j2c = v[:,mask] / numpy.sqrt(w[mask])
+            j2c_type = 'ed'
 
         # jk.get_jk function supports 4-index integrals. Use bas_placeholder
         # (l=0, nctr=1, 1 function) to hold the last index.
@@ -1327,7 +1331,7 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
         if opt['e'].j2c_type == 'cd':
             rho = scipy.linalg.cho_solve(opt['e'].j2c, jaux.T).T
         else:
-            rho = scipy.linalg.solve(opt['e'].j2c, jaux.T).T
+            rho = jaux.dot(opt['e'].j2c).dot(opt['e'].j2c.T)
         rho = rho.reshape(jaux_shape)
         rho_tot = rho[0]
         rho_out = {t: rho[i+1] for i, t in enumerate(nuc_outputs)}
@@ -1337,9 +1341,9 @@ def get_j(dfobj, dm, hermi=0, direct_scf_tol=1e-13,
             if with_e:
                 rho_tot = scipy.linalg.cho_solve(opt['e'].j2c, jaux_e_n.T)
         else:
-            rho_e = scipy.linalg.solve(opt['e'].j2c, jaux_e.T)
+            rho_e = opt['e'].j2c.dot(opt['e'].j2c.T.dot(jaux_e.T))
             if with_e:
-                rho_tot = scipy.linalg.solve(opt['e'].j2c, jaux_e_n.T)
+                rho_tot = opt['e'].j2c.dot(opt['e'].j2c.T.dot(jaux_e_n.T))
         rho_e = rho_e.T
         if with_e:
             rho_tot = rho_tot.T
